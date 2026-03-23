@@ -1,0 +1,18 @@
+---
+- name: Rebuild control API container
+  listen: Restart control API
+  ansible.builtin.command:
+    cmd: docker compose -f /srv/control-api/docker-compose.yml up -d --build --force-recreate
+  args:
+    chdir: /srv/control-api
+  become: true
+
+- name: Restart control API service
+  listen: Restart control API
+  ansible.builtin.systemd:
+    name: control-api.service
+    state: restarted
+    daemon_reload: true
+  become: true
+
+

@@ -1,0 +1,362 @@
+---
+- name: Initialise control plane sync variables
+  ansible.builtin.set_fact:
+    control_plane_src_dir: "{{ control_plane_src_dir | default('/srv/control-plane/src') }}"
+    control_plane_repo_version: "{{ control_plane_repo_version | default('main') }}"
+    control_plane_sync_owner: "{{ control_plane_sync_owner | default(ansible_user) }}"
+  tags: [control_api, source]
+
+- name: Ensure control API group exists
+  ansible.builtin.group:
+    name: "{{ control_api_group }}"
+    system: true
+  become: true
+  tags: [control_api, users]
+
+- name: Ensure control API user exists
+  ansible.builtin.user:
+    name: "{{ control_api_user }}"
+    group: "{{ control_api_group }}"
+    system: true
+    create_home: false
+  register: control_api_user_result
+  become: true
+  tags: [control_api, users]
+
+- name: Record control API user identifiers
+  ansible.builtin.set_fact:
+    control_api_uid: "{{ control_api_user_result.uid }}"
+    control_api_gid: "{{ control_api_user_result.group }}"
+  tags: [control_api, users]
+
+- name: Look up docker group details
+  ansible.builtin.command:
+    cmd: getent group docker
+  register: control_api_docker_group
+  changed_when: false
+  become: true
+  tags: [control_api, docker]
+
+- name: Record docker group gid for control API
+  ansible.builtin.set_fact:
+    control_api_docker_gid: "{{ control_api_docker_group.stdout.split(':')[2] }}"
+  when: control_api_docker_group.stdout | default('') != ''
+  tags: [control_api, docker]
+
+- name: Ensure control API directories exist
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+    owner: "{{ item.owner | default(control_api_user) }}"
+    group: "{{ item.group | default(control_api_group) }}"
+    mode: "{{ item.mode | default('0755') }}"
+  loop:
+    - { path: "{{ control_api_root_dir }}" }
+    - { path: "{{ control_api_root_dir }}/data" }
+    - { path: "{{ control_api_root_dir }}/logs", mode: '0750' }
+    - { path: "{{ control_api_certs_dir }}", owner: "{{ control_api_user }}", group: "{{ control_api_group }}", mode: '0755' }
+    - { path: "/srv/ansible", mode: '0755', owner: 'root', group: 'root' }
+  become: true
+  tags: [control_api, directories]
+
+- name: Ensure git is installed for control plane sync
+  ansible.builtin.package:
+    name: git
+    state: present
+  become: true
+  when: control_plane_repo_synced | default(false) | bool is not true
+  tags: [control_api, source]
+
+- name: Ensure control plane parent directory exists
+  ansible.builtin.file:
+    path: "{{ control_plane_src_dir | dirname }}"
+    state: directory
+    owner: "{{ control_plane_sync_owner }}"
+    group: "{{ control_plane_sync_owner }}"
+    mode: '0755'
+  become: true
+  tags: [control_api, source]
+
+- name: Check if control plane repository exists
+  ansible.builtin.stat:
+    path: "{{ control_plane_src_dir }}/.git"
+  register: control_plane_repo_state
+  become: false
+  tags: [control_api, source]
+
+- name: Check control plane directory state
+  ansible.builtin.stat:
+    path: "{{ control_plane_src_dir }}"
+  register: control_plane_dir_state
+  become: true
+  tags: [control_api, source]
+
+- name: Ensure control plane repository directory ownership
+  ansible.builtin.file:
+    path: "{{ control_plane_src_dir }}"
+    state: directory
+    owner: "{{ control_plane_sync_owner }}"
+    group: "{{ control_plane_sync_owner }}"
+    mode: '0755'
+    recurse: true
+  when: control_plane_dir_state.stat.exists
+  become: true
+  tags: [control_api, source]
+
+- name: Ensure control plane repository marked safe for git
+  ansible.builtin.command:
+    cmd: git config --global --add safe.directory {{ control_plane_src_dir }}
+  become: false
+  when:
+    - control_plane_repo_synced | default(false) | bool is not true
+    - control_plane_dir_state.stat.exists
+  tags: [control_api, source]
+
+- name: Remove stale control plane directory when repository missing
+  ansible.builtin.command:
+    cmd: rm -rf {{ control_plane_src_dir }}
+  become: true
+  when:
+    - control_plane_repo_synced | default(false) | bool is not true
+    - not control_plane_repo_state.stat.exists
+    - control_plane_dir_state.stat.exists
+  tags: [control_api, source]
+
+- name: Clone control plane repository if missing
+  ansible.builtin.command:
+    cmd: git clone --branch {{ control_plane_repo_version }} {{ control_plane_repo_url }} {{ control_plane_src_dir }}
+    creates: "{{ control_plane_src_dir }}/.git"
+  become: false
+  environment:
+    GIT_SSH_COMMAND: "ssh -F /dev/null -o ForwardAgent=yes -o IdentitiesOnly=no -o StrictHostKeyChecking=accept-new"
+  when:
+    - control_plane_repo_synced | default(false) | bool is not true
+    - not control_plane_repo_state.stat.exists
+  tags: [control_api, source]
+
+- name: Sync control plane repository state
+  vars:
+    ansible_become: false
+  when:
+    - control_plane_repo_synced | default(false) | bool is not true
+    - control_plane_repo_state.stat.exists
+  tags: [control_api, source]
+  block:
+    - name: Ensure control plane repository remote uses SSH
+      ansible.builtin.command:
+        cmd: git remote set-url origin {{ control_plane_repo_url }}
+        chdir: "{{ control_plane_src_dir }}"
+      environment:
+        GIT_SSH_COMMAND: "ssh -F /dev/null -o ForwardAgent=yes -o IdentitiesOnly=no -o StrictHostKeyChecking=accept-new"
+
+    - name: Fetch control plane repository updates
+      ansible.builtin.command:
+        cmd: git fetch --all --prune
+        chdir: "{{ control_plane_src_dir }}"
+      environment:
+        GIT_SSH_COMMAND: "ssh -F /dev/null -o ForwardAgent=yes -o IdentitiesOnly=no -o StrictHostKeyChecking=accept-new"
+
+    - name: Ensure control plane repository at desired revision
+      ansible.builtin.command:
+        cmd: git reset --hard origin/{{ control_plane_repo_version }}
+        chdir: "{{ control_plane_src_dir }}"
+      environment:
+        GIT_SSH_COMMAND: "ssh -F /dev/null -o ForwardAgent=yes -o IdentitiesOnly=no -o StrictHostKeyChecking=accept-new"
+
+- name: Mark control plane repository as synced
+  ansible.builtin.set_fact:
+    control_plane_repo_synced: true
+  when: control_plane_repo_synced | default(false) | bool is not true
+  tags: [control_api, source]
+
+- name: Build control API environment map
+  ansible.builtin.set_fact:
+    control_api_env_map:
+      LOG_LEVEL: "{{ control_api_log_level }}"
+      SSG_DOMAIN: "{{ domain_name }}"
+      SSG_CONTROL_API_DOMAIN: "{{ control_api_domain }}"
+      SSG_CONTROL_BOT_DOMAIN: "{{ control_bot_domain }}"
+      SSG_HTTP_ADDR: "0.0.0.0:{{ control_api_http_port }}"
+      SSG_MCP_ADDR: "0.0.0.0:{{ control_api_mcp_port }}"
+      SSG_HTTP_API_KEY: "{{ vault_control_api_secret | default('change-me') }}"
+      CONTROL_API_SECRET: "{{ vault_control_api_secret | default('change-me') }}"
+      API_PORT: "{{ control_api_http_port }}"
+      MCP_PORT: "{{ control_api_mcp_port }}"
+      SSG_CONTROL_API_BASE_URL: "https://{{ control_api_domain }}"
+      SSG_MCP_BASE_URL: "https://{{ control_api_domain }}/mcp"
+      SSG_HTTP_ALLOW_ORIGINS: "{{ control_api_allowed_origins | join(',') }}"
+      DOCKER_BINARY: "{{ control_api_docker_binary | default('docker') }}"
+      DOCKER_SERVICES: "{{ control_api_docker_services | dictsort | map('join', ':') | join(',') }}"
+      DOCKER_SERVICE_LABELS: "{{ control_api_docker_service_labels | default({}) | dictsort | map('join', '=') | join(',') }}"
+      DOCKER_SOCKET_PATH: "/var/run/docker.sock"
+      ANSIBLE_PLAYBOOK_PATH: "{{ control_api_ansible_playbook_binary }}"
+      ANSIBLE_INVENTORY: "{{ control_api_ansible_inventory }}"
+      ANSIBLE_PLAYBOOKS: "{{ control_api_ansible_playbooks | dictsort | map('join', '=') | join(',') }}"
+      LOG_TAIL_DEFAULT: "{{ control_api_log_tail_default }}"
+      RATE_LIMIT_REQUESTS: "{{ control_api_rate_limit_requests }}"
+      RATE_LIMIT_WINDOW: "{{ control_api_rate_limit_window }}"
+      DISCORD_GUILD_IDS: "{{ discord_default_guild_ids | join(',') }}"
+      DISCORD_ADMIN_ROLE_IDS: "{{ discord_admin_role_ids | join(',') }}"
+      DISCORD_LLM_ROLE_IDS: "{{ discord_llm_role_ids | join(',') }}"
+      DISCORD_SERVICE_ROLE_IDS: >-
+        {%- set pairs = [] -%}
+        {%- for item in (discord_service_admin_roles | default({}) | dict2items) -%}
+          {%- set filtered = item.value | select('truthy') | list -%}
+          {%- if filtered | length > 0 -%}
+            {%- set _ = pairs.append(item.key ~ '=' ~ (filtered | join('|'))) -%}
+          {%- endif -%}
+        {%- endfor -%}
+        {{ pairs | join(',') }}
+      LLM_ADMIN_ROLE_ID: "{{ discord_llm_role_ids | first | default('') }}"
+      DISCORD_BOT_TOKEN: "{{ vault_discord_bot_token | default('') }}"
+      DISCORD_APP_ID: "{{ discord_application_id | default(vault_discord_app_id | default('')) }}"
+      DISCORD_PUBLIC_KEY: "{{ vault_discord_public_key | default('') }}"
+      DISCORD_INTERACTION_SECRET: "{{ vault_discord_interaction_secret | default('') }}"
+      ANTHROPIC_API_KEY: "{{ vault_anthropic_api_key | default('') }}"
+      ANTHROPIC_MODEL: "{{ control_api_anthropic_model | default('claude-opus-4-6') }}"
+      ANTHROPIC_MAX_TOKENS: "{{ control_api_anthropic_max_tokens | default(16384) }}"
+      LLM_SYSTEM_PROMPT: "{{ llm_system_prompt }}"
+      LLM_MAX_TOOL_ITERATIONS: "{{ llm_max_tool_iterations }}"
+      CONVO_HISTORY_BACKEND: "{{ llm_store_backend | default('memory') }}"
+      CONVO_HISTORY_TTL: "{{ llm_store_ttl | default('30m') }}"
+      CONVO_HISTORY_MAX_MESSAGES: "{{ llm_store_max_messages | default(20) }}"
+      REDIS_ENABLED: "{{ (redis_enabled | default(false)) | ternary('true', 'false') }}"
+      REDIS_ADDR: "{{ redis_addr | default('127.0.0.1:6379') }}"
+      REDIS_USERNAME: "{{ redis_username | default('') }}"
+      REDIS_PASSWORD: "{{ redis_password | default('') }}"
+      REDIS_DB: "{{ redis_db | default(0) }}"
+      REDIS_TLS_ENABLED: "{{ (redis_tls_enabled | default(false)) | ternary('true', 'false') }}"
+      REDIS_TLS_SKIP_VERIFY: "{{ (redis_tls_skip_verify | default(false)) | ternary('true', 'false') }}"
+      CONVO_HISTORY_REDIS_ADDR: "{{ redis_addr | default('127.0.0.1:6379') }}"
+      CONVO_HISTORY_REDIS_USERNAME: "{{ redis_username | default('') }}"
+      CONVO_HISTORY_REDIS_PASSWORD: "{{ redis_password | default('') }}"
+      CONVO_HISTORY_REDIS_DB: "{{ redis_db | default(0) }}"
+      CONVO_HISTORY_REDIS_TLS_ENABLED: "{{ (redis_tls_enabled | default(false)) | ternary('true', 'false') }}"
+      CONVO_HISTORY_REDIS_TLS_SKIP_VERIFY: "{{ (redis_tls_skip_verify | default(false)) | ternary('true', 'false') }}"
+      # EDIN (Elite Dangerous Intel Network) Database
+      EDIN_DB_ENABLED: "{{ (edin_enabled | default(false)) | ternary('true', 'false') }}"
+      EDIN_DB_HOST: "{{ edin_db_host | default('edin-timescaledb') }}"
+      EDIN_DB_PORT: "{{ edin_db_internal_port | default(5432) }}"
+      EDIN_DB_USER: "{{ edin_db_writer_user | default('edin_writer') }}"
+      EDIN_DB_PASSWORD: "{{ edin_db_writer_password | default('') }}"
+      EDIN_DB_NAME: "{{ edin_db_name | default('edin') }}"
+      EDIN_DB_SCHEMA: "{{ edin_db_schema | default('powerplay') }}"
+      # EDDN Raw Feed Database (historical powerplay data via WireGuard VPN)
+      EDDN_RAW_DB_ENABLED: "{{ (edin_enabled | default(false)) | ternary('true', 'false') }}"
+      EDDN_RAW_DB_HOST: "{{ edin_db_host | default('10.8.0.3') }}"
+      EDDN_RAW_DB_PORT: "{{ eddn_raw_db_port | default(5433) }}"
+      EDDN_RAW_DB_USER: "{{ eddn_raw_db_user | default('eddn_admin') }}"
+      EDDN_RAW_DB_PASSWORD: "{{ eddn_raw_db_password | default('eddn-local-dev') }}"
+      EDDN_RAW_DB_NAME: "{{ eddn_raw_db_name | default('eddn_raw') }}"
+      EDDN_RAW_DB_SCHEMA: "{{ eddn_raw_db_schema | default('feed') }}"
+      # Memgraph (Real-time galaxy state via WireGuard VPN)
+      MEMGRAPH_ENABLED: "{{ (memgraph_enabled | default(false)) | ternary('true', 'false') }}"
+      MEMGRAPH_HOST: "{{ memgraph_host | default('10.8.0.3') }}"
+      MEMGRAPH_PORT: "{{ memgraph_port | default(7687) }}"
+      MEMGRAPH_USERNAME: "{{ memgraph_username | default('') }}"
+      MEMGRAPH_PASSWORD: "{{ memgraph_password | default('') }}"
+      # Kaine JWT Authentication (validates tokens against Authentik JWKS)
+      KAINE_AUTH_ENABLED: "{{ (kaine_auth_enabled | default(true)) | ternary('true', 'false') }}"
+      KAINE_AUTH_JWKS_URL: "{{ kaine_auth_jwks_url | default('https://auth.ssg.sh/application/o/kaine-portal/jwks/') }}"
+      KAINE_AUTH_ISSUER: "{{ kaine_auth_issuer | default('https://auth.ssg.sh/application/o/kaine-portal/') }}"
+      KAINE_AUTH_AUDIENCE: "{{ kaine_auth_audience | default('kaine-portal') }}"
+      KAINE_AUTH_JWKS_REFRESH: "{{ kaine_auth_jwks_refresh | default('1h') }}"
+      # Authentik API (for admin user management)
+      AUTHENTIK_API_ENABLED: "{{ (kaine_authentik_api_enabled | default(false)) | ternary('true', 'false') }}"
+      AUTHENTIK_API_URL: "{{ kaine_authentik_api_url | default('https://auth.ssg.sh') }}"
+      AUTHENTIK_API_TOKEN: "{{ vault_authentik_ansible_api_token | default('') }}"
+  tags: [control_api, config]
+
+- name: Template control API environment file
+  ansible.builtin.template:
+    src: env.j2
+    dest: "{{ control_api_env_file }}"
+    owner: "{{ control_api_user }}"
+    group: "{{ control_api_group }}"
+    mode: '0640'
+  vars:
+    env_map: "{{ control_api_env_map }}"
+  become: true
+  notify: Restart control API
+  tags: [control_api, config]
+
+- name: Template Redis configuration file
+  ansible.builtin.template:
+    src: redis.conf.j2
+    dest: "{{ control_api_root_dir }}/redis.conf"
+    owner: root
+    group: root
+    mode: "0644"  # Redis Alpine container runs as uid 999, needs read access
+  become: true
+  when: redis_enabled | default(false)
+  notify: Rebuild control API container
+  tags: [control_api, config]
+
+- name: Template control API compose file
+  ansible.builtin.template:
+    src: docker-compose.yml.j2
+    dest: "{{ control_api_compose_path }}"
+    owner: root
+    group: root
+    mode: '0644'
+  become: true
+  notify: Restart control API
+  tags: [control_api, compose]
+
+- name: Pull control API images
+  ansible.builtin.command:
+    cmd: docker compose -f {{ control_api_compose_path }} pull
+  args:
+    chdir: "{{ control_api_root_dir }}"
+  become: true
+  register: control_api_pull
+  changed_when: "'Downloaded newer image' in control_api_pull.stdout"
+  failed_when: false
+  tags: [control_api, compose]
+
+- name: Build control API image locally when pull fails
+  ansible.builtin.command:
+    cmd: docker compose -f {{ control_api_compose_path }} build control-api
+  args:
+    chdir: "{{ control_api_root_dir }}"
+  become: true
+  when:
+    - control_api_pull.rc is defined
+    - control_api_pull.rc != 0
+  tags: [control_api, compose]
+
+- name: Rebuild control API container
+  ansible.builtin.command:
+    cmd: docker compose -f {{ control_api_compose_path }} up -d --build --force-recreate --remove-orphans
+  args:
+    chdir: "{{ control_api_root_dir }}"
+  become: true
+  register: control_api_rebuild
+  changed_when: control_api_rebuild.rc == 0
+  tags: [control_api, compose]
+
+- name: Deploy control API systemd unit
+  ansible.builtin.template:
+    src: control-api.service.j2
+    dest: /etc/systemd/system/control-api.service
+    owner: root
+    group: root
+    mode: '0644'
+  become: true
+  notify: Restart control API
+  tags: [control_api, systemd]
+
+- name: Reload systemd daemon for control API
+  ansible.builtin.systemd:
+    daemon_reload: true
+  become: true
+  tags: [control_api, systemd]
+
+- name: Enable and start control API service
+  ansible.builtin.systemd:
+    name: control-api.service
+    state: started
+    enabled: true
+  become: true
+  tags: [control_api, systemd]
+

@@ -1,0 +1,5 @@
+{
+  "roles": {{ discord_role_definitions | tojson(indent=2) }},
+  "assignments": {{ discord_role_assignments | default({}) | tojson(indent=2) }}
+}
+

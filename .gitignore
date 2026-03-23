@@ -1,0 +1,6 @@
+bin/
+.venv/
+.vault_pass.txt
+*.retry
+.DS_Store
+ansible/ansible.log

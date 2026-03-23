@@ -1,0 +1,67 @@
+# EDIN Backend Configuration
+# ===========================
+
+# Domain
+edin_domain: edin.space
+edin_api_domain: edin.space
+
+# Control API
+control_api_port: 8080
+control_api_mcp_port: 8081
+control_api_compose_path: /srv/control-api/docker-compose.yml
+control_api_env_path: /srv/control-api/control-api.env
+control_api_data_dir: /srv/control-api/data
+control_api_log_dir: /srv/control-api/logs
+
+# Control API connects to databases on Docker network (not VPN)
+memgraph_host: memgraph
+memgraph_port: 7687
+eddn_db_host: eddn-timescaledb
+eddn_db_port: 5432
+eddn_db_name: eddn_raw
+edin_db_host: edin-timescaledb
+edin_db_port: 5432
+edin_db_name: edin
+
+# Control API Docker services (for bot management via SSH to ssg.sh)
+control_api_docker_services:
+  - name: satisfactory
+    compose_path: /srv/satisfactory/compose.yml
+    container: satisfactory-server
+  - name: dayz
+    compose_path: /srv/dayz/compose.yml
+    container: dayz-server
+  - name: factorio
+    compose_path: /srv/factorio/compose.yml
+    container: factorio-server
+
+# Discord Bot
+discord_bot_compose_path: /srv/discord-bot/docker-compose.yml
+discord_bot_env_path: /srv/discord-bot/discord-bot.env
+
+# Galaxy Exporter
+galaxy_exporter_output_dir: /srv/galaxy
+galaxy_exporter_binary_path: /usr/local/bin/galaxy-exporter
+galaxy_exporter_timer_interval: 15min
+galaxy_exporter_history_cycles: 12
+galaxy_exporter_batch_size: 50000
+
+# Redis (session store)
+redis_image: redis:7-alpine
+redis_compose_path: /srv/redis/docker-compose.yml
+redis_data_dir: /srv/redis/data
+redis_port: 6379
+
+# Docker networks
+edin_app_network: edin-app-net
+edin_data_network: edin-data-net
+
+# Kaine Portal
+kaine_enabled: true
+joinkaine_domain: joinkaine.com
+joinkaine_enabled: true
+
+# Control plane repo (for building on server)
+control_plane_repo_url: "git@github.com:edin-space/edin-backend.git"
+control_plane_branch: main
+control_plane_clone_path: /srv/edin-backend/src

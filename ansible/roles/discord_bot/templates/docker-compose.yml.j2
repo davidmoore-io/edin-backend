@@ -1,0 +1,25 @@
+version: "3.9"
+
+services:
+  discord-bot:
+    image: sleeper-discord-bot:local
+    build:
+      context: "{{ control_plane_src_dir }}"
+      dockerfile: docker/discord-bot.Dockerfile
+    container_name: discord-bot
+    restart: unless-stopped
+    user: "{{ discord_bot_uid }}:{{ discord_bot_gid }}"
+    env_file:
+      - "{{ discord_bot_env_file }}"
+    volumes:
+      - {{ discord_bot_log_dir }}:/var/log/app
+      - {{ discord_bot_certs_dir }}:/etc/ssl/app:ro
+    depends_on: []
+    networks:
+      - control-net
+
+networks:
+  control-net:
+    external: true
+    name: control-api_control-net
+

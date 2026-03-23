@@ -1,0 +1,47 @@
+---
+# Redis session store for EDIN control API
+
+- name: Ensure Redis directories exist
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: '0755'
+  loop:
+    - "{{ redis_compose_path | dirname }}"
+    - "{{ redis_data_dir }}"
+  tags: [redis]
+
+- name: Create edin-app Docker network
+  community.docker.docker_network:
+    name: "{{ edin_app_network }}"
+    state: present
+  tags: [redis, network]
+
+- name: Template Redis Docker Compose
+  ansible.builtin.template:
+    src: docker-compose.yml.j2
+    dest: "{{ redis_compose_path }}"
+    owner: root
+    group: root
+    mode: '0644'
+  notify: Restart redis
+  tags: [redis, compose]
+
+- name: Start Redis
+  ansible.builtin.command:
+    cmd: docker compose -f {{ redis_compose_path }} up -d
+  register: redis_up
+  changed_when: "'Started' in redis_up.stderr or 'Created' in redis_up.stderr"
+  tags: [redis]
+
+- name: Wait for Redis to be healthy
+  ansible.builtin.command:
+    cmd: docker compose -f {{ redis_compose_path }} ps --format json
+  register: redis_ps
+  retries: 5
+  delay: 3
+  until: redis_ps.rc == 0
+  changed_when: false
+  tags: [redis, verify]

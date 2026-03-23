@@ -1,0 +1,101 @@
+---
+- name: Determine repository roots for discord automation
+  ansible.builtin.set_fact:
+    discord_app_repo_root: "{{ discord_app_repo_root | default(playbook_dir | realpath | dirname) }}"
+    discord_app_project_root: "{{ discord_app_project_root | default(playbook_dir | realpath | dirname) }}"
+    discord_app_work_dir: "{{ discord_app_work_dir | default((playbook_dir | realpath) + '/tmp/discord_app') }}"
+  run_once: true
+
+- name: Ensure discord_app work directory exists
+  ansible.builtin.file:
+    path: "{{ discord_app_work_dir }}"
+    state: directory
+    mode: "0755"
+  delegate_to: localhost
+  become: false
+  run_once: true
+
+- name: Render slash command payload
+  ansible.builtin.template:
+    src: commands.json.j2
+    dest: "{{ discord_app_work_dir }}/commands.json"
+    mode: "0640"
+  when: discord_command_definitions is defined
+  register: discord_commands_render
+  delegate_to: localhost
+  become: false
+  run_once: true
+
+- name: Render role payload
+  ansible.builtin.template:
+    src: roles.json.j2
+    dest: "{{ discord_app_work_dir }}/roles.json"
+    mode: "0640"
+  when: discord_role_definitions is defined
+  register: discord_roles_render
+  delegate_to: localhost
+  become: false
+  run_once: true
+
+- name: Sync Discord guild banner
+  ansible.builtin.command:
+    cmd: >
+      uv run go run ./cmd/discord-admin
+      guild-banner
+      --guild {{ discord_guild_id }}
+      --image {{ discord_banner_image }}
+    chdir: "{{ discord_app_project_root }}"
+  environment:
+    DISCORD_APPLICATION_ID: "{{ discord_application_id }}"
+    DISCORD_BOT_TOKEN: "{{ discord_bot_token }}"
+  when:
+    - discord_banner_image is defined
+    - discord_banner_image | length > 0
+  delegate_to: localhost
+  become: false
+  run_once: true
+
+- name: Sync Discord guild roles and assignments
+  ansible.builtin.command:
+    cmd: >
+      uv run go run ./cmd/discord-admin
+      roles sync
+      --guild {{ discord_guild_id }}
+      --file {{ discord_app_work_dir }}/roles.json
+    chdir: "{{ discord_app_project_root }}"
+  environment:
+    DISCORD_APPLICATION_ID: "{{ discord_application_id }}"
+    DISCORD_BOT_TOKEN: "{{ discord_bot_token }}"
+  when:
+    - discord_role_definitions is defined
+    - discord_role_definitions | length > 0
+  delegate_to: localhost
+  become: false
+  run_once: true
+
+- name: Register slash commands
+  ansible.builtin.command:
+    cmd: >
+      uv run go run ./cmd/discord-admin
+      commands
+      --file {{ discord_app_work_dir }}/commands.json
+    chdir: "{{ discord_app_project_root }}"
+  environment:
+    DISCORD_APPLICATION_ID: "{{ discord_application_id }}"
+    DISCORD_BOT_TOKEN: "{{ discord_bot_token }}"
+  when:
+    - discord_command_definitions is defined
+  delegate_to: localhost
+  become: false
+  run_once: true
+
+- name: Note pending channel permission synchronization
+  ansible.builtin.debug:
+    msg: "discord_channel_overwrites is defined but channel automation is not yet implemented."
+  when:
+    - discord_channel_overwrites is defined
+    - discord_channel_overwrites | length > 0
+  delegate_to: localhost
+  become: false
+  run_once: true
+

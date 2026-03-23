@@ -1,0 +1,17 @@
+[Unit]
+Description=SSG Discord Bot
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+WorkingDirectory={{ discord_bot_root_dir }}
+ExecStart=/usr/bin/docker compose -f {{ discord_bot_compose_path }} up -d --build --remove-orphans
+ExecStop=/usr/bin/docker compose -f {{ discord_bot_compose_path }} down
+ExecReload=/usr/bin/docker compose -f {{ discord_bot_compose_path }} restart
+
+[Install]
+WantedBy=multi-user.target
+
+

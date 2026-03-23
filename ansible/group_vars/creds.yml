@@ -1,0 +1,23 @@
+# Ansible Vault encrypted — placeholder until vault is set up
+# Encrypt with: ansible-vault encrypt group_vars/creds.yml
+
+# Anthropic API
+vault_anthropic_api_key: "CHANGEME"
+
+# Discord
+vault_discord_bot_token: "CHANGEME"
+vault_discord_client_id: "CHANGEME"
+vault_discord_client_secret: "CHANGEME"
+
+# Database credentials (must match edin-data vault)
+vault_eddn_db_password: "CHANGEME"
+vault_edin_db_password: "CHANGEME"
+vault_memgraph_password: "CHANGEME"
+
+# Redis
+vault_redis_password: ""
+
+# Kaine Portal OAuth
+vault_kaine_oauth_client_id: "CHANGEME"
+vault_kaine_oauth_client_secret: "CHANGEME"
+vault_kaine_jwt_secret: "CHANGEME"

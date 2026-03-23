@@ -1,0 +1,6 @@
+---
+redis_image: redis:7-alpine
+redis_compose_path: /srv/redis/docker-compose.yml
+redis_data_dir: /srv/redis/data
+redis_port: 6379
+edin_app_network: edin-app-net

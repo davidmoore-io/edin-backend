@@ -1,0 +1,28 @@
+services:
+  redis:
+    image: {{ redis_image }}
+    container_name: edin-redis
+    restart: unless-stopped
+    command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
+    ports:
+      - "127.0.0.1:{{ redis_port }}:6379"
+    volumes:
+      - {{ redis_data_dir }}:/data
+    networks:
+      - {{ edin_app_network }}
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+        reservations:
+          memory: 128M
+
+networks:
+  {{ edin_app_network }}:
+    external: true

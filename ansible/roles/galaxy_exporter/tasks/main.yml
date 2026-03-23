@@ -1,0 +1,93 @@
+---
+# Galaxy Exporter Role
+# Cross-compiles the exporter locally (macOS), uploads to server.
+# Runs on a systemd timer every 15 minutes to regenerate binary galaxy data.
+
+- name: Ensure galaxy exporter directories exist
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: '0755'
+  loop:
+    - "{{ galaxy_exporter_bin_dir }}"
+    - "{{ galaxy_exporter_output_dir }}"
+  become: true
+  tags: [galaxy_exporter, directories]
+
+- name: Cross-compile galaxy exporter binary for linux/amd64
+  ansible.builtin.command:
+    cmd: go build -o /tmp/galaxy-exporter-linux-amd64 ./cmd/galaxy-exporter
+    chdir: "{{ playbook_dir }}/../"
+  environment:
+    GOOS: linux
+    GOARCH: amd64
+    CGO_ENABLED: "0"
+    GOPROXY: "https://proxy.golang.org,direct"
+  delegate_to: localhost
+  become: false
+  register: galaxy_exporter_build
+  changed_when: galaxy_exporter_build.rc == 0
+  tags: [galaxy_exporter, build]
+
+- name: Upload galaxy exporter binary to server
+  ansible.builtin.copy:
+    src: /tmp/galaxy-exporter-linux-amd64
+    dest: "{{ galaxy_exporter_bin_dir }}/galaxy-exporter"
+    owner: root
+    group: root
+    mode: '0755'
+  become: true
+  notify: Restart galaxy exporter timer
+  tags: [galaxy_exporter, build]
+
+- name: Deploy galaxy exporter systemd service
+  ansible.builtin.template:
+    src: galaxy-exporter.service.j2
+    dest: /etc/systemd/system/galaxy-exporter.service
+    owner: root
+    group: root
+    mode: '0644'
+  become: true
+  notify: Reload systemd
+  tags: [galaxy_exporter, systemd]
+
+- name: Deploy galaxy exporter systemd timer
+  ansible.builtin.template:
+    src: galaxy-exporter.timer.j2
+    dest: /etc/systemd/system/galaxy-exporter.timer
+    owner: root
+    group: root
+    mode: '0644'
+  become: true
+  notify: Reload systemd
+  tags: [galaxy_exporter, systemd]
+
+- name: Reload systemd daemon
+  ansible.builtin.systemd:
+    daemon_reload: true
+  become: true
+  tags: [galaxy_exporter, systemd]
+
+- name: Enable and start galaxy exporter timer
+  ansible.builtin.systemd:
+    name: galaxy-exporter.timer
+    state: started
+    enabled: true
+  become: true
+  tags: [galaxy_exporter, systemd]
+
+- name: Run initial galaxy export
+  ansible.builtin.systemd:
+    name: galaxy-exporter.service
+    state: started
+  become: true
+  tags: [galaxy_exporter, run]
+
+- name: Wait for initial export to complete
+  ansible.builtin.wait_for:
+    path: "{{ galaxy_exporter_output_dir }}/positions.bin.gz"
+    timeout: 120
+  become: true
+  tags: [galaxy_exporter, run]
