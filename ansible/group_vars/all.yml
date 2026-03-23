@@ -62,6 +62,6 @@ joinkaine_domain: joinkaine.com
 joinkaine_enabled: true
 
 # Control plane repo (for building on server)
-control_plane_repo_url: "git@github.com:edin-space/edin-backend.git"
+control_plane_repo_url: "git@github.com:davidmoore-io/edin-backend.git"
 control_plane_branch: main
 control_plane_clone_path: /srv/edin-backend/src
