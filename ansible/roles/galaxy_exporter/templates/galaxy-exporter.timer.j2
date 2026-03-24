@@ -1,16 +1,11 @@
+# {{ ansible_managed }}
 [Unit]
-Description=Galaxy Static Data Exporter Timer
-Documentation=man:systemd.timer(5)
+Description=Galaxy Exporter Timer — run every {{ galaxy_exporter_timer_interval }}
 
 [Timer]
-# Run every 15 minutes
-OnCalendar=*:0/15
-# Randomize within 1 minute to avoid exact-minute load spikes
-RandomizedDelaySec=60
-# Run immediately on boot if last run was missed
-Persistent=true
-# Add some time for boot to settle
 OnBootSec=2min
+OnUnitActiveSec={{ galaxy_exporter_timer_interval }}
+AccuracySec=1min
 
 [Install]
 WantedBy=timers.target

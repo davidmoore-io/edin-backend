@@ -1,67 +1,54 @@
+---
 # EDIN Backend Configuration
 # ===========================
 
-# Domain
-edin_domain: edin.space
-edin_api_domain: edin.space
+# Source repo (cloned on server for Docker builds)
+control_api_repo_url: "git@github.com:davidmoore-io/edin-backend.git"
+control_api_repo_branch: main
+control_api_src_dir: /srv/edin-backend/src
 
 # Control API
-control_api_port: 8080
-control_api_mcp_port: 8081
-control_api_compose_path: /srv/control-api/docker-compose.yml
-control_api_env_path: /srv/control-api/control-api.env
-control_api_data_dir: /srv/control-api/data
-control_api_log_dir: /srv/control-api/logs
-
-# Control API connects to databases on Docker network (not VPN)
-memgraph_host: memgraph
-memgraph_port: 7687
-eddn_db_host: eddn-timescaledb
-eddn_db_port: 5432
-eddn_db_name: eddn_raw
-edin_db_host: edin-timescaledb
-edin_db_port: 5432
-edin_db_name: edin
-
-# Control API Docker services (for bot management via SSH to ssg.sh)
-control_api_docker_services:
-  - name: satisfactory
-    compose_path: /srv/satisfactory/compose.yml
-    container: satisfactory-server
-  - name: dayz
-    compose_path: /srv/dayz/compose.yml
-    container: dayz-server
-  - name: factorio
-    compose_path: /srv/factorio/compose.yml
-    container: factorio-server
+control_api_dir: /srv/control-api
+control_api_env_file: /srv/control-api/control-api.env
+control_api_compose_file: /srv/control-api/docker-compose.yml
 
 # Discord Bot
-discord_bot_compose_path: /srv/discord-bot/docker-compose.yml
-discord_bot_env_path: /srv/discord-bot/discord-bot.env
+discord_bot_dir: /srv/discord-bot
+discord_bot_env_file: /srv/discord-bot/discord-bot.env
+discord_bot_compose_file: /srv/discord-bot/docker-compose.yml
+discord_app_id: "1438245266817028169"
 
 # Galaxy Exporter
 galaxy_exporter_output_dir: /srv/galaxy
 galaxy_exporter_binary_path: /usr/local/bin/galaxy-exporter
 galaxy_exporter_timer_interval: 15min
-galaxy_exporter_history_cycles: 12
 galaxy_exporter_batch_size: 50000
+galaxy_exporter_history_cycles: 12
 
-# Redis (session store)
-redis_image: redis:7-alpine
-redis_compose_path: /srv/redis/docker-compose.yml
-redis_data_dir: /srv/redis/data
-redis_port: 6379
+# Database connections (Docker network hostnames — no VPN needed)
+memgraph_host: memgraph
+memgraph_port: 7687
+edin_db_host: edin-timescaledb
+edin_db_port: 5432
+eddn_db_host: eddn-timescaledb
+eddn_db_port: 5432
+
+# VPN address (galaxy exporter runs on host, needs VPN-bound ports)
+vpn_interface_address: "10.8.0.6"
 
 # Docker networks
 edin_app_network: edin-app-net
 edin_data_network: edin-data-net
 
-# Kaine Portal
-kaine_enabled: true
-joinkaine_domain: joinkaine.com
-joinkaine_enabled: true
+# Redis
+redis_image: redis:7-alpine
+redis_port: 6379
 
-# Control plane repo (for building on server)
-control_plane_repo_url: "git@github.com:davidmoore-io/edin-backend.git"
-control_plane_branch: main
-control_plane_clone_path: /srv/edin-backend/src
+# Kaine auth (Authentik on ssg.sh during parallel running)
+kaine_auth_enabled: "true"
+kaine_auth_jwks_url: "https://auth.ssg.sh/application/o/kaine-portal/jwks/"
+kaine_auth_issuer: "https://auth.ssg.sh/application/o/kaine-portal/"
+kaine_auth_audience: "kaine-portal"
+
+# Domain
+edin_domain: edin.space

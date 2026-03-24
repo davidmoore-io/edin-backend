@@ -1,93 +1,63 @@
 ---
-# Galaxy Exporter Role
-# Cross-compiles the exporter locally (macOS), uploads to server.
-# Runs on a systemd timer every 15 minutes to regenerate binary galaxy data.
+# Galaxy Exporter — generates binary galaxy map data on a timer
 
-- name: Ensure galaxy exporter directories exist
+- name: Ensure galaxy output directory exists
   ansible.builtin.file:
-    path: "{{ item }}"
+    path: "{{ galaxy_exporter_output_dir }}"
     state: directory
     owner: root
     group: root
     mode: '0755'
-  loop:
-    - "{{ galaxy_exporter_bin_dir }}"
-    - "{{ galaxy_exporter_output_dir }}"
-  become: true
   tags: [galaxy_exporter, directories]
 
-- name: Cross-compile galaxy exporter binary for linux/amd64
+- name: Cross-compile galaxy exporter binary (macOS → linux/amd64)
   ansible.builtin.command:
-    cmd: go build -o /tmp/galaxy-exporter-linux-amd64 ./cmd/galaxy-exporter
-    chdir: "{{ playbook_dir }}/../"
+    cmd: "go build -o /tmp/galaxy-exporter-linux ./cmd/galaxy-exporter"
+    chdir: "{{ playbook_dir }}/../../"
   environment:
+    CGO_ENABLED: "0"
     GOOS: linux
     GOARCH: amd64
-    CGO_ENABLED: "0"
-    GOPROXY: "https://proxy.golang.org,direct"
   delegate_to: localhost
   become: false
-  register: galaxy_exporter_build
-  changed_when: galaxy_exporter_build.rc == 0
+  register: build_result
+  changed_when: build_result.rc == 0
   tags: [galaxy_exporter, build]
 
-- name: Upload galaxy exporter binary to server
+- name: Copy galaxy exporter binary to server
   ansible.builtin.copy:
-    src: /tmp/galaxy-exporter-linux-amd64
-    dest: "{{ galaxy_exporter_bin_dir }}/galaxy-exporter"
+    src: /tmp/galaxy-exporter-linux
+    dest: "{{ galaxy_exporter_binary_path }}"
     owner: root
     group: root
     mode: '0755'
-  become: true
   notify: Restart galaxy exporter timer
-  tags: [galaxy_exporter, build]
+  tags: [galaxy_exporter, deploy]
 
-- name: Deploy galaxy exporter systemd service
+- name: Template galaxy exporter systemd service
   ansible.builtin.template:
     src: galaxy-exporter.service.j2
     dest: /etc/systemd/system/galaxy-exporter.service
     owner: root
     group: root
     mode: '0644'
-  become: true
-  notify: Reload systemd
-  tags: [galaxy_exporter, systemd]
+  notify: Restart galaxy exporter timer
+  tags: [galaxy_exporter, service]
 
-- name: Deploy galaxy exporter systemd timer
+- name: Template galaxy exporter systemd timer
   ansible.builtin.template:
     src: galaxy-exporter.timer.j2
     dest: /etc/systemd/system/galaxy-exporter.timer
     owner: root
     group: root
     mode: '0644'
-  become: true
-  notify: Reload systemd
-  tags: [galaxy_exporter, systemd]
-
-- name: Reload systemd daemon
-  ansible.builtin.systemd:
-    daemon_reload: true
-  become: true
-  tags: [galaxy_exporter, systemd]
+  notify: Restart galaxy exporter timer
+  tags: [galaxy_exporter, service]
 
 - name: Enable and start galaxy exporter timer
   ansible.builtin.systemd:
     name: galaxy-exporter.timer
     state: started
     enabled: true
-  become: true
-  tags: [galaxy_exporter, systemd]
-
-- name: Run initial galaxy export
-  ansible.builtin.systemd:
-    name: galaxy-exporter.service
-    state: started
-  become: true
-  tags: [galaxy_exporter, run]
-
-- name: Wait for initial export to complete
-  ansible.builtin.wait_for:
-    path: "{{ galaxy_exporter_output_dir }}/positions.bin.gz"
-    timeout: 120
-  become: true
-  tags: [galaxy_exporter, run]
+    daemon_reload: true
+  tags: [galaxy_exporter, service]

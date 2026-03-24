@@ -1,175 +1,31 @@
+# {{ ansible_managed }}
 services:
-  # =============================================================================
-  # DOCKER SOCKET PROXY - Security Hardening
-  # =============================================================================
-  # Limits Docker API access to only the operations control-api needs.
-  # This prevents the control-api from doing things like:
-  # - Creating privileged containers
-  # - Accessing secrets
-  # - Modifying networks (unless needed)
-  # Reference: https://github.com/Tecnativa/docker-socket-proxy
-  docker-socket-proxy:
-    image: tecnativa/docker-socket-proxy:latest
-    container_name: docker-socket-proxy
-    restart: unless-stopped
-    environment:
-      # SECURITY: Only enable what control-api needs
-      CONTAINERS: 1      # List, inspect, start, stop, restart containers
-      SERVICES: 0        # Swarm services - not needed
-      TASKS: 0           # Swarm tasks - not needed
-      NETWORKS: 0        # Network operations - not needed
-      VOLUMES: 0         # Volume operations - not needed
-      IMAGES: 1          # List, inspect images (for status)
-      INFO: 1            # Docker info (for health checks)
-      VERSION: 1         # Docker version (for health checks)
-      EVENTS: 1          # Watch Docker events
-      PING: 1            # Health check ping
-      # Dangerous operations - DISABLED
-      POST: 1            # Allow POST (needed for start/stop/restart)
-      BUILD: 0           # Build images - not needed at runtime
-      COMMIT: 0          # Commit containers - not needed
-      CONFIGS: 0         # Swarm configs - not needed
-      DISTRIBUTION: 0    # Distribution API - not needed
-      EXEC: 0            # Exec into containers - SECURITY RISK
-      GRPC: 0            # gRPC - not needed
-      NODES: 0           # Swarm nodes - not needed
-      PLUGINS: 0         # Plugins - not needed
-      SECRETS: 0         # Swarm secrets - not needed
-      SESSION: 0         # Session - not needed
-      SWARM: 0           # Swarm operations - not needed
-      SYSTEM: 0          # System operations - not needed
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock:ro
-    networks:
-      - control-net
-    # SECURITY: No ports exposed - internal only
-
-  # =============================================================================
-  # CONTROL API - Main Service
-  # =============================================================================
   control-api:
-    image: sleeper-control-api:local
     build:
-      context: "{{ control_plane_src_dir }}"
+      context: {{ control_api_src_dir }}
       dockerfile: docker/control-api.Dockerfile
     container_name: control-api
     restart: unless-stopped
-    user: "{{ control_api_uid }}:{{ control_api_gid }}"
     env_file:
-      - "{{ control_api_env_file }}"
-    environment:
-      # Override socket path to use proxy
-      DOCKER_HOST: tcp://docker-socket-proxy:2375
-    volumes:
-      # SECURITY: No longer mounting raw docker.sock
-      - /srv/ansible:/srv/ansible:ro
-      - {{ control_api_root_dir }}/logs:/var/log/app
-      - {{ control_api_certs_dir }}:/etc/ssl/app:ro
-      # DayZ RPT logs - for /logs dayz command to show actual game events
-      - /srv/dayz/data/DayZServer/profiles:/srv/dayz/data/DayZServer/profiles:ro
-      # DayZ mission files - for types.xml item lookup (/dayz-ssg-economy item:X)
-      - /srv/dayz/data/DayZServer/mpmissions:/srv/dayz/data/DayZServer/mpmissions:ro
-    ports:
-      # SECURITY: Bind to localhost for internal access
-      - "127.0.0.1:{{ control_api_http_port }}:{{ control_api_http_port }}"
-      - "127.0.0.1:{{ control_api_mcp_port }}:{{ control_api_mcp_port }}"
-      # MONITORING: Expose etrics on WireGuard interface for Prometheus scraping from db.ssg.sh
-      - "{{ wireguard_address | default('10.8.0.1') | regex_replace('/.*', '') }}:{{ control_api_http_port }}:{{ control_api_http_port }}"
+      - {{ control_api_env_file }}
+    networks:
+      - {{ edin_app_network }}
+      - {{ edin_data_network }}
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://127.0.0.1:{{ control_api_http_port }}/health"]
+      test: ["CMD", "curl", "-sf", "http://localhost:8080/health"]
       interval: 30s
       timeout: 5s
       retries: 3
-      start_period: 10s
-    depends_on:
-      docker-socket-proxy:
-        condition: service_started
-{% if redis_enabled | default(false) %}
-      redis:
-        condition: service_healthy
-{% endif %}
-{% if edin_enabled | default(false) %}
-      edin-timescaledb:
-        condition: service_healthy
-{% endif %}
-    networks:
-      - control-net
-
-{% if redis_enabled | default(false) %}
-  # =============================================================================
-  # REDIS - Session persistence for Kaine chat
-  # =============================================================================
-  # SECURITY: No ports exposed to host — internal Docker network only.
-  # Password passed via config file, not command-line args (avoids /proc exposure).
-  redis:
-    image: redis:7-alpine
-    container_name: control-redis
-    restart: unless-stopped
-    command: ["redis-server", "/usr/local/etc/redis/redis.conf"]
-    volumes:
-      - redis-data:/data
-      - {{ control_api_root_dir }}/redis.conf:/usr/local/etc/redis/redis.conf:ro
-    networks:
-      - control-net
-    healthcheck:
-      test: ["CMD", "redis-cli", "-a", "{{ redis_password }}", "ping"]
-      interval: 10s
-      timeout: 5s
-      retries: 3
-      start_period: 5s
-{% endif %}
-
-{% if edin_enabled | default(false) %}
-  # =============================================================================
-  # EDIN TimescaleDB - Elite Dangerous Intel Network
-  # =============================================================================
-  # SECURITY: NO external ports - internal Docker network only
-  edin-timescaledb:
-    image: {{ edin_image }}
-    container_name: {{ edin_container_name }}
-    restart: unless-stopped
-    environment:
-      POSTGRES_USER: {{ edin_db_admin_user }}
-      POSTGRES_PASSWORD: {{ edin_db_admin_password }}
-      POSTGRES_DB: {{ edin_db_name }}
-    volumes:
-      - {{ edin_data_volume }}:/var/lib/postgresql/data
-      - {{ control_plane_src_dir }}/docker/edin-init.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
-    # SECURITY: NO ports exposed to host - internal network only
-    networks:
-      - control-net
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U {{ edin_db_admin_user }} -d {{ edin_db_name }}"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
       start_period: 30s
-{% endif %}
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+        reservations:
+          memory: 256M
 
-# =============================================================================
-# NETWORKS & VOLUMES
-# =============================================================================
 networks:
-  control-net:
-    driver: bridge
-    enable_ipv6: true
-    ipam:
-      config:
-        - subnet: 172.28.0.0/16
-        - subnet: fd00:dead:beef::/48
-
-volumes:
-{% if redis_enabled | default(false) %}
-  redis-data:
-    name: control-redis-data
-{% endif %}
-{% if edin_enabled | default(false) %}
-  {{ edin_data_volume }}:
-    name: {{ edin_data_volume }}
-{% endif %}
-{% if not (redis_enabled | default(false)) and not (edin_enabled | default(false)) %}
-  # Placeholder volume when no persistent services enabled
-  control_api_placeholder:
-    name: control_api_placeholder
-{% endif %}
-
+  {{ edin_app_network }}:
+    external: true
+  {{ edin_data_network }}:
+    external: true

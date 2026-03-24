@@ -15,7 +15,5 @@
       tags: [control_api]
     - role: discord_bot
       tags: [discord_bot]
-    - role: discord_app
-      tags: [discord_app]
     - role: galaxy_exporter
       tags: [galaxy_exporter]

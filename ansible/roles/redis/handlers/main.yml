@@ -2,4 +2,5 @@
 - name: Restart redis
   ansible.builtin.command:
     cmd: docker compose -f {{ redis_compose_path }} up -d --force-recreate
+  become: true
   listen: Restart redis

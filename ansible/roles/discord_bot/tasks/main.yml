@@ -1,278 +1,38 @@
 ---
-- name: Initialise control plane sync variables
-  ansible.builtin.set_fact:
-    control_plane_src_dir: "{{ control_plane_src_dir | default('/srv/control-plane/src') }}"
-    control_plane_repo_version: "{{ control_plane_repo_version | default('main') }}"
-    control_plane_sync_owner: "{{ control_plane_sync_owner | default(ansible_user) }}"
-  tags: [discord_bot, source]
+# Discord Bot — slash commands + LLM chat via Control API
 
-- name: Ensure Discord bot group exists
-  ansible.builtin.group:
-    name: "{{ discord_bot_group }}"
-    system: true
-  become: true
-  tags: [discord_bot, users]
-
-- name: Ensure Discord bot user exists
-  ansible.builtin.user:
-    name: "{{ discord_bot_user }}"
-    group: "{{ discord_bot_group }}"
-    system: true
-    create_home: false
-  register: discord_bot_user_result
-  become: true
-  tags: [discord_bot, users]
-
-- name: Record Discord bot user identifiers
-  ansible.builtin.set_fact:
-    discord_bot_uid: "{{ discord_bot_user_result.uid }}"
-    discord_bot_gid: "{{ discord_bot_user_result.group }}"
-  tags: [discord_bot, users]
-
-- name: Ensure Discord bot directories exist
+- name: Ensure Discord bot directory exists
   ansible.builtin.file:
-    path: "{{ item.path }}"
+    path: "{{ discord_bot_dir }}"
     state: directory
-    owner: "{{ item.owner | default(discord_bot_user) }}"
-    group: "{{ item.group | default(discord_bot_group) }}"
-    mode: "{{ item.mode | default('0755') }}"
-  loop:
-    - { path: "{{ discord_bot_root_dir }}" }
-    - { path: "{{ discord_bot_log_dir }}", mode: '0750' }
-    - { path: "{{ discord_bot_certs_dir }}", mode: '0755' }
-  become: true
+    owner: root
+    group: root
+    mode: '0755'
   tags: [discord_bot, directories]
-
-- name: Ensure git is installed for control plane sync
-  ansible.builtin.package:
-    name: git
-    state: present
-  become: true
-  when: control_plane_repo_synced | default(false) | bool is not true
-  tags: [discord_bot, source]
-
-- name: Ensure control plane parent directory exists
-  ansible.builtin.file:
-    path: "{{ control_plane_src_dir | dirname }}"
-    state: directory
-    owner: "{{ control_plane_sync_owner }}"
-    group: "{{ control_plane_sync_owner }}"
-    mode: '0755'
-  become: true
-  tags: [discord_bot, source]
-
-- name: Check if control plane repository exists
-  ansible.builtin.stat:
-    path: "{{ control_plane_src_dir }}/.git"
-  register: control_plane_repo_state
-  become: false
-  tags: [discord_bot, source]
-
-- name: Check control plane directory state
-  ansible.builtin.stat:
-    path: "{{ control_plane_src_dir }}"
-  register: control_plane_dir_state
-  become: true
-  tags: [discord_bot, source]
-
-- name: Ensure control plane repository directory ownership
-  ansible.builtin.file:
-    path: "{{ control_plane_src_dir }}"
-    state: directory
-    owner: "{{ control_plane_sync_owner }}"
-    group: "{{ control_plane_sync_owner }}"
-    mode: '0755'
-    recurse: true
-  when: control_plane_dir_state.stat.exists
-  become: true
-  tags: [discord_bot, source]
-
-- name: Ensure control plane repository marked safe for git
-  ansible.builtin.command:
-    cmd: git config --global --add safe.directory {{ control_plane_src_dir }}
-  become: false
-  when:
-    - control_plane_repo_synced | default(false) | bool is not true
-    - control_plane_dir_state.stat.exists
-  tags: [discord_bot, source]
-
-- name: Remove stale control plane directory when repository missing
-  ansible.builtin.command:
-    cmd: rm -rf {{ control_plane_src_dir }}
-  become: true
-  when:
-    - control_plane_repo_synced | default(false) | bool is not true
-    - not control_plane_repo_state.stat.exists
-    - control_plane_dir_state.stat.exists
-  tags: [discord_bot, source]
-
-- name: Clone control plane repository if missing
-  ansible.builtin.command:
-    cmd: git clone --branch {{ control_plane_repo_version }} {{ control_plane_repo_url }} {{ control_plane_src_dir }}
-    creates: "{{ control_plane_src_dir }}/.git"
-  become: false
-  environment:
-    GIT_SSH_COMMAND: "ssh -F /dev/null -o ForwardAgent=yes -o IdentitiesOnly=no -o StrictHostKeyChecking=accept-new"
-  when:
-    - control_plane_repo_synced | default(false) | bool is not true
-    - not control_plane_repo_state.stat.exists
-  tags: [discord_bot, source]
-
-- name: Sync control plane repository state
-  vars:
-    ansible_become: false
-  when:
-    - control_plane_repo_synced | default(false) | bool is not true
-    - control_plane_repo_state.stat.exists
-  tags: [discord_bot, source]
-  block:
-    - name: Ensure control plane repository remote uses SSH
-      ansible.builtin.command:
-        cmd: git remote set-url origin {{ control_plane_repo_url }}
-        chdir: "{{ control_plane_src_dir }}"
-      environment:
-        GIT_SSH_COMMAND: "ssh -F /dev/null -o ForwardAgent=yes -o IdentitiesOnly=no -o StrictHostKeyChecking=accept-new"
-
-    - name: Fetch control plane repository updates
-      ansible.builtin.command:
-        cmd: git fetch --all --prune
-        chdir: "{{ control_plane_src_dir }}"
-      environment:
-        GIT_SSH_COMMAND: "ssh -F /dev/null -o ForwardAgent=yes -o IdentitiesOnly=no -o StrictHostKeyChecking=accept-new"
-
-    - name: Ensure control plane repository at desired revision
-      ansible.builtin.command:
-        cmd: git reset --hard origin/{{ control_plane_repo_version }}
-        chdir: "{{ control_plane_src_dir }}"
-      environment:
-        GIT_SSH_COMMAND: "ssh -F /dev/null -o ForwardAgent=yes -o IdentitiesOnly=no -o StrictHostKeyChecking=accept-new"
-
-- name: Mark control plane repository as synced
-  ansible.builtin.set_fact:
-    control_plane_repo_synced: true
-  when: control_plane_repo_synced | default(false) | bool is not true
-  tags: [discord_bot, source]
-
-# Build service role IDs string (format: service=role1|role2,service2=role3)
-- name: Build service role IDs string
-  ansible.builtin.set_fact:
-    discord_service_roles_str: >-
-      {%- set parts = [] -%}
-      {%- for service, roles in discord_service_admin_roles.items() -%}
-        {%- set valid_roles = roles | select() | list -%}
-        {%- if valid_roles -%}
-          {%- set _ = parts.append(service ~ '=' ~ valid_roles | join('|')) -%}
-        {%- endif -%}
-      {%- endfor -%}
-      {{ parts | join(',') }}
-  tags: [discord_bot, config]
-
-- name: Build Discord bot environment map
-  ansible.builtin.set_fact:
-    discord_bot_env_map:
-      LOG_LEVEL: "{{ discord_bot_log_level }}"
-      CONTROL_API_BASE_URL: "http://control-api:{{ control_api_http_port }}"
-      SSG_MCP_BASE_URL: "http://control-api:{{ control_api_mcp_port }}/mcp"
-      SSG_DOMAIN: "{{ domain_name }}"
-      SSG_CONTROL_API_DOMAIN: "{{ control_api_domain }}"
-      SSG_CONTROL_BOT_DOMAIN: "{{ control_bot_domain }}"
-      SSG_HTTP_API_KEY: "{{ vault_control_api_secret | default('change-me') }}"
-      CONTROL_API_SECRET: "{{ vault_control_api_secret | default('change-me') }}"
-      DISCORD_BOT_TOKEN: "{{ vault_discord_bot_token | default('change-me') }}"
-      DISCORD_APP_ID: "{{ discord_application_id }}"
-      DISCORD_PUBLIC_KEY: "{{ vault_discord_public_key | default('') }}"
-      DISCORD_INTERACTION_SECRET: "{{ vault_discord_interaction_secret | default('') }}"
-      DISCORD_GUILD_IDS: "{{ discord_default_guild_ids | join(',') }}"
-      DISCORD_ADMIN_ROLE_IDS: "{{ discord_admin_role_ids | join(',') }}"
-      DISCORD_LLM_ROLE_IDS: "{{ discord_llm_role_ids | join(',') }}"
-      DISCORD_SERVICE_ROLE_IDS: "{{ discord_service_roles_str | trim }}"
-      ANTHROPIC_API_KEY: "{{ vault_anthropic_api_key | default('') }}"
-      LLM_ADMIN_ROLE_ID: "{{ discord_llm_role_ids | first | default('') }}"
-      LLM_SYSTEM_PROMPT: "{{ llm_system_prompt }}"
-      LLM_MAX_TOOL_ITERATIONS: "{{ llm_max_tool_iterations }}"
-      MONITORED_SERVICES: "{{ discord_bot_monitored_services | join(',') }}"
-      CONTROL_API_TIMEOUT_SECONDS: "{{ discord_bot_control_timeout | default(10) }}"
-      DOCKER_SERVICES: "{{ control_api_docker_services | dictsort | map('join', ':') | join(',') }}"
-  tags: [discord_bot, config]
 
 - name: Template Discord bot environment file
   ansible.builtin.template:
-    src: env.j2
+    src: discord-bot.env.j2
     dest: "{{ discord_bot_env_file }}"
-    owner: "{{ discord_bot_user }}"
-    group: "{{ discord_bot_group }}"
-    mode: '0640'
-  vars:
-    env_map: "{{ discord_bot_env_map }}"
-  become: true
+    owner: root
+    group: root
+    mode: '0600'
   notify: Restart Discord bot
   tags: [discord_bot, config]
 
 - name: Template Discord bot compose file
   ansible.builtin.template:
     src: docker-compose.yml.j2
-    dest: "{{ discord_bot_compose_path }}"
+    dest: "{{ discord_bot_compose_file }}"
     owner: root
     group: root
     mode: '0644'
-  become: true
   notify: Restart Discord bot
   tags: [discord_bot, compose]
 
-- name: Pull Discord bot images
+- name: Build and start Discord bot
   ansible.builtin.command:
-    cmd: docker compose -f {{ discord_bot_compose_path }} pull
-  args:
-    chdir: "{{ discord_bot_root_dir }}"
-  become: true
-  register: discord_bot_pull
-  changed_when: "'Downloaded newer image' in discord_bot_pull.stdout"
-  failed_when: false
-  tags: [discord_bot, compose]
-
-- name: Build Discord bot image locally when pull fails
-  ansible.builtin.command:
-    cmd: docker compose -f {{ discord_bot_compose_path }} build discord-bot
-  args:
-    chdir: "{{ discord_bot_root_dir }}"
-  become: true
-  when:
-    - discord_bot_pull.rc is defined
-    - discord_bot_pull.rc != 0
-  tags: [discord_bot, compose]
-
-- name: Rebuild Discord bot container
-  ansible.builtin.command:
-    cmd: docker compose -f {{ discord_bot_compose_path }} up -d --build --force-recreate --remove-orphans
-  args:
-    chdir: "{{ discord_bot_root_dir }}"
-  become: true
-  register: discord_bot_rebuild
-  changed_when: discord_bot_rebuild.rc == 0
-  tags: [discord_bot, compose]
-
-- name: Deploy Discord bot systemd unit
-  ansible.builtin.template:
-    src: discord-bot.service.j2
-    dest: /etc/systemd/system/discord-bot.service
-    owner: root
-    group: root
-    mode: '0644'
-  become: true
-  notify: Restart Discord bot
-  tags: [discord_bot, systemd]
-
-- name: Reload systemd daemon for Discord bot
-  ansible.builtin.systemd:
-    daemon_reload: true
-  become: true
-  tags: [discord_bot, systemd]
-
-- name: Enable and start Discord bot service
-  ansible.builtin.systemd:
-    name: discord-bot.service
-    state: started
-    enabled: true
-  become: true
-  tags: [discord_bot, systemd]
-
+    cmd: "docker compose -f {{ discord_bot_compose_file }} up -d --build --remove-orphans"
+  register: bot_up
+  changed_when: "'Started' in bot_up.stderr or 'Built' in bot_up.stderr or 'Created' in bot_up.stderr"
+  tags: [discord_bot, deploy]

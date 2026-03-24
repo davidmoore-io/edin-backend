@@ -1,17 +1,5 @@
 ---
-- name: Rebuild Discord bot container
-  listen: Restart Discord bot
+- name: Restart Discord bot
   ansible.builtin.command:
-    cmd: docker compose -f {{ discord_bot_compose_path }} up -d --build --force-recreate
-  args:
-    chdir: "{{ discord_bot_root_dir }}"
+    cmd: "docker compose -f {{ discord_bot_compose_file }} up -d --build --force-recreate"
   become: true
-
-- name: Restart Discord bot service
-  ansible.builtin.systemd:
-    name: discord-bot.service
-    state: restarted
-    daemon_reload: true
-  become: true
-
-

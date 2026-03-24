@@ -1,31 +1,18 @@
+# {{ ansible_managed }}
 [Unit]
-Description=Galaxy Static Data Exporter
-After=network-online.target
-Wants=network-online.target
+Description=Galaxy Exporter — generate binary map data from Memgraph
+After=network.target
 
 [Service]
 Type=oneshot
-ExecStart={{ galaxy_exporter_bin_dir }}/galaxy-exporter \
-    --output={{ galaxy_exporter_output_dir }} \
-    --memgraph-host={{ memgraph_host | default('10.8.0.3') }} \
-    --memgraph-port={{ memgraph_port | default(7687) }} \
-    --batch-size={{ galaxy_exporter_batch_size | default(50000) }} \
-    --compress={{ galaxy_exporter_compress | default('true') }} \
-    --eddn-dsn=postgres://{{ galaxy_exporter_eddn_db_user }}:{{ galaxy_exporter_eddn_db_password }}@{{ galaxy_exporter_eddn_db_host }}:{{ galaxy_exporter_eddn_db_port }}/{{ galaxy_exporter_eddn_db_name }} \
-    --history-cycles={{ galaxy_exporter_history_cycles }} \
-    --history-min-cycle={{ galaxy_exporter_history_min_cycle | default(72) }}
-
-# Logging
+ExecStart={{ galaxy_exporter_binary_path }} \
+  --memgraph-host={{ vpn_interface_address }} \
+  --memgraph-port={{ memgraph_port }} \
+  --output={{ galaxy_exporter_output_dir }} \
+  --eddn-dsn=postgres://eddn_admin:{{ vault_eddn_db_password }}@{{ vpn_interface_address }}:5433/eddn_raw \
+  --batch-size={{ galaxy_exporter_batch_size }} \
+  --history-cycles={{ galaxy_exporter_history_cycles }} \
+  --compress
 StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=galaxy-exporter
-
-# Security hardening
-NoNewPrivileges=true
-PrivateTmp=true
-ProtectSystem=strict
-ProtectHome=true
-ReadWritePaths={{ galaxy_exporter_output_dir }}
-
-[Install]
-WantedBy=multi-user.target
