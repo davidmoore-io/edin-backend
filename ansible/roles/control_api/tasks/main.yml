@@ -3,14 +3,14 @@
 
 - name: Ensure control API directories exist
   ansible.builtin.file:
-    path: "{{ item }}"
+    path: "{{ item.path }}"
     state: directory
-    owner: root
-    group: root
+    owner: "{{ item.owner | default('root') }}"
+    group: "{{ item.group | default('root') }}"
     mode: '0755'
   loop:
-    - "{{ control_api_dir }}"
-    - "{{ control_api_src_dir | dirname }}"
+    - { path: "{{ control_api_dir }}" }
+    - { path: "{{ control_api_src_dir | dirname }}", owner: "{{ ansible_user }}", group: "{{ ansible_user }}" }
   tags: [control_api, directories]
 
 - name: Ensure edin-app Docker network exists
