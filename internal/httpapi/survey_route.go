@@ -36,6 +36,7 @@ type surveyRouteResponse struct {
 	TotalCandidates    int            `json:"total_candidates"`
 	Returned           int            `json:"returned"`
 	MiningMapsUsed     int            `json:"mining_maps_used"`
+	StartSystem        string         `json:"start_system,omitempty"`
 	TotalRouteDistance float64         `json:"total_route_distance_ly"`
 	Systems            []surveySystem `json:"systems"`
 }
@@ -48,6 +49,9 @@ func (s *Server) handleSurveyRoute(w http.ResponseWriter, r *http.Request) {
 			limit = n
 		}
 	}
+
+	// Optional starting system — route begins here instead of stalest
+	startSystem := r.URL.Query().Get("start")
 
 	// Step 1: Get all mining map system names from EDIN TimescaleDB
 	mapSystems, err := s.kaineStore.GetMiningMapSystems(ctx)
@@ -210,8 +214,32 @@ func (s *Server) handleSurveyRoute(w http.ResponseWriter, r *http.Request) {
 		all = all[:limit]
 	}
 
-	// Step 5: TSP nearest-neighbour routing
-	routed := nearestNeighbourRoute(all)
+	// Step 5: If start system specified, look up its coordinates and prepend as route origin
+	var startCoords *surveySystem
+	if startSystem != "" {
+		startResult, err := session.Run(ctx, `
+			MATCH (s:System {name: $name})
+			WHERE s.location IS NOT NULL
+			RETURN s.location.x AS x, s.location.y AS y, s.location.z AS z
+		`, map[string]any{"name": startSystem})
+		if err != nil || !startResult.Next(ctx) {
+			s.writeError(w, http.StatusBadRequest, fmt.Sprintf("start system '%s' not found in galaxy database", startSystem))
+			return
+		}
+		rec := startResult.Record()
+		sx, _ := rec.Get("x")
+		sy, _ := rec.Get("y")
+		sz, _ := rec.Get("z")
+		startCoords = &surveySystem{
+			Name: startSystem,
+			X:    toFloat(sx),
+			Y:    toFloat(sy),
+			Z:    toFloat(sz),
+		}
+	}
+
+	// Step 6: TSP nearest-neighbour routing
+	routed := nearestNeighbourRoute(all, startCoords)
 
 	// Calculate total route distance
 	totalDist := 0.0
@@ -222,6 +250,7 @@ func (s *Server) handleSurveyRoute(w http.ResponseWriter, r *http.Request) {
 	s.writeJSON(w, http.StatusOK, surveyRouteResponse{
 		TotalCandidates:    totalCandidates,
 		Returned:           len(routed),
+		StartSystem:        startSystem,
 		MiningMapsUsed:     len(anchors),
 		TotalRouteDistance: math.Round(totalDist*10) / 10,
 		Systems:            routed,
@@ -229,10 +258,14 @@ func (s *Server) handleSurveyRoute(w http.ResponseWriter, r *http.Request) {
 }
 
 // nearestNeighbourRoute orders systems by greedy nearest-neighbour TSP.
-func nearestNeighbourRoute(systems []surveySystem) []surveySystem {
+// If startFrom is provided, the route starts from that position (not included in output).
+func nearestNeighbourRoute(systems []surveySystem, startFrom *surveySystem) []surveySystem {
 	if len(systems) <= 1 {
 		if len(systems) == 1 {
 			systems[0].Order = 1
+			if startFrom != nil {
+				systems[0].DistFromPreviousLy = math.Round(euclidean(*startFrom, systems[0])*10) / 10
+			}
 		}
 		return systems
 	}
@@ -241,11 +274,22 @@ func nearestNeighbourRoute(systems []surveySystem) []surveySystem {
 	visited := make([]bool, n)
 	route := make([]surveySystem, 0, n)
 
-	// Start at first system (most stale)
+	// Find the starting point — nearest to startFrom, or first (most stale)
 	current := 0
+	if startFrom != nil {
+		bestDist := math.MaxFloat64
+		for i := 0; i < n; i++ {
+			d := euclidean(*startFrom, systems[i])
+			if d < bestDist {
+				bestDist = d
+				current = i
+			}
+		}
+		systems[current].DistFromPreviousLy = math.Round(bestDist*10) / 10
+	}
+
 	visited[current] = true
 	systems[current].Order = 1
-	systems[current].DistFromPreviousLy = 0
 	route = append(route, systems[current])
 
 	for step := 1; step < n; step++ {
