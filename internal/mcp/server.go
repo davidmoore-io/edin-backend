@@ -23,7 +23,8 @@ import (
 )
 
 // Run starts the MCP server that exposes control tools.
-func Run(ctx context.Context, cfg *config.Config, opsManager *ops.Manager, store llm.SessionBackend, llmClient *anthropic.Client, toolExec *tools.Executor, runner *assistant.Runner) error {
+// jwtValidator is optional — if nil, only internal API key auth is available.
+func Run(ctx context.Context, cfg *config.Config, opsManager *ops.Manager, store llm.SessionBackend, llmClient *anthropic.Client, toolExec *tools.Executor, runner *assistant.Runner, jwtValidator TokenValidator) error {
 	if cfg == nil {
 		return fmt.Errorf("config is nil")
 	}
@@ -32,6 +33,7 @@ func Run(ctx context.Context, cfg *config.Config, opsManager *ops.Manager, store
 	}
 
 	server := newServer(cfg.HTTP.InternalKey, opsManager, store, llmClient, toolExec, runner, cfg.LLM.SystemPrompt, cfg.LLM.MaxIterations, cfg.LLM.Store)
+	server.jwtValidator = jwtValidator
 	streamable := mcpserver.NewStreamableHTTPServer(
 		server.mcp,
 		mcpserver.WithHTTPContextFunc(server.injectAuthContext),
@@ -67,15 +69,16 @@ func Run(ctx context.Context, cfg *config.Config, opsManager *ops.Manager, store
 }
 
 type server struct {
-	apiKey    string
-	mcp       *mcpserver.MCPServer
-	ops       *ops.Manager
-	llmStore  llm.SessionBackend
-	llmClient *anthropic.Client
-	toolExec  *tools.Executor
-	llmRunner *assistant.Runner
-	logger    *observability.Logger
-	storeCfg  config.ConversationStoreConfig
+	apiKey       string
+	jwtValidator TokenValidator // nil if no OAuth configured
+	mcp          *mcpserver.MCPServer
+	ops          *ops.Manager
+	llmStore     llm.SessionBackend
+	llmClient    *anthropic.Client
+	toolExec     *tools.Executor
+	llmRunner    *assistant.Runner
+	logger       *observability.Logger
+	storeCfg     config.ConversationStoreConfig
 }
 
 func newServer(apiKey string, opsManager *ops.Manager, store llm.SessionBackend, llmClient *anthropic.Client, toolExec *tools.Executor, runner *assistant.Runner, systemPrompt string, maxIterations int, storeCfg config.ConversationStoreConfig) *server {
@@ -225,12 +228,33 @@ type authKeyType struct{}
 var authKey authKeyType
 
 func (s *server) injectAuthContext(ctx context.Context, r *http.Request) context.Context {
-	authHeader := r.Header.Get("Authorization")
-	authorized := strings.HasPrefix(authHeader, "Bearer ") && strings.TrimSpace(strings.TrimPrefix(authHeader, "Bearer ")) == s.apiKey
-	ctx = context.WithValue(ctx, authKey, authorized)
-	if authorized {
-		ctx = authz.ContextWithScopes(ctx, authz.ScopeAdmin, authz.ScopeLlmOperator)
+	token := extractBearerToken(r)
+	if token == "" {
+		return ctx // No auth — tools will check and reject
 	}
+
+	// Internal API key (Discord bot, internal services)
+	if token == s.apiKey {
+		ctx = context.WithValue(ctx, authKey, true)
+		ctx = authz.ContextWithScopes(ctx, authz.ScopeAdmin, authz.ScopeLlmOperator)
+		return ctx
+	}
+
+	// JWT from Authentik (external MCP clients)
+	if s.jwtValidator != nil {
+		groups, err := s.jwtValidator.ValidateAndGetGroups(token)
+		if err != nil {
+			s.logger.Warn(fmt.Sprintf("mcp_jwt_validation_failed: %v", err))
+			return ctx // Invalid token — no auth
+		}
+
+		scopes := groupsToScopes(groups)
+		if len(scopes) > 0 {
+			ctx = context.WithValue(ctx, authKey, true)
+			ctx = authz.ContextWithScopes(ctx, scopes...)
+		}
+	}
+
 	return ctx
 }
 

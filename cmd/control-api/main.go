@@ -184,7 +184,7 @@ func main() {
 	}
 
 	go func() {
-		if err := mcp.Run(ctx, cfg, opsManager, llmStore, anthropicClient, toolExecutor, assistantRunner); err != nil && !errors.Is(err, context.Canceled) {
+		if err := mcp.Run(ctx, cfg, opsManager, llmStore, anthropicClient, toolExecutor, assistantRunner, nil); err != nil && !errors.Is(err, context.Canceled) {
 			logger.Error("mcp server", err)
 			cancel()
 		}

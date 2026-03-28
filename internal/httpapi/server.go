@@ -155,6 +155,11 @@ func Run(ctx context.Context, cfg *config.Config, opsManager *ops.Manager, llmSt
 		IdleTimeout:       2 * time.Minute,
 	}
 
+	// Start background cache refresh for powerplay data (queries Memgraph every 5 min)
+	if server.memgraph != nil {
+		go server.startPowerplayRefresh(ctx)
+	}
+
 	errCh := make(chan error, 1)
 	go func() {
 		if cfg.HTTP.EnableTLS {
@@ -1016,65 +1021,38 @@ func (s *Server) handleHIPThunderdome(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// powerplayCacheTTL is the cache duration for the all-powerplay endpoint.
-const powerplayCacheTTL = 60 * time.Second
+// powerplayRefreshInterval is how often the background goroutine refreshes the cache.
+const powerplayRefreshInterval = 5 * time.Minute
 
-// handlePowerplay returns the latest powerplay data for ALL controlled systems.
-// Memgraph-only (no TimescaleDB fallback) with a 60-second server-side cache.
-func (s *Server) handlePowerplay(w http.ResponseWriter, r *http.Request) {
-	s.applyCORSHeaders(w, r)
-	if r.Method == http.MethodOptions {
-		w.WriteHeader(http.StatusOK)
-		return
+// startPowerplayRefresh runs a background loop that keeps the powerplay cache warm.
+// The cache is refreshed immediately on startup, then every powerplayRefreshInterval.
+// No user request ever queries Memgraph directly.
+func (s *Server) startPowerplayRefresh(ctx context.Context) {
+	s.refreshPowerplayCache(ctx)
+
+	ticker := time.NewTicker(powerplayRefreshInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			s.refreshPowerplayCache(ctx)
+		}
 	}
-	if r.Method != http.MethodGet {
-		s.writeError(w, http.StatusMethodNotAllowed, "only GET allowed")
-		return
-	}
+}
 
-	if s.memgraph == nil {
-		s.writeError(w, http.StatusServiceUnavailable, "Memgraph not configured")
-		return
-	}
-
-	// Prevent browser caching — data changes frequently via EDDN
-	w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
-
-	// Check cache
-	s.powerplayCacheMu.RLock()
-	if s.powerplayCacheData != nil && time.Since(s.powerplayCacheTime) < powerplayCacheTTL {
-		cached := s.powerplayCacheData
-		cacheAge := time.Since(s.powerplayCacheTime)
-		s.powerplayCacheMu.RUnlock()
-		s.logger.Info(fmt.Sprintf("powerplay cache hit age=%s systems=%d", cacheAge.Round(time.Second), len(cached)))
-
-		tickInfo := calculateCurrentTick(time.Now().UTC())
-		s.writeJSON(w, http.StatusOK, map[string]any{
-			"systems":         cached,
-			"count":           len(cached),
-			"source":          "ssg-eddn-memgraph",
-			"tick_number":     tickInfo.Number,
-			"tick_start":      tickInfo.Start.Format(time.RFC3339),
-			"tick_end":        tickInfo.End.Format(time.RFC3339),
-			"export_time":     time.Now().UTC().Format(time.RFC3339),
-			"hours_into_tick": tickInfo.HoursIntoTick,
-		})
-		return
-	}
-	s.powerplayCacheMu.RUnlock()
-
-	// Cache miss — query Memgraph
-	systems, err := s.memgraph.GetAllPowerplaySystems(r.Context())
+// refreshPowerplayCache queries Memgraph and updates the in-memory cache.
+func (s *Server) refreshPowerplayCache(ctx context.Context) {
+	start := time.Now()
+	systems, err := s.memgraph.GetAllPowerplaySystems(ctx)
 	if err != nil {
-		s.logger.Error("powerplay memgraph query failed", err)
-		s.writeError(w, http.StatusInternalServerError, err.Error())
-		return
+		s.logger.Error("powerplay background refresh failed", err)
+		return // keep serving stale cache
 	}
 
-	// Convert to frontend format (same structure as handleHIPThunderdome)
 	data := make([]map[string]any, 0, len(systems))
-	var latestUpdate time.Time
-
 	for _, sys := range systems {
 		system := map[string]any{
 			"system_name":               sys.SystemName,
@@ -1110,9 +1088,6 @@ func (s *Server) handlePowerplay(w http.ResponseWriter, r *http.Request) {
 		if !sys.LastEDDNUpdate.IsZero() {
 			system["updated_at"] = sys.LastEDDNUpdate.Format(time.RFC3339)
 			system["last_eddn_update"] = sys.LastEDDNUpdate.Format(time.RFC3339)
-			if sys.LastEDDNUpdate.After(latestUpdate) {
-				latestUpdate = sys.LastEDDNUpdate
-			}
 		}
 
 		system["x"] = sys.X
@@ -1120,7 +1095,6 @@ func (s *Server) handlePowerplay(w http.ResponseWriter, r *http.Request) {
 		system["z"] = sys.Z
 		system["security"] = sys.Security
 		system["economy"] = sys.Economy
-		// Station data not included in lean query (fetched per-system on demand)
 		system["has_large_pad"] = sys.HasLargePad
 		system["nearest_station"] = sys.NearestStation
 		system["nearest_station_ls"] = sys.NearestStationLs
@@ -1138,20 +1112,45 @@ func (s *Server) handlePowerplay(w http.ResponseWriter, r *http.Request) {
 		data = append(data, system)
 	}
 
-	// Update cache
 	s.powerplayCacheMu.Lock()
 	s.powerplayCacheData = data
 	s.powerplayCacheTime = time.Now()
 	s.powerplayCacheMu.Unlock()
 
-	tickInfo := calculateCurrentTick(time.Now().UTC())
+	s.logger.Info(fmt.Sprintf("powerplay cache refreshed: %d systems in %s", len(data), time.Since(start).Round(time.Millisecond)))
+}
 
-	s.logger.Info(fmt.Sprintf("powerplay cache miss - queried %d systems from Memgraph", len(data)))
+// handlePowerplay returns powerplay data from the background-refreshed cache.
+// Never queries Memgraph directly — always serves from cache.
+func (s *Server) handlePowerplay(w http.ResponseWriter, r *http.Request) {
+	s.applyCORSHeaders(w, r)
+	if r.Method == http.MethodOptions {
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+	if r.Method != http.MethodGet {
+		s.writeError(w, http.StatusMethodNotAllowed, "only GET allowed")
+		return
+	}
+
+	w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
+
+	s.powerplayCacheMu.RLock()
+	data := s.powerplayCacheData
+	cacheTime := s.powerplayCacheTime
+	s.powerplayCacheMu.RUnlock()
+
+	if data == nil {
+		s.writeError(w, http.StatusServiceUnavailable, "Cache warming up, try again shortly")
+		return
+	}
+
+	tickInfo := calculateCurrentTick(time.Now().UTC())
 	s.writeJSON(w, http.StatusOK, map[string]any{
 		"systems":         data,
 		"count":           len(data),
-		"last_refresh":    latestUpdate.Format(time.RFC3339),
 		"source":          "ssg-eddn-memgraph",
+		"cache_age":       time.Since(cacheTime).Round(time.Second).String(),
 		"tick_number":     tickInfo.Number,
 		"tick_start":      tickInfo.Start.Format(time.RFC3339),
 		"tick_end":        tickInfo.End.Format(time.RFC3339),
