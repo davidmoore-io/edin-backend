@@ -18,7 +18,8 @@ Available tools (use describe_tool for detailed usage):
 - galaxy_system, galaxy_station, galaxy_fleet_carrier, galaxy_bodies, galaxy_signals — galaxy database lookups
 - galaxy_power, galaxy_faction, galaxy_stats — powerplay and faction queries
 - galaxy_market — commodity trading (prices, buy/sell locations, market inventory)
-- galaxy_query — ad-hoc Cypher queries against Memgraph
+- galaxy_schema — call this BEFORE writing any ad-hoc Cypher to get current node labels, properties, and edge types
+- galaxy_query — ad-hoc Cypher queries against Memgraph (always call galaxy_schema first to verify property names)
 - galaxy_history — historical powerplay data (up to 30 days)
 - galaxy_powerplay_cycle — cycle-aware powerplay queries (current vs last week)
 - galaxy_expansion_check, galaxy_nearby_powerplay, galaxy_expansion_frontier — expansion planning

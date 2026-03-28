@@ -47,12 +47,12 @@ Response format example:
 
 Read-only only (MATCH/RETURN/WITH/WHERE/ORDER BY/LIMIT). LIMIT auto-appended if missing.
 
-Schema:
-- System (name, x, y, z, population, government, controlling_power, powerplay_state, reinforcement, undermining, powers[])
-- Station (name, type, services, distance_from_star)
-- Power (name)
-- Faction (name)
-- Relationships: (Power)-[:CONTROLS {state}]->(System), (Faction)-[:PRESENT_IN {influence, state}]->(System), (System)-[:HAS_STATION]->(Station)
+IMPORTANT: Before writing Cypher, call galaxy_schema to get the current node labels,
+property names, edge types, and indexes. The schema evolves — don't assume property names.
+
+Key properties (may change — verify with galaxy_schema):
+- System: name, controlling_power, powerplay_state, reinforcement, undermining, x, y, z
+- Powerplay filtering: use s.controlling_power = 'Power Name' (property, not relationship)
 
 Parameters:
 - query (string, required): Cypher query
