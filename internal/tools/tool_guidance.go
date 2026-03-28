@@ -51,16 +51,25 @@ IMPORTANT: Before writing Cypher, call galaxy_schema to get the current node lab
 property names, edge types, and indexes. The schema evolves — don't assume property names.
 
 Key properties (may change — verify with galaxy_schema):
-- System: name, controlling_power, powerplay_state, reinforcement, undermining, x, y, z
+- System: name, controlling_power, powerplay_state, reinforcement, undermining, x, y, z, location (point)
 - Powerplay filtering: use s.controlling_power = 'Power Name' (property, not relationship)
+
+CRITICAL: System.location is a spatial point with a point index (3M+ entries).
+ALWAYS use point.distance() for distance/range queries — it uses the spatial index and is
+1000x faster than manual sqrt on x/y/z properties.
 
 Parameters:
 - query (string, required): Cypher query
 - parameters (object): $var substitution values
 
-Distance calculation example:
+Distance calculation (FAST — uses spatial index):
 MATCH (s1:System {name: 'Alrai'}), (s2:System {name: 'HIP 63499'})
-RETURN sqrt((s1.x-s2.x)^2 + (s1.y-s2.y)^2 + (s1.z-s2.z)^2) AS distance_ly`,
+RETURN point.distance(s1.location, s2.location) AS distance_ly
+
+Range query (FAST — uses spatial index):
+MATCH (ref:System {name: 'Sol'})
+MATCH (s:System) WHERE point.distance(s.location, ref.location) <= 50
+RETURN s.name, point.distance(s.location, ref.location) AS dist ORDER BY dist`,
 
 	ToolGalaxyFaction: `galaxy_faction — Minor faction data from the galaxy database.
 
