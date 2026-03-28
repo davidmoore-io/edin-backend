@@ -43,8 +43,8 @@ func (e *Executor) galaxyQuery(ctx context.Context, args map[string]any) (any, e
 		params = p
 	}
 
-	// Execute with timeout — 60s for complex queries on 3M+ node graph
-	queryCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
+	// Execute with timeout — 120s for complex queries on 3M+ node graph
+	queryCtx, cancel := context.WithTimeout(ctx, 120*time.Second)
 	defer cancel()
 
 	start := time.Now()
