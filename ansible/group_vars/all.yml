@@ -44,10 +44,10 @@ edin_data_network: edin-data-net
 redis_image: redis:7-alpine
 redis_port: 6379
 
-# Kaine auth (Authentik on ssg.sh during parallel running)
+# Kaine auth (Authentik on edin.space)
 kaine_auth_enabled: "true"
-kaine_auth_jwks_url: "https://auth.ssg.sh/application/o/kaine-portal/jwks/"
-kaine_auth_issuer: "https://auth.ssg.sh/application/o/kaine-portal/"
+kaine_auth_jwks_url: "https://auth.edin.space/application/o/kaine-portal/jwks/"
+kaine_auth_issuer: "https://auth.edin.space/application/o/kaine-portal/"
 kaine_auth_audience: "kaine-portal"
 
 # Domain
