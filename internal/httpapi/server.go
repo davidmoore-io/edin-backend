@@ -129,6 +129,7 @@ func Run(ctx context.Context, cfg *config.Config, opsManager *ops.Manager, llmSt
 	mux.HandleFunc("/api/edin/openapi.json", server.handleEDINOpenAPI)
 	mux.HandleFunc("/api/edin/ws", server.handleEDINWebSocket)
 	mux.HandleFunc("/api/internal/system-updated", server.handleInternalSystemUpdated) // EDDN listener callback
+	mux.HandleFunc("/api/internal/survey-route", server.withAuth(server.handleSurveyRoute))
 
 	// DayZ Public API - No auth required for read-only data
 	mux.HandleFunc("/api/dayz/status", server.handleDayZStatus)

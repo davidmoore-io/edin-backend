@@ -84,7 +84,7 @@ func (s *Store) FindExpansionTargets(ctx context.Context, memgraph MemgraphClien
 
 	// Step 2: Get existing mining map systems (for proximity scoring)
 	progress(2, 4, fmt.Sprintf("Loading mining map coordinates for %d anchor systems", len(anchors)))
-	mapSystems, err := s.getMiningMapSystems(ctx)
+	mapSystems, err := s.GetMiningMapSystems(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("get mining map systems: %w", err)
 	}
@@ -167,8 +167,8 @@ func (s *Store) FindExpansionTargets(ctx context.Context, memgraph MemgraphClien
 	}, nil
 }
 
-// getMiningMapSystems returns the system names of all mining maps.
-func (s *Store) getMiningMapSystems(ctx context.Context) ([]string, error) {
+// GetMiningMapSystems returns the system names of all mining maps.
+func (s *Store) GetMiningMapSystems(ctx context.Context) ([]string, error) {
 	query := `SELECT DISTINCT system_name FROM kaine.mining_maps`
 
 	rows, err := s.pool.Query(ctx, query)
