@@ -225,9 +225,10 @@ var upgrader = websocket.Upgrader{
 	ReadBufferSize:  1024,
 	WriteBufferSize: 1024,
 	CheckOrigin: func(r *http.Request) bool {
-		// Allow connections from our domain
+		// Allow connections from our domains
 		origin := r.Header.Get("Origin")
 		return origin == "" ||
+			strings.HasSuffix(origin, "edin.space") ||
 			strings.HasSuffix(origin, "ssg.sh") ||
 			strings.HasPrefix(origin, "http://localhost") ||
 			strings.HasPrefix(origin, "http://127.0.0.1")
