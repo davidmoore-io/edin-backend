@@ -1,16 +1,22 @@
 ---
 # Redis session store for EDIN control API
 
-- name: Ensure Redis directories exist
+- name: Ensure Redis compose directory exists
   ansible.builtin.file:
-    path: "{{ item }}"
+    path: "{{ redis_compose_path | dirname }}"
     state: directory
     owner: root
     group: root
     mode: '0755'
-  loop:
-    - "{{ redis_compose_path | dirname }}"
-    - "{{ redis_data_dir }}"
+  tags: [redis]
+
+- name: Ensure Redis data directory exists
+  ansible.builtin.file:
+    path: "{{ redis_data_dir }}"
+    state: directory
+    owner: "999"
+    group: "999"
+    mode: '0755'
   tags: [redis]
 
 - name: Create edin-app Docker network
