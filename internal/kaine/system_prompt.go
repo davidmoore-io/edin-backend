@@ -103,7 +103,7 @@ func (s *Store) ListSystemPromptVersions(ctx context.Context) ([]SystemPromptVer
 		WHERE is_active = TRUE
 		LIMIT 1
 	`).Scan(&activeContent)
-	if err != nil && err != pgx.ErrNoRows {
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 		return nil, "", fmt.Errorf("load active system prompt content: %w", err)
 	}
 
