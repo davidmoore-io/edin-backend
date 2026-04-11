@@ -2,6 +2,7 @@ package kaine
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -50,10 +51,23 @@ func (s *Store) SeedAndLoadSystemPrompt(ctx context.Context, defaultContent stri
 		WHERE is_active = TRUE
 		LIMIT 1
 	`).Scan(&content)
-	if err != nil {
+	if err == nil {
+		return content, nil
+	}
+	if !errors.Is(err, pgx.ErrNoRows) {
 		return "", fmt.Errorf("load active system prompt: %w", err)
 	}
 
+	// No active version found even though rows exist (e.g. manual intervention
+	// deactivated all rows). Fall back to the most recently created version so
+	// the server always starts with a usable prompt.
+	err = s.pool.QueryRow(ctx, `
+		SELECT content FROM kaine.system_prompt_versions
+		ORDER BY id DESC LIMIT 1
+	`).Scan(&content)
+	if err != nil {
+		return "", fmt.Errorf("load fallback system prompt (no active row): %w", err)
+	}
 	return content, nil
 }
 
