@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	sdk "github.com/anthropics/anthropic-sdk-go"
@@ -53,6 +54,7 @@ type ProgressCallback func(event ProgressEvent)
 type Runner struct {
 	client       *anthropic.Client
 	executor     *tools.Executor
+	mu           sync.RWMutex // protects systemPrompt for concurrent hot-reload
 	systemPrompt string
 	maxIter      int
 	logger       *observability.Logger
@@ -70,6 +72,15 @@ func NewRunner(client *anthropic.Client, executor *tools.Executor, systemPrompt 
 		maxIter:      maxIterations,
 		logger:       observability.NewLogger("assistant.runner"),
 	}
+}
+
+// SetSystemPrompt replaces the system prompt used for new conversations.
+// Safe for concurrent use — the write is protected by a mutex so in-flight
+// RunWithProgress calls are not affected; they snapshotted the prompt at start.
+func (r *Runner) SetSystemPrompt(content string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.systemPrompt = strings.TrimSpace(content)
 }
 
 // betaToolDefsForContext returns beta tool definitions filtered by authorization scope.
@@ -160,11 +171,16 @@ func (r *Runner) RunWithProgress(ctx context.Context, history []llm.Message, use
 			},
 		}
 
+		// Snapshot the prompt under a read lock so hot-reloads don't cause data races.
+		r.mu.RLock()
+		systemPrompt := r.systemPrompt
+		r.mu.RUnlock()
+
 		// System prompt with cache control breakpoint for compaction preservation
-		if r.systemPrompt != "" {
+		if systemPrompt != "" {
 			req.System = []sdk.BetaTextBlockParam{
 				{
-					Text: r.systemPrompt,
+					Text: systemPrompt,
 					CacheControl: sdk.BetaCacheControlEphemeralParam{
 						TTL: sdk.BetaCacheControlEphemeralTTLTTL5m,
 					},

@@ -130,3 +130,50 @@ func TestRunnerDefaultMaxIterations(t *testing.T) {
 		t.Fatalf("expected default maxIter=5, got %d", runner.maxIter)
 	}
 }
+
+func TestRunner_SetSystemPrompt_UpdatesPrompt(t *testing.T) {
+	r := NewRunner(nil, nil, "initial prompt", 5)
+
+	r.SetSystemPrompt("  updated prompt  ")
+
+	r.mu.RLock()
+	got := r.systemPrompt
+	r.mu.RUnlock()
+
+	if got != "updated prompt" {
+		t.Fatalf("expected 'updated prompt' (trimmed), got %q", got)
+	}
+}
+
+func TestRunner_SetSystemPrompt_EmptyString(t *testing.T) {
+	r := NewRunner(nil, nil, "initial", 5)
+	r.SetSystemPrompt("")
+
+	r.mu.RLock()
+	got := r.systemPrompt
+	r.mu.RUnlock()
+
+	if got != "" {
+		t.Fatalf("expected empty string, got %q", got)
+	}
+}
+
+func TestRunner_SetSystemPrompt_ConcurrentSafe(t *testing.T) {
+	// Run with -race to detect data races.
+	r := NewRunner(nil, nil, "initial", 5)
+
+	done := make(chan struct{})
+	go func() {
+		for i := 0; i < 100; i++ {
+			r.SetSystemPrompt("writer goroutine")
+		}
+		close(done)
+	}()
+
+	for i := 0; i < 100; i++ {
+		r.mu.RLock()
+		_ = r.systemPrompt
+		r.mu.RUnlock()
+	}
+	<-done
+}
