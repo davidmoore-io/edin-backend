@@ -241,6 +241,9 @@ func (s *Server) RegisterKaineRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/kaine/admin/users", s.withKaineAuth(s.withKaineAdmin(s.handleKaineAdminUsers)))
 	mux.HandleFunc("/api/kaine/admin/users/", s.withKaineAuth(s.withKaineAdmin(s.handleKaineAdminUserByID)))
 	mux.HandleFunc("/api/kaine/admin/groups", s.withKaineAuth(s.withKaineAdmin(s.handleKaineAdminGroups)))
+	mux.HandleFunc("/api/kaine/admin/system-prompt", s.withKaineAuth(s.withKaineAdmin(s.handleKaineAdminSystemPrompt)))
+	mux.HandleFunc("/api/kaine/admin/system-prompt/default", s.withKaineAuth(s.withKaineAdmin(s.handleKaineAdminSystemPromptDefault)))
+	mux.HandleFunc("/api/kaine/admin/system-prompt/", s.withKaineAuth(s.withKaineAdmin(s.handleKaineAdminSystemPromptByPath)))
 }
 
 // handleKaineObjectives handles GET /api/kaine/objectives - list objectives.

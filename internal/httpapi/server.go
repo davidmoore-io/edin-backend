@@ -91,6 +91,19 @@ func Run(ctx context.Context, cfg *config.Config, opsManager *ops.Manager, llmSt
 		server.kaineRunner = assistant.NewRunner(llmClient, server.toolExec, cfg.LLM.KaineSystemPrompt, cfg.LLM.MaxIterations)
 	}
 
+	// Load the active system prompt from the database, seeding v1 from the compiled
+	// default if the table is empty. Falls back to the config default on DB error.
+	if server.kaineStore != nil && server.kaineRunner != nil {
+		ctx := context.Background()
+		content, err := server.kaineStore.SeedAndLoadSystemPrompt(ctx, server.cfg.LLM.KaineSystemPrompt)
+		if err != nil {
+			server.logger.Warn(fmt.Sprintf("system prompt DB load failed, runner will use config default: %v", err))
+		} else {
+			server.kaineRunner.SetSystemPrompt(content)
+			server.logger.Info("Kaine system prompt loaded from database")
+		}
+	}
+
 	// Initialize JWT validator for Kaine portal authentication
 	if cfg.KaineAuth.Enabled {
 		var err error
