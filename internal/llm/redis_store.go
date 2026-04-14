@@ -14,7 +14,7 @@ import (
 )
 
 const (
-	defaultRedisTTL         = 30 * time.Minute
+	defaultRedisTTL         = 4 * 7 * 24 * time.Hour // 4 weeks
 	defaultRedisMaxMessages = 20
 	defaultRedisPrefix      = "llm:sessions"
 )
