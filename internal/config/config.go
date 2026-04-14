@@ -45,6 +45,17 @@ type KaineAuthConfig struct {
 	Issuer          string
 	Audience        string
 	RefreshInterval time.Duration
+
+	// OAuth2 code exchange settings (Story 1.2)
+	ClientID string // OAuth2 client ID for Kaine portal (e.g. "kaine-portal")
+	TokenURL string // Authentik token endpoint (e.g. "https://auth.ssg.sh/application/o/token/")
+
+	// httpOnly cookie settings (Story 1.2)
+	CookieName   string // "kaine_session"
+	CookiePath   string // "/api/kaine"
+	CookieDomain string // ".edin.space" in prod, "" in dev
+	CookieSecure bool   // true in prod, false in dev
+	CookieMaxAge int    // 3600 (1 hour)
 }
 
 // EDINConfig holds configuration for the EDIN (Elite Dangerous Intel Network) database.
@@ -486,6 +497,13 @@ func loadKaineAuthConfig() KaineAuthConfig {
 		Issuer:          getenvDefault("KAINE_AUTH_ISSUER", "https://auth.ssg.sh/application/o/kaine-portal/"),
 		Audience:        getenvDefault("KAINE_AUTH_AUDIENCE", "kaine-portal"),
 		RefreshInterval: refresh,
+		ClientID:        getenvDefault("KAINE_AUTH_CLIENT_ID", "kaine-portal"),
+		TokenURL:        getenvDefault("KAINE_AUTH_TOKEN_URL", "https://auth.ssg.sh/application/o/token/"),
+		CookieName:      "kaine_session",
+		CookiePath:      "/api/kaine",
+		CookieDomain:    os.Getenv("KAINE_AUTH_COOKIE_DOMAIN"),
+		CookieSecure:    getEnvBool("KAINE_AUTH_COOKIE_SECURE", false),
+		CookieMaxAge:    3600,
 	}
 }
 

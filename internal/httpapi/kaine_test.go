@@ -7,6 +7,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/edin-space/edin-backend/internal/config"
@@ -282,6 +283,10 @@ func newTestServer() *Server {
 			HTTP: config.HTTPConfig{
 				InternalKey: "test-key",
 			},
+			KaineAuth: config.KaineAuthConfig{
+				CookieName: "kaine_session",
+				CookiePath: "/api/kaine",
+			},
 		},
 		logger: observability.NewLogger("test"),
 	}
@@ -311,6 +316,7 @@ func newTestableServer() *testableServer {
 }
 
 // withKaineAuthMock is a test version of withKaineAuth that uses the mock validator.
+// Mirrors the real withKaineAuth: Authorization header > kaine_session cookie, no query string.
 func (ts *testableServer) withKaineAuthMock(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if ts.mockValidator == nil {
@@ -321,10 +327,10 @@ func (ts *testableServer) withKaineAuthMock(next http.HandlerFunc) http.HandlerF
 
 		var token string
 		authHeader := r.Header.Get("Authorization")
-		if len(authHeader) > 7 && authHeader[:7] == "Bearer " {
-			token = authHeader[7:]
-		} else {
-			token = r.URL.Query().Get("token")
+		if strings.HasPrefix(authHeader, "Bearer ") {
+			token = strings.TrimPrefix(authHeader, "Bearer ")
+		} else if cookie, err := r.Cookie("kaine_session"); err == nil {
+			token = cookie.Value
 		}
 
 		if token == "" {
@@ -354,25 +360,25 @@ func TestWithKaineAuth(t *testing.T) {
 		Name:   "Test User",
 		Groups: []string{"kaine-chat"},
 	})
-	ts.mockValidator.addUser("valid-token-456", &KaineUser{
+	ts.mockValidator.addUser("valid-token-cookie", &KaineUser{
 		Sub:    "user456",
-		Name:   "Query User",
+		Name:   "Cookie User",
 		Groups: []string{"kaine-ops"},
 	})
 
 	tests := []struct {
 		name           string
 		authHeader     string
-		queryToken     string
+		cookie         string
 		xKaineUser     string // Should be IGNORED - tests that header injection doesn't work
 		expectedStatus int
 		checkUser      bool
 		expectedSub    string
 	}{
 		{
-			name:           "no auth header or query param",
+			name:           "no auth header or cookie",
 			authHeader:     "",
-			queryToken:     "",
+			cookie:         "",
 			expectedStatus: http.StatusUnauthorized,
 		},
 		{
@@ -398,8 +404,8 @@ func TestWithKaineAuth(t *testing.T) {
 			expectedSub:    "user123",
 		},
 		{
-			name:           "valid token in query parameter (for WebSocket)",
-			queryToken:     "valid-token-456",
+			name:           "valid token in kaine_session cookie",
+			cookie:         "kaine_session=valid-token-cookie",
 			expectedStatus: http.StatusOK,
 			checkUser:      true,
 			expectedSub:    "user456",
@@ -429,14 +435,12 @@ func TestWithKaineAuth(t *testing.T) {
 				w.WriteHeader(http.StatusOK)
 			})
 
-			url := "/test"
-			if tt.queryToken != "" {
-				url += "?token=" + tt.queryToken
-			}
-
-			req := httptest.NewRequest(http.MethodGet, url, nil)
+			req := httptest.NewRequest(http.MethodGet, "/test", nil)
 			if tt.authHeader != "" {
 				req.Header.Set("Authorization", tt.authHeader)
+			}
+			if tt.cookie != "" {
+				req.Header.Set("Cookie", tt.cookie)
 			}
 			if tt.xKaineUser != "" {
 				req.Header.Set("X-Kaine-User", tt.xKaineUser)
@@ -617,4 +621,295 @@ func TestKaineUserFromContext(t *testing.T) {
 			t.Errorf("got Sub=%s, want %s", user.Sub, expected.Sub)
 		}
 	})
+}
+
+// newTestServerForHandlers creates a test server with mock validator and nonce store for handler tests.
+func newTestServerForHandlers(mock *mockJWTValidator) *Server {
+	s := &Server{
+		cfg: &config.Config{
+			HTTP: config.HTTPConfig{
+				InternalKey: "test-key",
+			},
+			KaineAuth: config.KaineAuthConfig{
+				CookieName:   "kaine_session",
+				CookiePath:   "/api/kaine",
+				CookieMaxAge: 3600,
+				CookieSecure: false,
+				ClientID:     "kaine-portal",
+			},
+		},
+		logger:       observability.NewLogger("test"),
+		jwtValidator: mock,
+		nonceStore:   newKaineNonceStore(),
+	}
+	return s
+}
+
+// TestKaineToken_ValidCookie_WithCsrfHeader_ReturnsSingleUseNonce verifies the happy path.
+func TestKaineToken_ValidCookie_WithCsrfHeader_ReturnsSingleUseNonce(t *testing.T) {
+	mock := newMockJWTValidator()
+	user := &KaineUser{Sub: "user123", Groups: []string{"kaine-chat"}}
+	mock.addUser("valid-jwt", user)
+
+	s := newTestServerForHandlers(mock)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/kaine/token", nil)
+	req.Header.Set("X-Edin-Fetch", "1")
+	req.Header.Set("Cookie", "kaine_session=valid-jwt")
+	rr := httptest.NewRecorder()
+
+	s.handleKaineToken(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body: %s", rr.Code, rr.Body.String())
+	}
+
+	var resp map[string]any
+	if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+
+	nonce, ok := resp["nonce"].(string)
+	if !ok || nonce == "" {
+		t.Errorf("expected non-empty nonce in response, got: %v", resp)
+	}
+
+	expiresIn, ok := resp["expires_in"].(float64)
+	if !ok || expiresIn != 10 {
+		t.Errorf("expected expires_in=10, got: %v", resp["expires_in"])
+	}
+
+	// Nonce must be usable exactly once
+	if got := s.nonceStore.Consume(nonce); got == nil {
+		t.Error("nonce was not stored or already consumed")
+	}
+	if got := s.nonceStore.Consume(nonce); got != nil {
+		t.Error("nonce was reusable — expected single-use")
+	}
+}
+
+// TestKaineToken_ValidCookie_MissingCsrfHeader_Returns403 verifies CSRF guard works.
+func TestKaineToken_ValidCookie_MissingCsrfHeader_Returns403(t *testing.T) {
+	mock := newMockJWTValidator()
+	mock.addUser("valid-jwt", &KaineUser{Sub: "user123"})
+
+	s := newTestServerForHandlers(mock)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/kaine/token", nil)
+	// Intentionally no X-Edin-Fetch header
+	req.Header.Set("Cookie", "kaine_session=valid-jwt")
+	rr := httptest.NewRecorder()
+
+	s.handleKaineToken(rr, req)
+
+	if rr.Code != http.StatusForbidden {
+		t.Errorf("status = %d, want 403", rr.Code)
+	}
+}
+
+// TestKaineToken_NoCookie_Returns401 verifies missing cookie returns 401.
+func TestKaineToken_NoCookie_Returns401(t *testing.T) {
+	mock := newMockJWTValidator()
+	s := newTestServerForHandlers(mock)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/kaine/token", nil)
+	req.Header.Set("X-Edin-Fetch", "1")
+	// No cookie
+	rr := httptest.NewRecorder()
+
+	s.handleKaineToken(rr, req)
+
+	if rr.Code != http.StatusUnauthorized {
+		t.Errorf("status = %d, want 401", rr.Code)
+	}
+}
+
+// TestKaineToken_InvalidJWTInCookie_Returns401 verifies invalid JWT in cookie returns 401.
+func TestKaineToken_InvalidJWTInCookie_Returns401(t *testing.T) {
+	mock := newMockJWTValidator()
+	// mock has no tokens — all JWTs are invalid
+	s := newTestServerForHandlers(mock)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/kaine/token", nil)
+	req.Header.Set("X-Edin-Fetch", "1")
+	req.Header.Set("Cookie", "kaine_session=invalid-jwt-value")
+	rr := httptest.NewRecorder()
+
+	s.handleKaineToken(rr, req)
+
+	if rr.Code != http.StatusUnauthorized {
+		t.Errorf("status = %d, want 401", rr.Code)
+	}
+}
+
+// TestKaineAuthExchange_SetsHttpOnlyCookie_SameSiteLax verifies the cookie is set correctly.
+func TestKaineAuthExchange_SetsHttpOnlyCookie_SameSiteLax(t *testing.T) {
+	// Mock Authentik token endpoint
+	idToken := "valid-id-token"
+	authentikServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode(map[string]string{"id_token": idToken})
+	}))
+	defer authentikServer.Close()
+
+	mock := newMockJWTValidator()
+	mock.addUser(idToken, &KaineUser{Sub: "user123", Name: "Test User", Groups: []string{"kaine-chat"}})
+
+	s := newTestServerForHandlers(mock)
+	s.cfg.KaineAuth.TokenURL = authentikServer.URL
+
+	body := `{"code":"auth-code-123","redirect_uri":"https://example.com/callback"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/kaine/auth/exchange", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+
+	s.handleKaineAuthExchange(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body: %s", rr.Code, rr.Body.String())
+	}
+
+	// Check cookie is set
+	cookies := rr.Result().Cookies()
+	var sessionCookie *http.Cookie
+	for _, c := range cookies {
+		if c.Name == "kaine_session" {
+			sessionCookie = c
+			break
+		}
+	}
+	if sessionCookie == nil {
+		t.Fatal("expected kaine_session cookie, not found")
+	}
+	if !sessionCookie.HttpOnly {
+		t.Error("cookie should be HttpOnly")
+	}
+	if sessionCookie.SameSite != http.SameSiteLaxMode {
+		t.Errorf("cookie SameSite = %v, want Lax", sessionCookie.SameSite)
+	}
+	if sessionCookie.MaxAge != 3600 {
+		t.Errorf("cookie MaxAge = %d, want 3600", sessionCookie.MaxAge)
+	}
+	if sessionCookie.Value != idToken {
+		t.Errorf("cookie Value = %s, want %s", sessionCookie.Value, idToken)
+	}
+}
+
+// TestKaineAuthExchange_DoesNotReturnTokenInBody verifies no token is leaked in the response body.
+func TestKaineAuthExchange_DoesNotReturnTokenInBody(t *testing.T) {
+	idToken := "secret-id-token"
+	authentikServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode(map[string]string{"id_token": idToken})
+	}))
+	defer authentikServer.Close()
+
+	mock := newMockJWTValidator()
+	mock.addUser(idToken, &KaineUser{Sub: "user123", Groups: []string{"kaine-chat"}})
+
+	s := newTestServerForHandlers(mock)
+	s.cfg.KaineAuth.TokenURL = authentikServer.URL
+
+	body := `{"code":"code","redirect_uri":"https://example.com/callback"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/kaine/auth/exchange", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+
+	s.handleKaineAuthExchange(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body: %s", rr.Code, rr.Body.String())
+	}
+
+	responseBody := rr.Body.String()
+	if strings.Contains(responseBody, idToken) {
+		t.Errorf("response body contains id_token — must not expose token: %s", responseBody)
+	}
+	if strings.Contains(responseBody, "id_token") {
+		t.Errorf("response body contains 'id_token' key — must not expose token: %s", responseBody)
+	}
+
+	// Body must contain user info
+	var resp map[string]any
+	if err := json.Unmarshal([]byte(responseBody), &resp); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+	if _, ok := resp["user"]; !ok {
+		t.Error("response body should contain 'user' key")
+	}
+}
+
+// TestKaineAuthLogout_ClearsCookie verifies logout clears the session cookie.
+func TestKaineAuthLogout_ClearsCookie(t *testing.T) {
+	s := newTestServerForHandlers(newMockJWTValidator())
+
+	req := httptest.NewRequest(http.MethodPost, "/api/kaine/auth/logout", nil)
+	rr := httptest.NewRecorder()
+
+	s.handleKaineAuthLogout(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rr.Code)
+	}
+
+	cookies := rr.Result().Cookies()
+	var sessionCookie *http.Cookie
+	for _, c := range cookies {
+		if c.Name == "kaine_session" {
+			sessionCookie = c
+			break
+		}
+	}
+	if sessionCookie == nil {
+		t.Fatal("expected kaine_session cookie in response (to clear it)")
+	}
+	if sessionCookie.MaxAge != -1 {
+		t.Errorf("cookie MaxAge = %d, want -1 (clear cookie)", sessionCookie.MaxAge)
+	}
+}
+
+// TestKaineAuthMe_ValidCookie_ReturnsUser verifies /api/kaine/auth/me returns user info.
+func TestKaineAuthMe_ValidCookie_ReturnsUser(t *testing.T) {
+	mock := newMockJWTValidator()
+	mock.addUser("valid-jwt", &KaineUser{Sub: "user123", Name: "Test", Email: "test@example.com", Groups: []string{"kaine-chat"}})
+
+	s := newTestServerForHandlers(mock)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/kaine/auth/me", nil)
+	req.Header.Set("Cookie", "kaine_session=valid-jwt")
+	rr := httptest.NewRecorder()
+
+	s.handleKaineAuthMe(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body: %s", rr.Code, rr.Body.String())
+	}
+
+	var resp map[string]any
+	if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+	user, ok := resp["user"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected 'user' object in response, got: %v", resp)
+	}
+	if user["sub"] != "user123" {
+		t.Errorf("user.sub = %v, want user123", user["sub"])
+	}
+}
+
+// TestKaineAuthMe_NoCookie_Returns401 verifies missing cookie returns 401.
+func TestKaineAuthMe_NoCookie_Returns401(t *testing.T) {
+	s := newTestServerForHandlers(newMockJWTValidator())
+
+	req := httptest.NewRequest(http.MethodGet, "/api/kaine/auth/me", nil)
+	rr := httptest.NewRecorder()
+
+	s.handleKaineAuthMe(rr, req)
+
+	if rr.Code != http.StatusUnauthorized {
+		t.Errorf("status = %d, want 401", rr.Code)
+	}
 }

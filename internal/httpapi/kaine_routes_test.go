@@ -32,9 +32,14 @@ func newServerWithMockValidator(tokens map[string]*KaineUser) *Server {
 			HTTP: config.HTTPConfig{
 				InternalKey: "test-key",
 			},
+			KaineAuth: config.KaineAuthConfig{
+				CookieName: "kaine_session",
+				CookiePath: "/api/kaine",
+			},
 		},
 		logger:       observability.NewLogger("test"),
 		jwtValidator: mock,
+		nonceStore:   newKaineNonceStore(),
 	}
 }
 
@@ -48,7 +53,9 @@ func TestKaineRoutesRequireAuth(t *testing.T) {
 	mux := http.NewServeMux()
 	server.RegisterKaineRoutes(mux)
 
-	// All Kaine routes that should require authentication
+	// All Kaine routes that should require authentication.
+	// Note: /api/kaine/chat/ws uses first-message frame auth (not HTTP-level auth),
+	// so it is excluded from this test.
 	protectedRoutes := []struct {
 		method string
 		path   string
@@ -61,7 +68,6 @@ func TestKaineRoutesRequireAuth(t *testing.T) {
 		{http.MethodPost, "/api/kaine/objectives/create", "create objective"},
 		{http.MethodGet, "/api/kaine/systems/search?q=Sol", "search systems"},
 		{http.MethodGet, "/api/kaine/systems/Sol", "get system details"},
-		{http.MethodGet, "/api/kaine/chat/ws", "chat WebSocket"},
 	}
 
 	for _, route := range protectedRoutes {
@@ -134,53 +140,23 @@ func TestKaineRoutesWithAuth(t *testing.T) {
 	}
 }
 
-// TestChatRouteRequiresChatAccess verifies the chat route requires specific chat access.
-func TestChatRouteRequiresChatAccess(t *testing.T) {
+// TestChatRouteNoHTTPLevelAuth verifies that /api/kaine/chat/ws no longer enforces HTTP-level auth.
+// Access control is now enforced via the first-message auth frame (Story 1.1).
+// All requests (regardless of token/role) get 503 when kaineRunner is nil (pre-upgrade check),
+// demonstrating that the WS route is now public at the HTTP level.
+func TestChatRouteNoHTTPLevelAuth(t *testing.T) {
 	tests := []struct {
-		name         string
-		groups       []string
-		token        string
-		expectedCode int
+		name  string
+		token string
 	}{
-		{
-			name:         "ops user cannot access chat",
-			groups:       []string{"kaine-ops", "kaine-directors"},
-			token:        "ops-user-token",
-			expectedCode: http.StatusForbidden,
-		},
-		{
-			name:         "pledge user cannot access chat",
-			groups:       []string{"kaine-pledge"},
-			token:        "pledge-user-token",
-			expectedCode: http.StatusForbidden,
-		},
-		{
-			name:         "chat user can access (but 503 due to no LLM)",
-			groups:       []string{"kaine-chat"},
-			token:        "chat-user-token",
-			expectedCode: http.StatusServiceUnavailable,
-		},
-		{
-			name:         "chat-debug user can access (but 503 due to no LLM)",
-			groups:       []string{"kaine-chat-debug"},
-			token:        "chat-debug-token",
-			expectedCode: http.StatusServiceUnavailable,
-		},
-		{
-			name:         "god mode user can access (but 503 due to no LLM)",
-			groups:       []string{"kaine-approved"},
-			token:        "god-mode-token",
-			expectedCode: http.StatusServiceUnavailable,
-		},
+		{name: "no token", token: ""},
+		{name: "ops user token", token: "ops-user-token"},
+		{name: "chat user token", token: "chat-user-token"},
 	}
 
-	// Build mock validator with all test tokens
-	tokens := make(map[string]*KaineUser)
-	for _, tt := range tests {
-		tokens[tt.token] = &KaineUser{
-			Sub:    "test-user",
-			Groups: tt.groups,
-		}
+	tokens := map[string]*KaineUser{
+		"ops-user-token":  {Sub: "ops-user", Groups: []string{"kaine-ops"}},
+		"chat-user-token": {Sub: "chat-user", Groups: []string{"kaine-chat"}},
 	}
 	server := newServerWithMockValidator(tokens)
 
@@ -190,13 +166,15 @@ func TestChatRouteRequiresChatAccess(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			req := httptest.NewRequest(http.MethodGet, "/api/kaine/chat/ws", nil)
-			req.Header.Set("Authorization", "Bearer "+tt.token)
+			if tt.token != "" {
+				req.Header.Set("Authorization", "Bearer "+tt.token)
+			}
 			rr := httptest.NewRecorder()
 			mux.ServeHTTP(rr, req)
 
-			if rr.Code != tt.expectedCode {
-				t.Errorf("groups=%v: got status %d, want %d",
-					tt.groups, rr.Code, tt.expectedCode)
+			// 503: kaineRunner is nil — handler rejects before upgrade (not an auth check)
+			if rr.Code != http.StatusServiceUnavailable {
+				t.Errorf("groups: got status %d, want 503 (no LLM runner)", rr.Code)
 			}
 		})
 	}

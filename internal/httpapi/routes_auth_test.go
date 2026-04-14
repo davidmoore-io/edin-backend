@@ -134,8 +134,15 @@ var AllRoutes = []RouteSpec{
 	// Unified Search (basic JWT auth)
 	{http.MethodGet, "/api/kaine/search?q=Sol", "unified search", AuthJWT, "Search systems and stations"},
 
-	// Chat (requires chat role)
-	{http.MethodGet, "/api/kaine/chat/ws", "chat WebSocket", AuthJWTChat, "Galaxy AI chat WebSocket"},
+	// Chat WebSocket - auth is now via first-message frame (Story 1.1), not HTTP-level JWT.
+	// The route is effectively public at the HTTP level; access control is in-frame.
+	{http.MethodGet, "/api/kaine/chat/ws", "chat WebSocket", AuthNone, "Galaxy AI chat WebSocket (first-message frame auth)"},
+
+	// Auth endpoints (public — no JWT wrapper)
+	{http.MethodGet, "/api/kaine/token", "kaine token (nonce)", AuthNone, "Issue single-use WS auth nonce"},
+	{http.MethodPost, "/api/kaine/auth/exchange", "kaine auth exchange", AuthNone, "OAuth2 code exchange"},
+	{http.MethodPost, "/api/kaine/auth/logout", "kaine auth logout", AuthNone, "Clear session cookie"},
+	{http.MethodGet, "/api/kaine/auth/me", "kaine auth me", AuthNone, "Get current session user"},
 }
 
 // routeAuthValidator implements TokenValidator for route auth tests.
@@ -168,10 +175,15 @@ func testServerForRoutes(apiKey string, jwtTokens map[string]*KaineUser) *Server
 				InternalKey:  apiKey,
 				AllowOrigins: []string{"https://ssg.sh"},
 			},
+			KaineAuth: config.KaineAuthConfig{
+				CookieName: "kaine_session",
+				CookiePath: "/api/kaine",
+			},
 		},
 		logger:       observability.NewLogger("test"),
 		apiKey:       apiKey, // Must set this field - used by withAuth middleware
 		jwtValidator: validator,
+		nonceStore:   newKaineNonceStore(),
 		// Other fields are nil - routes may return 503 for missing services,
 		// but auth tests only verify 401/403 behavior.
 	}
@@ -550,93 +562,47 @@ func TestKaineEditorRoutesRequireEditorRole(t *testing.T) {
 }
 
 // =============================================================================
-// Test: Kaine Chat Routes Require Chat Role
+// Test: Kaine Chat WebSocket Uses In-Frame Auth (Story 1.1)
 // =============================================================================
 
-func TestKaineChatRoutesRequireChatRole(t *testing.T) {
-	// Define test users with different permission levels
+// TestKaineChatWSNoHTTPLevelAuth verifies that the chat WebSocket no longer enforces
+// HTTP-level auth. All requests (any token or no token) get 503 when kaineRunner is nil —
+// demonstrating the route is public at the HTTP level. Chat access control is now
+// enforced via the first-message nonce frame (tested in kaine_chat_test.go).
+func TestKaineChatWSNoHTTPLevelAuth(t *testing.T) {
 	tokens := map[string]*KaineUser{
-		"ops-user": {
-			Sub:    "ops-user",
-			Name:   "Ops User",
-			Groups: []string{"kaine-ops", "kaine-directors"}, // Has edit but not chat
-		},
-		"pledge-user": {
-			Sub:    "pledge-user",
-			Name:   "Pledge User",
-			Groups: []string{"kaine-pledge"},
-		},
-		"director-only": {
-			Sub:    "director-only",
-			Name:   "Director Only",
-			Groups: []string{"kaine-directors"}, // Can edit but not chat
-		},
-		"chat-user": {
-			Sub:    "chat-user",
-			Name:   "Chat User",
-			Groups: []string{"kaine-chat"},
-		},
-		"chat-debug-user": {
-			Sub:    "chat-debug-user",
-			Name:   "Chat Debug User",
-			Groups: []string{"kaine-chat-debug"},
-		},
-		"chat-debug-test-user": {
-			Sub:    "chat-debug-test-user",
-			Name:   "Chat Debug Test User",
-			Groups: []string{"kaine-chat-debug-test"},
-		},
-		"god-mode-user": {
-			Sub:    "god-mode-user",
-			Name:   "God Mode User",
-			Groups: []string{"kaine-approved"},
-		},
+		"ops-user":  {Sub: "ops-user", Groups: []string{"kaine-ops"}},
+		"chat-user": {Sub: "chat-user", Groups: []string{"kaine-chat"}},
 	}
 	server := testServerForRoutes("api-key", tokens)
 	mux := http.NewServeMux()
 	server.RegisterKaineRoutes(mux)
 
-	chatRoutes := filterRoutesByAuth(AllRoutes, AuthJWTChat)
-
-	// Test each user type against chat routes
 	tests := []struct {
-		token       string
-		canChat     bool
-		description string
+		name        string
+		bearerToken string
 	}{
-		{"ops-user", false, "ops user cannot chat (even with edit access)"},
-		{"pledge-user", false, "pledge user cannot chat"},
-		{"director-only", false, "director cannot chat (edit doesn't grant chat)"},
-		{"chat-user", true, "chat user can chat"},
-		{"chat-debug-user", true, "chat-debug user can chat"},
-		{"chat-debug-test-user", true, "chat-debug-test user can chat"},
-		{"god-mode-user", true, "god mode can chat"},
+		{"no token", ""},
+		{"ops user (no chat role)", "ops-user"},
+		{"chat user (has chat role)", "chat-user"},
+		{"invalid token", "invalid-token"},
 	}
 
-	for _, route := range chatRoutes {
-		for _, tt := range tests {
-			testName := route.Name + "/" + tt.description
-			t.Run(testName, func(t *testing.T) {
-				req := httptest.NewRequest(route.Method, route.Path, nil)
-				req.Header.Set("Authorization", "Bearer "+tt.token)
-				rr := httptest.NewRecorder()
-				mux.ServeHTTP(rr, req)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, "/api/kaine/chat/ws", nil)
+			if tt.bearerToken != "" {
+				req.Header.Set("Authorization", "Bearer "+tt.bearerToken)
+			}
+			rr := httptest.NewRecorder()
+			mux.ServeHTTP(rr, req)
 
-				if tt.canChat {
-					// Should NOT be 401 or 403 (may be 503 due to no LLM)
-					if rr.Code == http.StatusUnauthorized || rr.Code == http.StatusForbidden {
-						t.Errorf("%s %s (%s): got %d, chat user should have access",
-							route.Method, route.Path, tt.description, rr.Code)
-					}
-				} else {
-					// Should be 403 Forbidden
-					if rr.Code != http.StatusForbidden {
-						t.Errorf("%s %s (%s): got %d, non-chat user should get 403",
-							route.Method, route.Path, tt.description, rr.Code)
-					}
-				}
-			})
-		}
+			// All requests get 503 (kaineRunner is nil — pre-upgrade check, not auth)
+			// No request should get 401 or 403 at HTTP level
+			if rr.Code == http.StatusUnauthorized || rr.Code == http.StatusForbidden {
+				t.Errorf("%s: got %d — chat WS should not enforce HTTP-level auth (got auth rejection)", tt.name, rr.Code)
+			}
+		})
 	}
 }
 
@@ -675,22 +641,9 @@ func TestXKaineUserHeaderInjectionBlocked(t *testing.T) {
 		}
 	})
 
-	// Test 2: Try to access chat with header injection
-	t.Run("header injection should not grant chat access", func(t *testing.T) {
-		req := httptest.NewRequest(http.MethodGet, "/api/kaine/chat/ws", nil)
-		req.Header.Set("Authorization", "Bearer basic-user")
-		// Try to inject chat access
-		req.Header.Set("X-Kaine-User", `{"sub":"attacker","groups":["kaine-chat"]}`)
-
-		rr := httptest.NewRecorder()
-		mux.ServeHTTP(rr, req)
-
-		// Should be 403 Forbidden (pledge user cannot access chat)
-		if rr.Code != http.StatusForbidden {
-			t.Errorf("header injection test: got %d, want 403 (injection should be ignored)",
-				rr.Code)
-		}
-	})
+	// Test 2 (chat WS): Removed — /api/kaine/chat/ws now uses first-message frame auth
+	// (Story 1.1). The WS route has no HTTP-level auth, so injection headers are
+	// irrelevant at the HTTP layer. In-frame auth cannot be injected via HTTP headers.
 
 	// Test 3: Header injection without valid token should still fail with 401
 	t.Run("header injection without valid token should fail", func(t *testing.T) {
@@ -725,17 +678,18 @@ func TestXKaineUserHeaderInjectionBlocked(t *testing.T) {
 		}
 	})
 
-	// Test 5: Multiple injection headers
-	t.Run("multiple injection headers should all be ignored", func(t *testing.T) {
-		req := httptest.NewRequest(http.MethodGet, "/api/kaine/chat/ws", nil)
+	// Test 5: Multiple injection headers on an editor-only route
+	t.Run("multiple injection headers should all be ignored on editor route", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodPost, "/api/kaine/objectives/create", nil)
 		req.Header.Set("Authorization", "Bearer basic-user")
 		req.Header.Add("X-Kaine-User", `{"sub":"attacker1","groups":["kaine-approved"]}`)
-		req.Header.Add("X-Kaine-User", `{"sub":"attacker2","groups":["kaine-chat"]}`)
+		req.Header.Add("X-Kaine-User", `{"sub":"attacker2","groups":["kaine-directors"]}`)
+		req.Header.Set("Content-Type", "application/json")
 
 		rr := httptest.NewRecorder()
 		mux.ServeHTTP(rr, req)
 
-		// Should be 403 Forbidden (pledge user cannot access chat)
+		// Should be 403 Forbidden (pledge user cannot create objectives)
 		if rr.Code != http.StatusForbidden {
 			t.Errorf("multiple injection headers: got %d, want 403",
 				rr.Code)
@@ -744,84 +698,45 @@ func TestXKaineUserHeaderInjectionBlocked(t *testing.T) {
 }
 
 // =============================================================================
-// Test: Query Parameter Token for WebSocket
+// Test: Query Parameter Token Removed (Security Fix)
 // =============================================================================
 
-func TestQueryParameterTokenForWebSocket(t *testing.T) {
+// TestQueryParameterTokenRejectedForOtherKaineRoutes verifies that ?token= query string
+// is no longer accepted as authentication for any Kaine route.
+// This was removed in Story 1.1 because tokens in URLs appear in logs, referrer headers,
+// and browser history — making them a security risk.
+func TestQueryParameterTokenRejectedForOtherKaineRoutes(t *testing.T) {
 	tokens := map[string]*KaineUser{
 		"ws-user": {
 			Sub:    "ws-user",
 			Name:   "WebSocket User",
-			Groups: []string{"kaine-chat"},
-		},
-		"ws-user-no-chat": {
-			Sub:    "ws-user-no-chat",
-			Name:   "WebSocket User No Chat",
-			Groups: []string{"kaine-ops"},
+			Groups: []string{"kaine-approved"},
 		},
 	}
 	server := testServerForRoutes("api-key", tokens)
 	mux := http.NewServeMux()
 	server.RegisterKaineRoutes(mux)
 
-	// Test 1: Valid token in query parameter
-	t.Run("valid token in query parameter", func(t *testing.T) {
-		req := httptest.NewRequest(http.MethodGet, "/api/kaine/chat/ws?token=ws-user", nil)
-		// No Authorization header, token is in query param
+	// Query-string token should NOT grant access to any auth-protected route
+	t.Run("query string token does not authenticate objectives route", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/api/kaine/objectives?token=ws-user", nil)
 		rr := httptest.NewRecorder()
 		mux.ServeHTTP(rr, req)
 
-		// Should NOT be 401 or 403 (may be 503 due to no LLM runner)
-		if rr.Code == http.StatusUnauthorized || rr.Code == http.StatusForbidden {
-			t.Errorf("query param token: got %d, should accept token in query param", rr.Code)
-		}
-	})
-
-	// Test 2: Invalid token in query parameter
-	t.Run("invalid token in query parameter", func(t *testing.T) {
-		req := httptest.NewRequest(http.MethodGet, "/api/kaine/chat/ws?token=invalid-token", nil)
-		rr := httptest.NewRecorder()
-		mux.ServeHTTP(rr, req)
-
+		// Should be 401 — query string token is ignored
 		if rr.Code != http.StatusUnauthorized {
-			t.Errorf("invalid query param token: got %d, want 401", rr.Code)
+			t.Errorf("query string token: got %d, want 401 (query string no longer supported)", rr.Code)
 		}
 	})
 
-	// Test 3: Empty token in query parameter
-	t.Run("empty token in query parameter", func(t *testing.T) {
-		req := httptest.NewRequest(http.MethodGet, "/api/kaine/chat/ws?token=", nil)
+	t.Run("query string token does not authenticate systems search route", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/api/kaine/systems/search?q=Sol&token=ws-user", nil)
 		rr := httptest.NewRecorder()
 		mux.ServeHTTP(rr, req)
 
+		// Should be 401 — query string token is ignored
 		if rr.Code != http.StatusUnauthorized {
-			t.Errorf("empty query param token: got %d, want 401", rr.Code)
-		}
-	})
-
-	// Test 4: Valid token but wrong role
-	t.Run("valid token in query param but wrong role", func(t *testing.T) {
-		req := httptest.NewRequest(http.MethodGet, "/api/kaine/chat/ws?token=ws-user-no-chat", nil)
-		rr := httptest.NewRecorder()
-		mux.ServeHTTP(rr, req)
-
-		// Should be 403 (authenticated but no chat access)
-		if rr.Code != http.StatusForbidden {
-			t.Errorf("query param token wrong role: got %d, want 403", rr.Code)
-		}
-	})
-
-	// Test 5: Authorization header takes precedence over query param
-	t.Run("authorization header takes precedence over query param", func(t *testing.T) {
-		req := httptest.NewRequest(http.MethodGet, "/api/kaine/chat/ws?token=invalid-token", nil)
-		// Valid token in header, invalid in query
-		req.Header.Set("Authorization", "Bearer ws-user")
-		rr := httptest.NewRecorder()
-		mux.ServeHTTP(rr, req)
-
-		// Should succeed because header takes precedence
-		if rr.Code == http.StatusUnauthorized || rr.Code == http.StatusForbidden {
-			t.Errorf("header should take precedence: got %d, expected success or 503", rr.Code)
+			t.Errorf("query string token on systems search: got %d, want 401", rr.Code)
 		}
 	})
 }
@@ -934,9 +849,9 @@ func TestAllRoutesAreTested(t *testing.T) {
 	if jwtEdit < 6 {
 		t.Errorf("expected at least 6 JWT editor routes, got %d", jwtEdit)
 	}
-	if jwtChat < 1 {
-		t.Errorf("expected at least 1 JWT chat route, got %d", jwtChat)
-	}
+	// jwtChat routes: the chat WebSocket was moved to first-message frame auth (Story 1.1).
+	// It is now AuthNone at the HTTP level. In-frame auth tests are in kaine_chat_test.go.
+	_ = jwtChat
 }
 
 // =============================================================================

@@ -51,6 +51,9 @@ func Run(ctx context.Context, cfg *config.Config, opsManager *ops.Manager, llmSt
 		go wsHub.Run()
 	}
 
+	// Initialize nonce store for WebSocket auth frame authentication
+	nonceStore := newKaineNonceStore()
+
 	server := &Server{
 		cfg:            cfg,
 		ops:            opsManager,
@@ -70,6 +73,7 @@ func Run(ctx context.Context, cfg *config.Config, opsManager *ops.Manager, llmSt
 		dayz:           dayzService,
 		kaineStore:     kaineStore,
 		eddnIntelStore: eddnIntelStore,
+		nonceStore:     nonceStore,
 	}
 
 	if server.toolExec == nil {
@@ -219,8 +223,9 @@ type Server struct {
 	memgraph     *memgraph.Client
 	dayz         *dayz.Service
 	kaineStore   *kaine.Store
-	jwtValidator TokenValidator
-	eddnIntelStore *store.SystemIntelStore // EDDN raw feed queries for system intel
+	jwtValidator    TokenValidator
+	nonceStore      *kaineNonceStore        // Single-use nonce store for WebSocket auth frames
+	eddnIntelStore  *store.SystemIntelStore // EDDN raw feed queries for system intel
 	authentikClient *authentik.Client       // Authentik API client for user management
 
 	// Power standings cache (lazy-loaded, 15-minute TTL)
