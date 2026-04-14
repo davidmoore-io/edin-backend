@@ -19,16 +19,17 @@ type Config struct {
 	MCPBaseURL        string
 	EnableMCPStdIO    bool
 
-	HTTP       HTTPConfig
-	Discord    DiscordConfig
-	Anthropic  AnthropicConfig
-	LLM        LLMConfig
-	Operations OperationsConfig
-	RateLimit  RateLimitConfig
-	Logging    LoggingConfig
-	EDIN       EDINConfig
-	KaineAuth  KaineAuthConfig
-	Authentik  AuthentikConfig
+	HTTP          HTTPConfig
+	Discord       DiscordConfig
+	Anthropic     AnthropicConfig
+	LLM           LLMConfig
+	Operations    OperationsConfig
+	RateLimit     RateLimitConfig
+	Logging       LoggingConfig
+	EDIN          EDINConfig
+	KaineAuth     KaineAuthConfig
+	Authentik     AuthentikConfig
+	CommanderAuth CommanderAuthConfig
 }
 
 // AuthentikConfig holds Authentik identity provider API settings.
@@ -36,6 +37,28 @@ type AuthentikConfig struct {
 	Enabled bool
 	URL     string
 	Token   string
+}
+
+// CommanderAuthConfig holds Frontier PKCE auth + EDIN JWT settings for the Commander (Copilot) feature.
+type CommanderAuthConfig struct {
+	Enabled              bool
+	PrivateKeyPath       string        // Path to RSA-2048 PEM private key file
+	PublicKeyPath        string        // Path to RSA-2048 PEM public key file
+	JWTIssuer            string        // "edin-space"
+	JWTExpiry            time.Duration // 24h default
+	FrontierClientID     string        // Frontier OAuth2 client ID
+	FrontierClientSecret string        // Frontier OAuth2 client secret
+	FrontierAuthURL      string        // "https://auth.frontierstore.net"
+	FrontierCAPIURL      string        // "https://companion.orerve.net"
+	FrontierScope        string        // "auth capi" — MUST default to "auth capi"
+	FrontierCAPITimeout  time.Duration // 10s default — CAPI is unreliable/slow
+	PKCEStateTTL         time.Duration // 10m — how long PKCE state is valid
+	PKCEMaxPending       int           // 1000 — max pending PKCE auth sessions
+	CookieName           string        // "commander_session"
+	CookiePath           string        // "/api/commander"
+	CookieDomain         string        // ".edin.space" in prod, "" in dev
+	CookieSecure         bool          // true in prod (Caddy adds Secure)
+	CookieMaxAge         int           // 86400 (24h)
 }
 
 // KaineAuthConfig holds Kaine portal JWT authentication settings.
@@ -232,6 +255,7 @@ func Load() (*Config, error) {
 	edinCfg := loadEDINConfig()
 	kaineAuthCfg := loadKaineAuthConfig()
 	authentikCfg := loadAuthentikConfig()
+	commanderAuthCfg := loadCommanderAuthConfig()
 
 	return &Config{
 		DomainName:        domain,
@@ -251,6 +275,7 @@ func Load() (*Config, error) {
 		EDIN:              edinCfg,
 		KaineAuth:         kaineAuthCfg,
 		Authentik:         authentikCfg,
+		CommanderAuth:     commanderAuthCfg,
 	}, nil
 }
 
@@ -512,6 +537,55 @@ func loadAuthentikConfig() AuthentikConfig {
 		Enabled: getEnvBool("AUTHENTIK_API_ENABLED", false),
 		URL:     getenvDefault("AUTHENTIK_API_URL", "https://auth.ssg.sh"),
 		Token:   os.Getenv("AUTHENTIK_API_TOKEN"),
+	}
+}
+
+func loadCommanderAuthConfig() CommanderAuthConfig {
+	privateKeyPath := os.Getenv("COMMANDER_JWT_PRIVATE_KEY_PATH")
+	publicKeyPath := os.Getenv("COMMANDER_JWT_PUBLIC_KEY_PATH")
+
+	// Enabled is false if either key path is empty, regardless of the env var.
+	enabled := getEnvBool("COMMANDER_AUTH_ENABLED", false) && privateKeyPath != "" && publicKeyPath != ""
+
+	jwtExpiry := getEnvDuration("COMMANDER_JWT_EXPIRY", 24*time.Hour)
+	if jwtExpiry <= 0 {
+		jwtExpiry = 24 * time.Hour
+	}
+
+	capiTimeout := getEnvDuration("FRONTIER_CAPI_TIMEOUT", 10*time.Second)
+	if capiTimeout <= 0 {
+		capiTimeout = 10 * time.Second
+	}
+
+	pkceStateTTL := getEnvDuration("PKCE_STATE_TTL", 10*time.Minute)
+	if pkceStateTTL <= 0 {
+		pkceStateTTL = 10 * time.Minute
+	}
+
+	pkceMaxPending := getenvInt("PKCE_MAX_PENDING", 1000)
+	if pkceMaxPending <= 0 {
+		pkceMaxPending = 1000
+	}
+
+	return CommanderAuthConfig{
+		Enabled:              enabled,
+		PrivateKeyPath:       privateKeyPath,
+		PublicKeyPath:        publicKeyPath,
+		JWTIssuer:            getenvDefault("COMMANDER_JWT_ISSUER", "edin-space"),
+		JWTExpiry:            jwtExpiry,
+		FrontierClientID:     os.Getenv("FRONTIER_CLIENT_ID"),
+		FrontierClientSecret: os.Getenv("FRONTIER_CLIENT_SECRET"),
+		FrontierAuthURL:      getenvDefault("FRONTIER_AUTH_URL", "https://auth.frontierstore.net"),
+		FrontierCAPIURL:      getenvDefault("FRONTIER_CAPI_URL", "https://companion.orerve.net"),
+		FrontierScope:        getenvDefault("FRONTIER_SCOPE", "auth capi"),
+		FrontierCAPITimeout:  capiTimeout,
+		PKCEStateTTL:         pkceStateTTL,
+		PKCEMaxPending:       pkceMaxPending,
+		CookieName:           "commander_session",
+		CookiePath:           "/api/commander",
+		CookieDomain:         os.Getenv("COMMANDER_COOKIE_DOMAIN"),
+		CookieSecure:         getEnvBool("COMMANDER_COOKIE_SECURE", false),
+		CookieMaxAge:         86400,
 	}
 }
 
