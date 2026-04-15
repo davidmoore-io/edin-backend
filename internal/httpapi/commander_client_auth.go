@@ -41,9 +41,11 @@ type clientAuthSession struct {
 
 // ─── Desktop flow redirect URI ────────────────────────────────────────────────
 
-// desktopRedirectURI is the FDEV-registered callback URL used by the desktop flow.
-// It must match exactly what was registered with Frontier.
-const desktopRedirectURI = "https://edin.space/api/commander/auth/callback"
+// desktopRedirectURI returns the FDEV-registered callback URL for the desktop poll flow.
+// Configurable via DESKTOP_REDIRECT_URI env var; defaults to production URL.
+func (s *Server) desktopRedirectURI() string {
+	return s.cfg.CommanderAuth.DesktopRedirectURI
+}
 
 // ─── Handlers ─────────────────────────────────────────────────────────────────
 
@@ -108,7 +110,7 @@ func (s *Server) handleClientAuthInitiate(w http.ResponseWriter, r *http.Request
 	authURL := cfg.FrontierAuthURL + "/auth" +
 		"?client_id=" + cfg.FrontierClientID +
 		"&response_type=code" +
-		"&redirect_uri=" + urlEncode(desktopRedirectURI) +
+		"&redirect_uri=" + urlEncode(s.desktopRedirectURI()) +
 		"&scope=auth+capi" +
 		"&state=" + state +
 		"&code_challenge=" + challenge +
@@ -280,7 +282,7 @@ func (s *Server) handleClientAuthDesktopCallback(w http.ResponseWriter, r *http.
 	)
 
 	// Exchange code for tokens.
-	tokenResp, err := fc.ExchangeCode(ctx, code, session.CodeVerifier, desktopRedirectURI)
+	tokenResp, err := fc.ExchangeCode(ctx, code, session.CodeVerifier, s.desktopRedirectURI())
 	if err != nil {
 		slog.Error("client_auth_callback: frontier exchange code failed", "error", err)
 		s.writeError(w, http.StatusBadGateway, "failed to exchange authorization code")
@@ -353,4 +355,5 @@ func (s *Server) RegisterClientAuthRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/v1/auth/frontier/initiate", s.handleClientAuthInitiate)
 	mux.HandleFunc("/api/v1/auth/frontier/poll", s.handleClientAuthPoll)
 	mux.HandleFunc("/api/v1/auth/refresh", s.handleClientAuthRefresh)
+	mux.Handle("GET /api/v1/auth/me", s.withCommanderAuth(http.HandlerFunc(s.handleAuthMe)))
 }
