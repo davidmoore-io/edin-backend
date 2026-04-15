@@ -52,3 +52,15 @@ kaine_auth_audience: "kaine-portal"
 
 # Domain
 edin_domain: edin.space
+
+# TimescaleDB superuser access — used for DB role provisioning (db_roles.yml)
+# NOTE: edin_db_host is a Docker network name (edin-timescaledb) — only reachable
+# from within Docker. For Ansible running on the host, use the VPN address instead.
+timescaledb_admin_host: "{{ vpn_interface_address }}"
+timescaledb_superuser: postgres
+
+# Commander DB role credentials (values stored in ansible-vault encrypted creds.yml)
+vault_edin_cmd_writer_password: "{{ vault_edin_cmd_writer_password }}"
+vault_edin_cmd_reader_password: "{{ vault_edin_cmd_reader_password }}"
+vault_edin_migrator_password: "{{ vault_edin_migrator_password }}"
+vault_timescaledb_superuser_password: "{{ vault_timescaledb_superuser_password }}"

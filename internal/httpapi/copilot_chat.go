@@ -94,6 +94,11 @@ func (s *Server) handleCopilotChatWebSocket(w http.ResponseWriter, r *http.Reque
 
 	s.logger.Info(fmt.Sprintf("copilot_ws connected user=%s session=%s debug=%t history=%d", user.Sub, sessionID, session.debugMode, len(history)))
 
+	// Track active session count.
+	wsm := initEdinMetrics()
+	wsm.copilotChatSessionsActive.Inc()
+	defer wsm.copilotChatSessionsActive.Dec()
+
 	// Send connected message
 	session.send(ChatWSMessage{
 		Type:      ChatWSTypeConnected,
@@ -225,6 +230,7 @@ func (s *Server) handleCopilotMessage(session *chatSession, content string, sess
 	ctx = tools.WithCommanderFID(ctx, session.user.Sub)
 
 	// Create progress callback that streams to WebSocket
+	pm := initEdinMetrics()
 	onProgress := func(event assistant.ProgressEvent) {
 		switch event.Type {
 		case assistant.ProgressThinking:
@@ -239,6 +245,8 @@ func (s *Server) handleCopilotMessage(session *chatSession, content string, sess
 				Content:  event.Message,
 			})
 		case assistant.ProgressToolComplete:
+			// Count tool calls on completion so each invocation is counted once.
+			pm.copilotToolCallsTotal.WithLabelValues(event.ToolName).Inc()
 			session.send(ChatWSMessage{
 				Type:     ChatWSTypeToolComplete,
 				ToolName: event.ToolName,

@@ -271,10 +271,13 @@ func (s *Server) handleCommanderAuthCallback(w http.ResponseWriter, r *http.Requ
 
 	redirectURI := buildRedirectURI(r)
 
+	am := initEdinMetrics()
+
 	// Exchange code for tokens.
 	tokenResp, err := fc.ExchangeCode(r.Context(), code, codeVerifier, redirectURI)
 	if err != nil {
 		slog.Error("frontier exchange code failed", "error", err)
+		am.commanderAuthAttemptsTotal.WithLabelValues("failure").Inc()
 		s.writeError(w, http.StatusBadGateway, "failed to exchange authorization code")
 		return
 	}
@@ -283,6 +286,7 @@ func (s *Server) handleCommanderAuthCallback(w http.ResponseWriter, r *http.Requ
 	meResp, err := fc.GetMe(r.Context(), tokenResp.AccessToken)
 	if err != nil {
 		slog.Error("frontier /me failed", "error", err)
+		am.commanderAuthAttemptsTotal.WithLabelValues("failure").Inc()
 		s.writeError(w, http.StatusBadGateway, "failed to retrieve frontier identity")
 		return
 	}
@@ -306,12 +310,14 @@ func (s *Server) handleCommanderAuthCallback(w http.ResponseWriter, r *http.Requ
 
 	// Issue EDIN JWT.
 	if s.commanderJWTIssuer == nil {
+		am.commanderAuthAttemptsTotal.WithLabelValues("failure").Inc()
 		s.writeError(w, http.StatusServiceUnavailable, "commander auth not configured")
 		return
 	}
 	tokenString, jti, err := s.commanderJWTIssuer.Issue(fid, name)
 	if err != nil {
 		slog.Error("JWT issue failed", "error", err)
+		am.commanderAuthAttemptsTotal.WithLabelValues("failure").Inc()
 		s.writeError(w, http.StatusInternalServerError, "failed to issue session token")
 		return
 	}
@@ -335,6 +341,13 @@ func (s *Server) handleCommanderAuthCallback(w http.ResponseWriter, r *http.Requ
 		Secure:   cfg.CookieSecure,
 		SameSite: http.SameSiteLaxMode,
 	})
+
+	// Record auth outcome: success or capi_pending.
+	if capiPending {
+		am.commanderAuthAttemptsTotal.WithLabelValues("capi_pending").Inc()
+	} else {
+		am.commanderAuthAttemptsTotal.WithLabelValues("success").Inc()
+	}
 
 	s.writeJSON(w, http.StatusOK, map[string]any{
 		"commander_name": name,

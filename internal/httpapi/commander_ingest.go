@@ -99,6 +99,10 @@ func (s *Server) handleIngestSingle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	m := initEdinMetrics()
+	start := time.Now()
+	const endpoint = "single"
+
 	r.Body = http.MaxBytesReader(w, r.Body, ingestMaxBodyBytes)
 
 	var req ingestSingleRequest
@@ -123,8 +127,12 @@ func (s *Server) handleIngestSingle(w http.ResponseWriter, r *http.Request) {
 		s.logger.Warn(fmt.Sprintf("ingest: body FID %q does not match JWT FID %q — using JWT FID", req.Event.FID, fid))
 	}
 
+	fh := fidHash(fid)
+
 	now := time.Now()
 	if errMsg := validateIngestEvent(&req.Event, now); errMsg != "" {
+		m.ingestEventsTotal.WithLabelValues("rejected", fh).Inc()
+		m.ingestLatencySeconds.WithLabelValues(endpoint).Observe(time.Since(start).Seconds())
 		s.writeError(w, http.StatusBadRequest, errMsg)
 		return
 	}
@@ -149,6 +157,15 @@ func (s *Server) handleIngestSingle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Record per-event outcomes.
+	for i := 0; i < inserted; i++ {
+		m.ingestEventsTotal.WithLabelValues("accepted", fh).Inc()
+	}
+	for i := 0; i < duplicated; i++ {
+		m.ingestEventsTotal.WithLabelValues("duplicate", fh).Inc()
+	}
+	m.ingestLatencySeconds.WithLabelValues(endpoint).Observe(time.Since(start).Seconds())
+
 	s.writeJSON(w, http.StatusOK, ingestResponse{
 		EventsWritten:    inserted,
 		EventsDuplicated: duplicated,
@@ -162,6 +179,10 @@ func (s *Server) handleIngestBatch(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
+
+	m := initEdinMetrics()
+	start := time.Now()
+	const endpoint = "batch"
 
 	r.Body = http.MaxBytesReader(w, r.Body, ingestMaxBodyBytes)
 
@@ -188,10 +209,14 @@ func (s *Server) handleIngestBatch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	fh := fidHash(fid)
+
 	// Validate ALL events first (fail-fast — reject entire batch on any error).
 	now := time.Now()
 	for i, ev := range req.Events {
 		if errMsg := validateIngestEvent(&ev, now); errMsg != "" {
+			m.ingestEventsTotal.WithLabelValues("rejected", fh).Add(float64(len(req.Events)))
+			m.ingestLatencySeconds.WithLabelValues(endpoint).Observe(time.Since(start).Seconds())
 			s.writeError(w, http.StatusBadRequest,
 				fmt.Sprintf("event[%d]: %s", i, errMsg))
 			return
@@ -220,6 +245,15 @@ func (s *Server) handleIngestBatch(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, http.StatusInternalServerError, "failed to store events")
 		return
 	}
+
+	// Record per-event outcomes.
+	if inserted > 0 {
+		m.ingestEventsTotal.WithLabelValues("accepted", fh).Add(float64(inserted))
+	}
+	if duplicated > 0 {
+		m.ingestEventsTotal.WithLabelValues("duplicate", fh).Add(float64(duplicated))
+	}
+	m.ingestLatencySeconds.WithLabelValues(endpoint).Observe(time.Since(start).Seconds())
 
 	s.writeJSON(w, http.StatusOK, ingestResponse{
 		EventsWritten:    inserted,
