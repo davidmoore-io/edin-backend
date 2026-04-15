@@ -99,6 +99,10 @@ func Run(ctx context.Context, cfg *config.Config, opsManager *ops.Manager, llmSt
 	if server.kaineStore != nil {
 		server.toolExec = server.toolExec.WithKaineStore(server.kaineStore)
 	}
+	// Wire up commander repository for journal event and location tools
+	if server.commanderRepo != nil {
+		server.toolExec = server.toolExec.WithCommanderRepository(server.commanderRepo)
+	}
 	if server.llmRunner == nil && llmClient != nil {
 		server.llmRunner = assistant.NewRunner(llmClient, server.toolExec, cfg.LLM.SystemPrompt, cfg.LLM.MaxIterations)
 	}

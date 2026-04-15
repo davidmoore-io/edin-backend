@@ -137,15 +137,16 @@ type UpdateBroadcaster interface {
 
 // Executor wires low-level operations to tool invocations.
 type Executor struct {
-	ops           *ops.Manager
-	spansh        *spansh.Client
-	edsm          *edsm.Client
-	cacheStore    *store.CacheStore
-	memgraph      *memgraph.Client
-	kaineStore    *kaine.Store
-	historyClient HistoryQuerier
-	broadcaster   UpdateBroadcaster
-	logger        func(msg string)
+	ops            *ops.Manager
+	spansh         *spansh.Client
+	edsm           *edsm.Client
+	cacheStore     *store.CacheStore
+	memgraph       *memgraph.Client
+	kaineStore     *kaine.Store
+	commanderRepo  store.CommanderRepository
+	historyClient  HistoryQuerier
+	broadcaster    UpdateBroadcaster
+	logger         func(msg string)
 }
 
 // NewExecutor constructs a tool executor.
@@ -173,6 +174,12 @@ func (e *Executor) WithMemgraph(client *memgraph.Client) *Executor {
 // WithKaineStore sets the Kaine store for accessing mining maps and objectives.
 func (e *Executor) WithKaineStore(store *kaine.Store) *Executor {
 	e.kaineStore = store
+	return e
+}
+
+// WithCommanderRepository sets the commander repository for journal event and location tools.
+func (e *Executor) WithCommanderRepository(repo store.CommanderRepository) *Executor {
+	e.commanderRepo = repo
 	return e
 }
 
@@ -291,11 +298,11 @@ func (e *Executor) Invoke(ctx context.Context, name string, args map[string]any)
 	case ToolGalaxySchema:
 		return e.galaxySchema(ctx, args)
 
-	// Commander tools (stub — full implementation in Stories 5.2/5.3)
+	// Commander tools
 	case ToolCommanderEvents:
-		return nil, fmt.Errorf("commander_events not yet implemented")
+		return e.commanderEvents(ctx, args)
 	case ToolCommanderLocation:
-		return nil, fmt.Errorf("commander_location not yet implemented")
+		return e.commanderLocation(ctx)
 
 	default:
 		return nil, fmt.Errorf("unknown tool %q", name)

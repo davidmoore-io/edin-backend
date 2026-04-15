@@ -11,6 +11,7 @@ import (
 	"github.com/edin-space/edin-backend/internal/assistant"
 	"github.com/edin-space/edin-backend/internal/authz"
 	"github.com/edin-space/edin-backend/internal/llm"
+	"github.com/edin-space/edin-backend/internal/tools"
 )
 
 // handleCopilotChatWebSocket handles the WebSocket connection for Copilot chat.
@@ -218,9 +219,10 @@ func (s *Server) handleCopilotMessage(session *chatSession, content string, sess
 		Content: "Processing your question...",
 	})
 
-	// Set up context with copilot authorization scope
+	// Set up context with copilot authorization scope and commander FID for tools
 	ctx := assistant.WithContext(context.Background(), session.sessionID, session.user.Sub)
 	ctx = authz.ContextWithScopes(ctx, authz.ScopeCopilotChat)
+	ctx = tools.WithCommanderFID(ctx, session.user.Sub)
 
 	// Create progress callback that streams to WebSocket
 	onProgress := func(event assistant.ProgressEvent) {
