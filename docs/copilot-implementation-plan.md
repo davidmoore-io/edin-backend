@@ -730,7 +730,7 @@ does NOT leak data — the safe-by-default behaviour.
 
 ---
 
-### Story 3.2 — Commander Repository (Go)
+### Story 3.2 ✅ — Commander Repository (Go)
 
 **Complexity:** M
 
@@ -1099,7 +1099,7 @@ func TestCopilotPrompt_ContainsUntrustedDataWarning(t *testing.T)
 
 ---
 
-### Story 6.2 — Copilot WebSocket Handler, Scope & Routes
+### Story 6.2 ✅ — Copilot WebSocket Handler, Scope & Routes
 
 **Complexity:** L
 
@@ -1224,7 +1224,7 @@ test('getWSNonce() calls /api/commander/auth/token with X-Edin-Fetch header')
 
 ---
 
-### Story 7.2 — Login, Callback, and Chat Pages
+### Story 7.2 ✅ — Login, Callback, and Chat Pages
 
 **Complexity:** M
 
@@ -1282,7 +1282,7 @@ test('navigating to /copilot/chat without auth redirects to /copilot/login')
 
 ---
 
-### Story 8.1 — Go Backend: edin-client Desktop Auth Flow (Poll-Based)
+### Story 8.1 ✅ — Go Backend: edin-client Desktop Auth Flow (Poll-Based)
 
 **Complexity:** M
 
