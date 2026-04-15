@@ -470,6 +470,186 @@ func (s *Server) handleCommanderAuthLogout(w http.ResponseWriter, r *http.Reques
 	})
 }
 
+// handleCommanderAuthRefresh handles GET /api/commander/auth/refresh.
+// It validates the existing session, optionally refreshes Frontier tokens,
+// issues a new EDIN JWT, revokes the old one, and returns updated session info.
+func (s *Server) handleCommanderAuthRefresh(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		s.writeError(w, http.StatusMethodNotAllowed, "only GET allowed")
+		return
+	}
+
+	cfg := s.cfg.CommanderAuth
+	ctx := r.Context()
+
+	// Step 1: Read commander_session cookie.
+	cookie, err := r.Cookie(cfg.CookieName)
+	if err != nil {
+		s.writeError(w, http.StatusUnauthorized, "no session cookie")
+		return
+	}
+
+	// Step 2: Validate EDIN JWT.
+	if s.commanderJWTValidator == nil {
+		s.writeError(w, http.StatusServiceUnavailable, "commander auth not configured")
+		return
+	}
+	claims, err := s.commanderJWTValidator.Validate(ctx, cookie.Value)
+	if err != nil {
+		slog.Warn("commander_refresh: JWT validation failed", "error", err)
+		s.writeError(w, http.StatusUnauthorized, "invalid session")
+		return
+	}
+
+	// Step 3: Extract JTI.
+	oldJTI := claims.ID
+	fid := claims.FID
+	name := claims.Name
+
+	// Step 4: Look up Frontier token record in Redis.
+	if s.redisClient == nil {
+		s.writeError(w, http.StatusServiceUnavailable, "redis not configured")
+		return
+	}
+	raw, err := s.redisClient.Get(ctx, frontierTokenKey(oldJTI)).Result()
+	if err != nil {
+		if err == redis.Nil {
+			s.writeError(w, http.StatusUnauthorized, "session expired, please re-authenticate")
+			return
+		}
+		slog.Error("commander_refresh: redis get failed", "error", err)
+		s.writeError(w, http.StatusInternalServerError, "session lookup failed")
+		return
+	}
+
+	// Step 5: Parse stored token record.
+	var record frontierTokenRecord
+	if err := json.Unmarshal([]byte(raw), &record); err != nil {
+		slog.Error("commander_refresh: unmarshal frontier record", "error", err)
+		s.writeError(w, http.StatusInternalServerError, "session data corrupted")
+		return
+	}
+
+	// Step 6: Check if Frontier access token is still valid.
+	expiresAt, err := time.Parse(time.RFC3339, record.ExpiresAt)
+	if err != nil {
+		slog.Error("commander_refresh: parse expires_at", "error", err)
+		s.writeError(w, http.StatusInternalServerError, "session data corrupted")
+		return
+	}
+
+	fc := frontier.New(
+		cfg.FrontierAuthURL,
+		cfg.FrontierCAPIURL,
+		cfg.FrontierClientID,
+		cfg.FrontierClientSecret,
+		cfg.FrontierScope,
+		cfg.FrontierCAPITimeout,
+	)
+
+	var newTokenResp *frontier.TokenResponse
+	capiPending := record.CAPIPending
+
+	if time.Now().After(expiresAt) {
+		// Access token is expired — need to refresh.
+		if record.RefreshToken == "" {
+			s.writeError(w, http.StatusUnauthorized, "refresh token not available")
+			return
+		}
+		newTokenResp, err = fc.RefreshToken(ctx, record.RefreshToken)
+		if err != nil {
+			slog.Error("commander_refresh: frontier refresh token failed", "error", err)
+			s.writeError(w, http.StatusBadGateway, "failed to refresh frontier tokens")
+			return
+		}
+	}
+	// If not expired, newTokenResp remains nil — we'll reuse the existing record.
+
+	// Step 7: If CAPI pending, attempt to resolve the commander name.
+	if capiPending {
+		accessToken := record.AccessToken
+		if newTokenResp != nil {
+			accessToken = newTokenResp.AccessToken
+		}
+		profileResp, err := fc.GetProfile(ctx, accessToken)
+		if err != nil {
+			slog.Warn("commander_refresh: CAPI profile retry failed, keeping capi_pending", "error", err)
+			// Keep capiPending=true and existing name.
+		} else if profileResp.Commander.Name != "" {
+			name = profileResp.Commander.Name
+			capiPending = false
+		}
+	}
+
+	// Step 8: Issue new EDIN JWT.
+	if s.commanderJWTIssuer == nil {
+		s.writeError(w, http.StatusServiceUnavailable, "commander auth not configured")
+		return
+	}
+	newTokenString, newJTI, err := s.commanderJWTIssuer.Issue(fid, name)
+	if err != nil {
+		slog.Error("commander_refresh: JWT issue failed", "error", err)
+		s.writeError(w, http.StatusInternalServerError, "failed to issue session token")
+		return
+	}
+
+	// Step 9: Revoke old JTI.
+	if err := s.commanderJWTValidator.RevokeJTI(ctx, oldJTI, claims.ExpiresAt.Time); err != nil {
+		slog.Error("commander_refresh: failed to revoke old JTI", "jti", oldJTI, "error", err)
+		// Non-fatal — continue with the new token.
+	}
+
+	// Step 10: Store Frontier tokens under the new JTI.
+	if newTokenResp != nil {
+		// We got fresh Frontier tokens — store them.
+		if err := storeFrontierTokens(ctx, s.redisClient, newJTI, newTokenResp, capiPending); err != nil {
+			slog.Error("commander_refresh: failed to store new frontier tokens", "error", err)
+			// Non-fatal.
+		}
+	} else {
+		// Reuse existing record under new JTI with TTL based on remaining Frontier token life.
+		updatedRecord := frontierTokenRecord{
+			AccessToken:  record.AccessToken,
+			RefreshToken: record.RefreshToken,
+			ExpiresAt:    record.ExpiresAt,
+			CAPIPending:  capiPending,
+		}
+		data, err := json.Marshal(updatedRecord)
+		if err != nil {
+			slog.Error("commander_refresh: marshal updated record", "error", err)
+			// Non-fatal.
+		} else {
+			ttl := time.Until(expiresAt)
+			if ttl < time.Minute {
+				ttl = time.Minute // ensure a minimum useful TTL
+			}
+			if err := s.redisClient.Set(ctx, frontierTokenKey(newJTI), data, ttl).Err(); err != nil {
+				slog.Error("commander_refresh: redis set new JTI record", "error", err)
+				// Non-fatal.
+			}
+		}
+	}
+
+	// Step 11: Set new commander_session cookie.
+	http.SetCookie(w, &http.Cookie{
+		Name:     cfg.CookieName,
+		Value:    newTokenString,
+		Path:     cfg.CookiePath,
+		Domain:   cfg.CookieDomain,
+		MaxAge:   cfg.CookieMaxAge,
+		HttpOnly: true,
+		Secure:   cfg.CookieSecure,
+		SameSite: http.SameSiteLaxMode,
+	})
+
+	// Step 12: Return updated session info.
+	s.writeJSON(w, http.StatusOK, map[string]any{
+		"commander_name": name,
+		"fid":            fid,
+		"capi_pending":   capiPending,
+	})
+}
+
 // RegisterCommanderRoutes adds Commander auth API routes to the mux.
 func (s *Server) RegisterCommanderRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/commander/auth/initiate", s.handleCommanderAuthInitiate)
@@ -477,6 +657,7 @@ func (s *Server) RegisterCommanderRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/commander/auth/logout", s.handleCommanderAuthLogout)
 	mux.HandleFunc("/api/commander/auth/status", s.handleCommanderAuthStatus)
 	mux.HandleFunc("/api/commander/auth/token", s.handleCommanderAuthToken)
+	mux.HandleFunc("/api/commander/auth/refresh", s.handleCommanderAuthRefresh)
 }
 
 // urlEncode encodes a string for use in a URL query value.
