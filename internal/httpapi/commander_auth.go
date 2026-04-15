@@ -244,9 +244,17 @@ func (s *Server) handleCommanderAuthCallback(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	// Look up and delete PKCE state.
+	// Look up and delete PKCE state — try browser flow first, then desktop flow.
 	codeVerifier, ok := s.commanderPKCEStore.consume(state)
 	if !ok {
+		// Not a browser session — check if this is a desktop poll-based session.
+		if s.redisClient != nil {
+			sessionID, session, found := lookupClientAuthSessionByState(r.Context(), s.redisClient, state)
+			if found {
+				s.handleClientAuthDesktopCallback(w, r, sessionID, session, code)
+				return
+			}
+		}
 		s.writeError(w, http.StatusBadRequest, "invalid or expired state")
 		return
 	}
