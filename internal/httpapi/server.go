@@ -7,14 +7,17 @@ import (
 	"fmt"
 	"math"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/gorilla/websocket"
+	"github.com/redis/go-redis/v9"
 	"github.com/edin-space/edin-backend/internal/anthropic"
 	"github.com/edin-space/edin-backend/internal/assistant"
+	"github.com/edin-space/edin-backend/internal/auth"
 	"github.com/edin-space/edin-backend/internal/authentik"
 	"github.com/edin-space/edin-backend/internal/authz"
 	"github.com/edin-space/edin-backend/internal/config"
@@ -54,26 +57,30 @@ func Run(ctx context.Context, cfg *config.Config, opsManager *ops.Manager, llmSt
 	// Initialize nonce store for WebSocket auth frame authentication
 	nonceStore := newKaineNonceStore()
 
+	// Initialize PKCE store for commander auth
+	pkceStore := newCommanderPKCEStore(cfg.CommanderAuth.PKCEMaxPending)
+
 	server := &Server{
-		cfg:            cfg,
-		ops:            opsManager,
-		llmStore:       llmStore,
-		llmClient:      llmClient,
-		logger:         observability.NewLogger("httpapi"),
-		apiKey:         cfg.HTTP.InternalKey,
-		metrics:        metrics,
-		rateLimiter:    newRateLimiter(cfg.RateLimit.RequestsPerWindow, cfg.RateLimit.Window),
-		toolExec:       toolExec,
-		llmRunner:      runner,
-		storeCfg:       cfg.LLM.Store,
-		spansh:         spanshClient,
-		cacheStore:     cacheStore,
-		wsHub:          wsHub,
-		memgraph:       memgraphClient,
-		dayz:           dayzService,
-		kaineStore:     kaineStore,
-		eddnIntelStore: eddnIntelStore,
-		nonceStore:     nonceStore,
+		cfg:                cfg,
+		ops:                opsManager,
+		llmStore:           llmStore,
+		llmClient:          llmClient,
+		logger:             observability.NewLogger("httpapi"),
+		apiKey:             cfg.HTTP.InternalKey,
+		metrics:            metrics,
+		rateLimiter:        newRateLimiter(cfg.RateLimit.RequestsPerWindow, cfg.RateLimit.Window),
+		toolExec:           toolExec,
+		llmRunner:          runner,
+		storeCfg:           cfg.LLM.Store,
+		spansh:             spanshClient,
+		cacheStore:         cacheStore,
+		wsHub:              wsHub,
+		memgraph:           memgraphClient,
+		dayz:               dayzService,
+		kaineStore:         kaineStore,
+		eddnIntelStore:     eddnIntelStore,
+		nonceStore:         nonceStore,
+		commanderPKCEStore: pkceStore,
 	}
 
 	if server.toolExec == nil {
@@ -124,6 +131,44 @@ func Run(ctx context.Context, cfg *config.Config, opsManager *ops.Manager, llmSt
 		server.logger.Info("Authentik API client initialized")
 	}
 
+	// Commander auth initialization (if enabled)
+	var rdb *redis.Client
+	if cfg.LLM.Store.Redis.Enabled {
+		rdb = redis.NewClient(&redis.Options{
+			Addr:     cfg.LLM.Store.Redis.Addr,
+			Username: cfg.LLM.Store.Redis.Username,
+			Password: cfg.LLM.Store.Redis.Password,
+			DB:       cfg.LLM.Store.Redis.DB,
+		})
+		server.redisClient = rdb
+	}
+
+	if cfg.CommanderAuth.Enabled {
+		privPEM, err := os.ReadFile(cfg.CommanderAuth.PrivateKeyPath)
+		if err != nil {
+			return fmt.Errorf("read commander private key: %w", err)
+		}
+		privKey, err := auth.LoadPrivateKey(privPEM)
+		if err != nil {
+			return fmt.Errorf("load commander private key: %w", err)
+		}
+
+		pubPEM, err := os.ReadFile(cfg.CommanderAuth.PublicKeyPath)
+		if err != nil {
+			return fmt.Errorf("read commander public key: %w", err)
+		}
+		pubKey, err := auth.LoadPublicKey(pubPEM)
+		if err != nil {
+			return fmt.Errorf("load commander public key: %w", err)
+		}
+
+		server.commanderJWTIssuer = auth.NewCommanderJWTIssuer(privKey, cfg.CommanderAuth.JWTIssuer, cfg.CommanderAuth.JWTExpiry)
+		if rdb != nil {
+			server.commanderJWTValidator = auth.NewCommanderJWTValidator(pubKey, cfg.CommanderAuth.JWTIssuer, rdb)
+		}
+		server.logger.Info("Commander auth initialized")
+	}
+
 	mux := http.NewServeMux()
 	mux.HandleFunc("/health", server.handleHealth)
 	mux.HandleFunc("/status/", server.withAuth(server.handleStatus))
@@ -164,6 +209,9 @@ func Run(ctx context.Context, cfg *config.Config, opsManager *ops.Manager, llmSt
 
 	// Galaxy Visualization API
 	server.RegisterGalaxyRoutes(mux)
+
+	// Commander (Copilot) auth routes
+	server.RegisterCommanderRoutes(mux)
 
 	httpServer := &http.Server{
 		Addr:              cfg.HTTP.Address,
@@ -227,6 +275,13 @@ type Server struct {
 	nonceStore      *kaineNonceStore        // Single-use nonce store for WebSocket auth frames
 	eddnIntelStore  *store.SystemIntelStore // EDDN raw feed queries for system intel
 	authentikClient *authentik.Client       // Authentik API client for user management
+
+	// Commander (Copilot) auth
+	redisClient              *redis.Client
+	commanderJWTIssuer       *auth.CommanderJWTIssuer
+	commanderJWTValidator    *auth.CommanderJWTValidator
+	commanderPKCEStore       *commanderPKCEStore
+	commanderIPLimiter       sync.Map // map[string]*security.TokenBucket — per-IP rate limiters
 
 	// Power standings cache (lazy-loaded, 15-minute TTL)
 	standingsCacheMu    sync.RWMutex
