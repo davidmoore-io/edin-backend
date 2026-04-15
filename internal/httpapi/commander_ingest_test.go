@@ -224,17 +224,16 @@ func TestIngestSingle_TooOldTimestamp_Returns400(t *testing.T) {
 	assert.Contains(t, rr.Body.String(), "too old")
 }
 
-func TestIngestSingle_UnknownEventType_Returns400(t *testing.T) {
+func TestIngestSingle_AnyEventType_Accepted(t *testing.T) {
 	repo := &mockCommanderRepo{}
 	srv := newIngestTestServer(t, repo)
 
-	body := singleEventBody("HackedEvent", validTimestamp(), "F1234")
+	body := singleEventBody("SomeCustomEvent", validTimestamp(), "F1234")
 	req := makeIngestRequest(t, srv, http.MethodPost, "/api/v1/ingest/event", body, "F1234", "Test CMDR")
 	rr := httptest.NewRecorder()
 	srv.withCommanderAuth(http.HandlerFunc(srv.handleIngestSingle))(rr, req)
 
-	assert.Equal(t, http.StatusBadRequest, rr.Code)
-	assert.Contains(t, rr.Body.String(), "unknown event type")
+	assert.Equal(t, http.StatusOK, rr.Code)
 }
 
 func TestIngestSingle_OversizedPayload_Returns413(t *testing.T) {
@@ -297,14 +296,14 @@ func TestIngestBatch_ExceedsMaxSize_Returns400(t *testing.T) {
 	assert.Contains(t, rr.Body.String(), "batch too large")
 }
 
-func TestIngestBatch_UnknownEventType_RejectsEntireBatch(t *testing.T) {
+func TestIngestBatch_AnyEventType_Accepted(t *testing.T) {
 	repo := &mockCommanderRepo{}
 	srv := newIngestTestServer(t, repo)
 
 	ts := validTimestamp()
 	events := []map[string]any{
 		{"timestamp": ts, "event": "FSDJump", "fid": "F1234", "commander_name": "Test", "event_data": map[string]any{}},
-		{"timestamp": ts, "event": "EvilHackEvent", "fid": "F1234", "commander_name": "Test", "event_data": map[string]any{}},
+		{"timestamp": ts, "event": "SomeCustomEvent", "fid": "F1234", "commander_name": "Test", "event_data": map[string]any{}},
 		{"timestamp": ts, "event": "Docked", "fid": "F1234", "commander_name": "Test", "event_data": map[string]any{}},
 	}
 	body, _ := json.Marshal(map[string]any{"events": events})
@@ -313,11 +312,8 @@ func TestIngestBatch_UnknownEventType_RejectsEntireBatch(t *testing.T) {
 	rr := httptest.NewRecorder()
 	srv.withCommanderAuth(http.HandlerFunc(srv.handleIngestBatch))(rr, req)
 
-	assert.Equal(t, http.StatusBadRequest, rr.Code)
-	assert.Contains(t, rr.Body.String(), "unknown event type")
-
-	// The whole batch must be rejected — no insert calls.
-	assert.Len(t, repo.insertCalls, 0, "no events should be inserted when batch contains unknown event type")
+	assert.Equal(t, http.StatusOK, rr.Code)
+	assert.Len(t, repo.insertCalls, 1, "all events accepted regardless of type")
 }
 
 func TestIngestBatch_Deduplication_DoesNotDoubleInsert(t *testing.T) {

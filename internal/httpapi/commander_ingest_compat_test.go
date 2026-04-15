@@ -168,7 +168,7 @@ func TestIngestCompat_SingleEvent_Docked(t *testing.T) {
 	assert.Equal(t, "Docked", repo.insertCalls[0].events[0].EventType)
 }
 
-func TestIngestCompat_SingleEvent_UnknownType_Rejected(t *testing.T) {
+func TestIngestCompat_SingleEvent_AnyType_Accepted(t *testing.T) {
 	repo := &mockCommanderRepo{}
 	srv := newIngestTestServer(t, repo)
 
@@ -177,9 +177,7 @@ func TestIngestCompat_SingleEvent_UnknownType_Rejected(t *testing.T) {
 	rr := httptest.NewRecorder()
 	srv.withCommanderAuth(http.HandlerFunc(srv.handleIngestSingle))(rr, req)
 
-	assert.Equal(t, http.StatusBadRequest, rr.Code)
-	assert.Contains(t, rr.Body.String(), "unknown event type")
-	assert.Len(t, repo.insertCalls, 0, "no insert should occur for unknown type")
+	assert.Equal(t, http.StatusOK, rr.Code, "all event types should be accepted")
 }
 
 // ─── Batch compat tests ───────────────────────────────────────────────────────
@@ -210,14 +208,15 @@ func TestIngestCompat_Batch_MixedEvents(t *testing.T) {
 	assert.Len(t, repo.insertCalls[0].events, 3)
 }
 
-func TestIngestCompat_Batch_OneUnknown_RejectsAll(t *testing.T) {
+func TestIngestCompat_Batch_AnyEventType_Accepted(t *testing.T) {
 	repo := &mockCommanderRepo{}
+	repo.insertResult.inserted = 3
 	srv := newIngestTestServer(t, repo)
 
 	ts := validTimestamp()
 	items := []map[string]any{
 		compatBatchItem("FSDJump", ts, "F1234", fsdJumpFields),
-		compatBatchItem("UnknownHackedEvent999", ts, "F1234", map[string]any{}),
+		compatBatchItem("SomeCustomEvent", ts, "F1234", map[string]any{}),
 		compatBatchItem("Docked", ts, "F1234", dockedFields),
 	}
 	body := compatBatchBody(t, items)
@@ -225,9 +224,7 @@ func TestIngestCompat_Batch_OneUnknown_RejectsAll(t *testing.T) {
 	rr := httptest.NewRecorder()
 	srv.withCommanderAuth(http.HandlerFunc(srv.handleIngestBatch))(rr, req)
 
-	assert.Equal(t, http.StatusBadRequest, rr.Code)
-	assert.Contains(t, rr.Body.String(), "unknown event type")
-	assert.Len(t, repo.insertCalls, 0, "entire batch must be rejected when any event has an unknown type")
+	assert.Equal(t, http.StatusOK, rr.Code, "all event types should be accepted")
 }
 
 // ─── Timestamp format tests ───────────────────────────────────────────────────
@@ -312,9 +309,9 @@ func TestIngestCompat_MissingEventType_Rejected(t *testing.T) {
 	rr := httptest.NewRecorder()
 	srv.withCommanderAuth(http.HandlerFunc(srv.handleIngestSingle))(rr, req)
 
-	// Empty event type is not in the allowlist — handler returns 400.
+	// Empty event type is rejected — handler returns 400.
 	assert.Equal(t, http.StatusBadRequest, rr.Code)
-	assert.Contains(t, rr.Body.String(), "unknown event type")
+	assert.Contains(t, rr.Body.String(), "empty event type")
 	assert.Len(t, repo.insertCalls, 0)
 }
 

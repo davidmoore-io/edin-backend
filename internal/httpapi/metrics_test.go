@@ -38,7 +38,7 @@ func TestIngestMetrics_AcceptedCounter(t *testing.T) {
 }
 
 // TestIngestMetrics_RejectedCounter verifies that edin_ingest_events_total{status="rejected"}
-// increments when an event with an unknown type is submitted.
+// increments when an event with an empty type is submitted.
 func TestIngestMetrics_RejectedCounter(t *testing.T) {
 	repo := &mockCommanderRepo{}
 	srv := newIngestTestServer(t, repo)
@@ -48,11 +48,10 @@ func TestIngestMetrics_RejectedCounter(t *testing.T) {
 	fid := "F-METRICS-REJECT"
 	fh := fidHash(fid)
 
-	// Capture baseline.
 	baseline := testutil.ToFloat64(m.ingestEventsTotal.WithLabelValues("rejected", fh))
 
-	// Submit an event with an unknown type — handler should reject it.
-	body := singleEventBody("UnknownHackedEvent", validTimestamp(), fid)
+	// Submit an event with an empty type — handler should reject it.
+	body := singleEventBody("", validTimestamp(), fid)
 	req := makeIngestRequest(t, srv, http.MethodPost, "/api/v1/ingest/event", body, fid, "Metrics CMDR")
 	rr := httptest.NewRecorder()
 	srv.withCommanderAuth(http.HandlerFunc(srv.handleIngestSingle))(rr, req)
@@ -127,11 +126,11 @@ func TestIngestMetrics_BatchRejectedCounter(t *testing.T) {
 
 	baseline := testutil.ToFloat64(m.ingestEventsTotal.WithLabelValues("rejected", fh))
 
-	// 3 events, one has an invalid type — entire batch rejected.
+	// 3 events, one has an empty type — entire batch rejected.
 	ts := validTimestamp()
 	events := []map[string]any{
 		{"timestamp": ts, "event": "FSDJump", "fid": fid, "commander_name": "Test", "event_data": map[string]any{}},
-		{"timestamp": ts, "event": "BadEventType", "fid": fid, "commander_name": "Test", "event_data": map[string]any{}},
+		{"timestamp": ts, "event": "", "fid": fid, "commander_name": "Test", "event_data": map[string]any{}},
 		{"timestamp": ts, "event": "Docked", "fid": fid, "commander_name": "Test", "event_data": map[string]any{}},
 	}
 	b, err := json.Marshal(map[string]any{"events": events})

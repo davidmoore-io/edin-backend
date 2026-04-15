@@ -59,11 +59,12 @@ const (
 	ingestMaxAgeFwd    = 5 * time.Minute
 )
 
-// validateIngestEvent checks the timestamp window and event type allowlist.
+// validateIngestEvent checks the timestamp window.
+// All event types are accepted — the goal is to clone the commander's full journal.
 // Returns a human-readable error string or "" if valid.
 func validateIngestEvent(ev *ingestEventPayload, now time.Time) string {
-	if !AllowedEDEventTypes[ev.Event] {
-		return fmt.Sprintf("unknown event type: %q", ev.Event)
+	if ev.Event == "" {
+		return "empty event type"
 	}
 	ts, err := time.Parse(time.RFC3339, ev.Timestamp)
 	if err != nil {
@@ -217,6 +218,8 @@ func (s *Server) handleIngestBatch(w http.ResponseWriter, r *http.Request) {
 		if errMsg := validateIngestEvent(&ev, now); errMsg != "" {
 			m.ingestEventsTotal.WithLabelValues("rejected", fh).Add(float64(len(req.Events)))
 			m.ingestLatencySeconds.WithLabelValues(endpoint).Observe(time.Since(start).Seconds())
+			s.logger.Warn(fmt.Sprintf("ingest: batch rejected at event[%d] type=%q ts=%q: %s (batch size=%d fid=%s)",
+				i, ev.Event, ev.Timestamp, errMsg, len(req.Events), fid))
 			s.writeError(w, http.StatusBadRequest,
 				fmt.Sprintf("event[%d]: %s", i, errMsg))
 			return
