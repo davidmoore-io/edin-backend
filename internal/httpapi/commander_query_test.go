@@ -80,6 +80,10 @@ func (m *mockQueryRepo) GetCommander(_ context.Context, _ string) (*store.Comman
 	return m.getCommanderResult, m.getCommanderErr
 }
 
+func (m *mockQueryRepo) GetEventStats(_ context.Context, _ string) (*store.CommanderEventStats, error) {
+	panic("not implemented")
+}
+
 // ─── test server helper ───────────────────────────────────────────────────────
 
 func newQueryTestServer(t *testing.T, repo store.CommanderRepository) *Server {

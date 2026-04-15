@@ -51,6 +51,9 @@ func (m *mockCommanderRepo) DeleteAllEvents(ctx context.Context, fid string) err
 func (m *mockCommanderRepo) GetCommander(ctx context.Context, fid string) (*store.CommanderRow, error) {
 	return nil, nil
 }
+func (m *mockCommanderRepo) GetEventStats(ctx context.Context, fid string) (*store.CommanderEventStats, error) {
+	return nil, nil
+}
 
 // ctxWithFID returns a context with the commander FID set for tool execution.
 func ctxWithFID(fid string) context.Context {

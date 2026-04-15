@@ -24,6 +24,14 @@ type JournalEvent struct {
 	IngestedAt    time.Time
 }
 
+// CommanderEventStats holds aggregate statistics for a commander's stored journal events.
+type CommanderEventStats struct {
+	FID           string     `json:"fid"`
+	EventsStored  int        `json:"events_stored"`
+	EarliestEvent *time.Time `json:"earliest_event,omitempty"`
+	LatestEvent   *time.Time `json:"latest_event,omitempty"`
+}
+
 // LocationState is extracted from journal events (FSDJump / Location events).
 type LocationState struct {
 	SystemName string
@@ -52,6 +60,7 @@ type CommanderRepository interface {
 	CurrentLocation(ctx context.Context, fid string) (*LocationState, error)
 	DeleteAllEvents(ctx context.Context, fid string) error
 	GetCommander(ctx context.Context, fid string) (*CommanderRow, error)
+	GetEventStats(ctx context.Context, fid string) (*CommanderEventStats, error)
 }
 
 // pgCommanderRepository is the PostgreSQL/TimescaleDB implementation.
@@ -380,4 +389,24 @@ func (r *pgCommanderRepository) DeleteAllEvents(ctx context.Context, fid string)
 	}
 
 	return nil
+}
+
+// GetEventStats returns aggregate statistics (count, earliest, latest) for the
+// journal events stored for fid.
+func (r *pgCommanderRepository) GetEventStats(ctx context.Context, fid string) (*CommanderEventStats, error) {
+	var stats CommanderEventStats
+	stats.FID = fid
+
+	err := r.withFIDContext(ctx, fid, func(tx pgx.Tx) error {
+		return tx.QueryRow(ctx, `
+			SELECT COUNT(*), MIN(timestamp), MAX(timestamp)
+			FROM commander.journal_events
+			WHERE fid = $1`,
+			fid,
+		).Scan(&stats.EventsStored, &stats.EarliestEvent, &stats.LatestEvent)
+	})
+	if err != nil {
+		return nil, fmt.Errorf("get event stats fid=%s: %w", fid, err)
+	}
+	return &stats, nil
 }

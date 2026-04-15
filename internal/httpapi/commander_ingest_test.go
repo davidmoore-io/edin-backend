@@ -62,6 +62,10 @@ func (m *mockCommanderRepo) GetCommander(_ context.Context, _ string) (*store.Co
 	panic("not implemented")
 }
 
+func (m *mockCommanderRepo) GetEventStats(_ context.Context, _ string) (*store.CommanderEventStats, error) {
+	panic("not implemented")
+}
+
 // ─── test server helper ───────────────────────────────────────────────────────
 
 // newIngestTestServer wires a minimal Server with commander auth and ingest dependencies.

@@ -88,6 +88,9 @@ func (m *mockTarget) DeleteAllEvents(_ context.Context, _ string) error { return
 func (m *mockTarget) GetCommander(_ context.Context, _ string) (*store.CommanderRow, error) {
 	return nil, nil
 }
+func (m *mockTarget) GetEventStats(_ context.Context, _ string) (*store.CommanderEventStats, error) {
+	return nil, nil
+}
 
 // ─── helpers ─────────────────────────────────────────────────────────────────
 

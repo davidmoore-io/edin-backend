@@ -227,12 +227,16 @@ func Run(ctx context.Context, cfg *config.Config, opsManager *ops.Manager, llmSt
 	// Commander (Copilot) auth routes
 	server.RegisterCommanderRoutes(mux)
 
+	// Desktop client poll-based auth routes
+	server.RegisterClientAuthRoutes(mux)
+
 	// Copilot chat routes
 	server.RegisterCopilotRoutes(mux)
 
 	// Ingest routes — commander JWT required
 	mux.Handle("/api/v1/ingest/event", server.withCommanderAuth(http.HandlerFunc(server.handleIngestSingle)))
 	mux.Handle("/api/v1/ingest/events", server.withCommanderAuth(http.HandlerFunc(server.handleIngestBatch)))
+	mux.Handle("GET /api/v1/ingest/stats", server.withCommanderAuth(http.HandlerFunc(server.handleIngestStats)))
 
 	// Commander query routes — commander JWT required
 	mux.Handle("GET /api/v1/commander/events", server.withCommanderAuth(http.HandlerFunc(server.handleCommanderEvents)))
