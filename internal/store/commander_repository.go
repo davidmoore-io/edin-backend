@@ -31,6 +31,16 @@ type LocationState struct {
 	UpdatedAt  time.Time
 }
 
+// CommanderRow holds the read model for a commander profile.
+type CommanderRow struct {
+	ID          uuid.UUID
+	FID         string
+	CmdrName    string
+	Platform    string
+	FirstSeenAt time.Time
+	LastSeenAt  time.Time
+}
+
 // CommanderRepository defines data-access operations for commander journal data.
 // All mutating operations are scoped by FID via SET LOCAL app.current_fid so
 // the TimescaleDB RLS policy commander_isolation is enforced on every query.
@@ -41,6 +51,7 @@ type CommanderRepository interface {
 	EventsByType(ctx context.Context, fid string, types []string, since, until time.Time) ([]JournalEvent, error)
 	CurrentLocation(ctx context.Context, fid string) (*LocationState, error)
 	DeleteAllEvents(ctx context.Context, fid string) error
+	GetCommander(ctx context.Context, fid string) (*CommanderRow, error)
 }
 
 // pgCommanderRepository is the PostgreSQL/TimescaleDB implementation.
@@ -278,6 +289,33 @@ func (r *pgCommanderRepository) CurrentLocation(ctx context.Context, fid string)
 		return nil, fmt.Errorf("current location fid=%s: %w", fid, err)
 	}
 	return loc, nil
+}
+
+// GetCommander reads the commander profile row for fid.
+// Returns nil, nil if no such commander exists.
+func (r *pgCommanderRepository) GetCommander(ctx context.Context, fid string) (*CommanderRow, error) {
+	var row *CommanderRow
+	err := r.withFIDContext(ctx, fid, func(tx pgx.Tx) error {
+		var c CommanderRow
+		err := tx.QueryRow(ctx, `
+			SELECT id, fid, cmdr_name, platform, first_seen_at, last_seen_at
+			FROM commander.commanders
+			WHERE fid = $1`,
+			fid,
+		).Scan(&c.ID, &c.FID, &c.CmdrName, &c.Platform, &c.FirstSeenAt, &c.LastSeenAt)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil
+		}
+		if err != nil {
+			return fmt.Errorf("query commander: %w", err)
+		}
+		row = &c
+		return nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("get commander fid=%s: %w", fid, err)
+	}
+	return row, nil
 }
 
 // DeleteAllEvents permanently removes all journal events for fid (GDPR erasure).

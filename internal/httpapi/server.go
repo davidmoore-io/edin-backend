@@ -229,6 +229,11 @@ func Run(ctx context.Context, cfg *config.Config, opsManager *ops.Manager, llmSt
 	mux.Handle("/api/v1/ingest/event", server.withCommanderAuth(http.HandlerFunc(server.handleIngestSingle)))
 	mux.Handle("/api/v1/ingest/events", server.withCommanderAuth(http.HandlerFunc(server.handleIngestBatch)))
 
+	// Commander query routes — commander JWT required
+	mux.Handle("GET /api/v1/commander/events", server.withCommanderAuth(http.HandlerFunc(server.handleCommanderEvents)))
+	mux.Handle("GET /api/v1/commander/location", server.withCommanderAuth(http.HandlerFunc(server.handleCommanderLocation)))
+	mux.Handle("GET /api/v1/commander/profile", server.withCommanderAuth(http.HandlerFunc(server.handleCommanderProfile)))
+
 	httpServer := &http.Server{
 		Addr:              cfg.HTTP.Address,
 		Handler:           server.applyMiddlewares(mux),
