@@ -39,7 +39,7 @@ func (m *mockCommanderRepo) InsertEvents(_ context.Context, fid string, events [
 }
 
 func (m *mockCommanderRepo) UpsertCommander(_ context.Context, _, _, _ string) (uuid.UUID, error) {
-	panic("not implemented")
+	return uuid.New(), nil
 }
 
 func (m *mockCommanderRepo) RecentEvents(_ context.Context, _ string, _ int) ([]store.JournalEvent, error) {

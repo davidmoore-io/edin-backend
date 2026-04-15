@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/edin-space/edin-backend/internal/auth"
 	"github.com/edin-space/edin-backend/internal/security"
 	"github.com/edin-space/edin-backend/internal/store"
 )
@@ -143,12 +144,26 @@ func (s *Server) handleIngestSingle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Ensure the commander exists.
+	claims, _ := auth.ClaimsFromContext(r.Context())
+	cmdrName := ""
+	if claims != nil {
+		cmdrName = claims.Name
+	}
+	commanderID, upsertErr := s.commanderRepo.UpsertCommander(r.Context(), fid, cmdrName, "frontier")
+	if upsertErr != nil {
+		s.logger.Error(fmt.Sprintf("ingest: upsert commander fid=%s", fid), upsertErr)
+		s.writeError(w, http.StatusInternalServerError, "failed to ensure commander record")
+		return
+	}
+
 	ts, _ := parseTimestamp(req.Event.Timestamp)
 	ev := store.JournalEvent{
-		FID:       fid,
-		Timestamp: ts,
-		EventType: req.Event.Event,
-		EventData: req.Event.EventData,
+		CommanderID: commanderID,
+		FID:         fid,
+		Timestamp:   ts,
+		EventType:   req.Event.Event,
+		EventData:   req.Event.EventData,
 	}
 
 	inserted, duplicated, err := s.commanderRepo.InsertEvents(r.Context(), fid, []store.JournalEvent{ev})
@@ -231,14 +246,28 @@ func (s *Server) handleIngestBatch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Ensure the commander exists and get their UUID for the FK.
+	claims, _ := auth.ClaimsFromContext(r.Context())
+	cmdrName := ""
+	if claims != nil {
+		cmdrName = claims.Name
+	}
+	commanderID, upsertErr := s.commanderRepo.UpsertCommander(r.Context(), fid, cmdrName, "frontier")
+	if upsertErr != nil {
+		s.logger.Error(fmt.Sprintf("ingest: upsert commander fid=%s", fid), upsertErr)
+		s.writeError(w, http.StatusInternalServerError, "failed to ensure commander record")
+		return
+	}
+
 	events := make([]store.JournalEvent, 0, len(req.Events))
 	for _, ev := range req.Events {
 		ts, _ := parseTimestamp(ev.Timestamp)
 		events = append(events, store.JournalEvent{
-			FID:       fid,
-			Timestamp: ts,
-			EventType: ev.Event,
-			EventData: ev.EventData,
+			CommanderID: commanderID,
+			FID:         fid,
+			Timestamp:   ts,
+			EventType:   ev.Event,
+			EventData:   ev.EventData,
 		})
 	}
 
