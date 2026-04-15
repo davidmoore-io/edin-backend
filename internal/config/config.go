@@ -30,6 +30,7 @@ type Config struct {
 	KaineAuth     KaineAuthConfig
 	Authentik     AuthentikConfig
 	CommanderAuth CommanderAuthConfig
+	Copilot       CopilotConfig
 }
 
 // AuthentikConfig holds Authentik identity provider API settings.
@@ -59,6 +60,26 @@ type CommanderAuthConfig struct {
 	CookieDomain         string        // ".edin.space" in prod, "" in dev
 	CookieSecure         bool          // true in prod (Caddy adds Secure)
 	CookieMaxAge         int           // 86400 (24h)
+	// Nonce settings
+	NonceExpiry       time.Duration // 10s — single-use nonce TTL for WebSocket auth frame
+	// Per-IP rate limit for the /initiate endpoint
+	InitiateRateLimit  int           // 5 — requests per window per IP
+	InitiateRateWindow time.Duration // 1m — window duration
+	// Commander DB connections (DSN form — role-separated for RLS enforcement)
+	CmdWriterDSN string // postgres DSN for writes (edin_cmd_writer role)
+	CmdReaderDSN string // postgres DSN for reads  (edin_cmd_reader role)
+}
+
+// CopilotConfig holds WebSocket tuning and AI call parameters for the Copilot chat feature.
+type CopilotConfig struct {
+	WSAuthTimeout       time.Duration // 5s  — wait for auth frame after upgrade
+	WSReadDeadline      time.Duration // 60s — read deadline reset on each message/ping
+	WSPingInterval      time.Duration // 30s — server ping interval
+	WSWriteDeadline     time.Duration // 10s — write deadline for outgoing frames
+	WSReadLimitBytes    int64         // 65536 (64 KB) — max incoming message size
+	MessageHistoryLimit int           // 20  — messages sent to Anthropic per call
+	EventsDefaultLimit  int           // 20  — default event count for commander_events tool
+	EventsMaxLimit      int           // 100 — maximum event count for commander_events tool
 }
 
 // KaineAuthConfig holds Kaine portal JWT authentication settings.
@@ -256,6 +277,7 @@ func Load() (*Config, error) {
 	kaineAuthCfg := loadKaineAuthConfig()
 	authentikCfg := loadAuthentikConfig()
 	commanderAuthCfg := loadCommanderAuthConfig()
+	copilotCfg := loadCopilotConfig()
 
 	return &Config{
 		DomainName:        domain,
@@ -276,6 +298,7 @@ func Load() (*Config, error) {
 		KaineAuth:         kaineAuthCfg,
 		Authentik:         authentikCfg,
 		CommanderAuth:     commanderAuthCfg,
+		Copilot:           copilotCfg,
 	}, nil
 }
 
@@ -567,6 +590,21 @@ func loadCommanderAuthConfig() CommanderAuthConfig {
 		pkceMaxPending = 1000
 	}
 
+	nonceExpiry := getEnvDuration("COMMANDER_NONCE_EXPIRY", 10*time.Second)
+	if nonceExpiry <= 0 {
+		nonceExpiry = 10 * time.Second
+	}
+
+	initiateRateLimit := getenvInt("COMMANDER_AUTH_INITIATE_RATE_LIMIT", 5)
+	if initiateRateLimit <= 0 {
+		initiateRateLimit = 5
+	}
+
+	initiateRateWindow := getEnvDuration("COMMANDER_AUTH_INITIATE_RATE_WINDOW", time.Minute)
+	if initiateRateWindow <= 0 {
+		initiateRateWindow = time.Minute
+	}
+
 	return CommanderAuthConfig{
 		Enabled:              enabled,
 		PrivateKeyPath:       privateKeyPath,
@@ -586,6 +624,36 @@ func loadCommanderAuthConfig() CommanderAuthConfig {
 		CookieDomain:         os.Getenv("COMMANDER_COOKIE_DOMAIN"),
 		CookieSecure:         getEnvBool("COMMANDER_COOKIE_SECURE", false),
 		CookieMaxAge:         86400,
+		NonceExpiry:          nonceExpiry,
+		InitiateRateLimit:    initiateRateLimit,
+		InitiateRateWindow:   initiateRateWindow,
+		CmdWriterDSN:         os.Getenv("EDIN_CMD_WRITER_DSN"),
+		CmdReaderDSN:         os.Getenv("EDIN_CMD_READER_DSN"),
+	}
+}
+
+func loadCopilotConfig() CopilotConfig {
+	wsReadLimit := int64(getenvInt("COPILOT_WS_READ_LIMIT_BYTES", 65536))
+	if wsReadLimit <= 0 {
+		wsReadLimit = 65536
+	}
+	eventsDefault := getenvInt("COPILOT_EVENTS_DEFAULT_LIMIT", 20)
+	if eventsDefault <= 0 {
+		eventsDefault = 20
+	}
+	eventsMax := getenvInt("COPILOT_EVENTS_MAX_LIMIT", 100)
+	if eventsMax <= 0 {
+		eventsMax = 100
+	}
+	return CopilotConfig{
+		WSAuthTimeout:       getEnvDuration("COPILOT_WS_AUTH_TIMEOUT", 5*time.Second),
+		WSReadDeadline:      getEnvDuration("COPILOT_WS_READ_DEADLINE", 60*time.Second),
+		WSPingInterval:      getEnvDuration("COPILOT_WS_PING_INTERVAL", 30*time.Second),
+		WSWriteDeadline:     getEnvDuration("COPILOT_WS_WRITE_DEADLINE", 10*time.Second),
+		WSReadLimitBytes:    wsReadLimit,
+		MessageHistoryLimit: getenvInt("COPILOT_MESSAGE_HISTORY_LIMIT", 20),
+		EventsDefaultLimit:  eventsDefault,
+		EventsMaxLimit:      eventsMax,
 	}
 }
 

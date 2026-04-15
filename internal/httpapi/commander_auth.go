@@ -20,9 +20,12 @@ import (
 
 // ─── PKCE store ──────────────────────────────────────────────────────────────
 
-// commanderPKCEEntry holds a PKCE code verifier with TTL.
+// commanderPKCEEntry holds a PKCE code verifier, the redirect URI used during
+// initiation, and a TTL. The redirect URI must be preserved so the token
+// exchange uses exactly the same value that was sent to Frontier.
 type commanderPKCEEntry struct {
 	codeVerifier string
+	redirectURI  string
 	expiresAt    time.Time
 }
 
@@ -42,12 +45,13 @@ func newCommanderPKCEStore(maxPending int) *commanderPKCEStore {
 }
 
 // store adds a new PKCE entry. Returns false if the store is full.
-func (s *commanderPKCEStore) store(state, codeVerifier string, ttl time.Duration) bool {
+func (s *commanderPKCEStore) store(state, codeVerifier, redirectURI string, ttl time.Duration) bool {
 	if s.count.Load() >= int64(s.maxPend) {
 		return false
 	}
 	entry := commanderPKCEEntry{
 		codeVerifier: codeVerifier,
+		redirectURI:  redirectURI,
 		expiresAt:    time.Now().Add(ttl),
 	}
 	s.items.Store(state, entry)
@@ -55,18 +59,19 @@ func (s *commanderPKCEStore) store(state, codeVerifier string, ttl time.Duration
 	return true
 }
 
-// consume retrieves and deletes the PKCE entry. Returns empty string if not found or expired.
-func (s *commanderPKCEStore) consume(state string) (string, bool) {
-	v, ok := s.items.LoadAndDelete(state)
-	if !ok {
-		return "", false
+// consume retrieves and deletes the PKCE entry.
+// Returns ("", "", false) if not found or expired.
+func (s *commanderPKCEStore) consume(state string) (codeVerifier, redirectURI string, ok bool) {
+	v, found := s.items.LoadAndDelete(state)
+	if !found {
+		return "", "", false
 	}
 	s.count.Add(-1)
 	entry := v.(commanderPKCEEntry)
 	if time.Now().After(entry.expiresAt) {
-		return "", false
+		return "", "", false
 	}
-	return entry.codeVerifier, true
+	return entry.codeVerifier, entry.redirectURI, true
 }
 
 // cleanup runs every 5 minutes and removes expired entries.
@@ -120,12 +125,9 @@ func storeFrontierTokens(ctx context.Context, rdb *redis.Client, jti string, tok
 
 // ─── Per-IP rate limiter ──────────────────────────────────────────────────────
 
-// getOrCreateIPLimiter retrieves or creates a per-IP TokenBucket (5 req/min).
-func getOrCreateIPLimiter(store *sync.Map, ip string) *security.TokenBucket {
-	v, loaded := store.LoadOrStore(ip, security.NewTokenBucket(5, time.Minute))
-	if loaded {
-		return v.(*security.TokenBucket)
-	}
+// getOrCreateIPLimiter retrieves or creates a per-IP TokenBucket with the given rate and window.
+func getOrCreateIPLimiter(store *sync.Map, ip string, rate int, window time.Duration) *security.TokenBucket {
+	v, _ := store.LoadOrStore(ip, security.NewTokenBucket(rate, window))
 	return v.(*security.TokenBucket)
 }
 
@@ -159,9 +161,10 @@ func generateStateUUID() (string, error) {
 
 // ─── redirectURI helper ───────────────────────────────────────────────────────
 
-// buildRedirectURI reconstructs the redirect URI from the request.
-// Uses X-Forwarded-Proto if set (Caddy sets this), else falls back to "http".
-func buildRedirectURI(r *http.Request) string {
+// buildRedirectURIPath reconstructs a redirect URI from the request for the
+// given path. Uses X-Forwarded-Proto if set (Caddy sets this), else falls back
+// to "http" for plain connections or "https" for TLS.
+func buildRedirectURIPath(r *http.Request, path string) string {
 	scheme := r.Header.Get("X-Forwarded-Proto")
 	if scheme == "" {
 		if r.TLS != nil {
@@ -170,7 +173,7 @@ func buildRedirectURI(r *http.Request) string {
 			scheme = "http"
 		}
 	}
-	return scheme + "://" + r.Host + "/api/commander/auth/callback"
+	return scheme + "://" + r.Host + path
 }
 
 // ─── Handlers ─────────────────────────────────────────────────────────────────
@@ -184,9 +187,9 @@ func (s *Server) handleCommanderAuthInitiate(w http.ResponseWriter, r *http.Requ
 
 	cfg := s.cfg.CommanderAuth
 
-	// Per-IP rate limiting: 5 requests per minute.
+	// Per-IP rate limiting.
 	ip := clientIP(r)
-	limiter := getOrCreateIPLimiter(&s.commanderIPLimiter, ip)
+	limiter := getOrCreateIPLimiter(&s.commanderIPLimiter, ip, cfg.InitiateRateLimit, cfg.InitiateRateWindow)
 	if !limiter.Allow() {
 		s.writeError(w, http.StatusTooManyRequests, "rate limit exceeded")
 		return
@@ -207,8 +210,13 @@ func (s *Server) handleCommanderAuthInitiate(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	// Store in PKCE store.
-	if !s.commanderPKCEStore.store(state, verifier, cfg.PKCEStateTTL) {
+	// Build redirect URI — must point to the frontend /copilot/callback page so
+	// Frontier lands the browser on the React app, which reads code+state from
+	// the URL and calls the backend exchange endpoint via fetch.
+	redirectURI := buildRedirectURIPath(r, "/copilot/callback")
+
+	// Store in PKCE store alongside the redirect URI for the token exchange.
+	if !s.commanderPKCEStore.store(state, verifier, redirectURI, cfg.PKCEStateTTL) {
 		s.writeError(w, http.StatusServiceUnavailable, "too many pending auth sessions")
 		return
 	}
@@ -217,7 +225,7 @@ func (s *Server) handleCommanderAuthInitiate(w http.ResponseWriter, r *http.Requ
 	authURL := cfg.FrontierAuthURL + "/auth" +
 		"?client_id=" + cfg.FrontierClientID +
 		"&response_type=code" +
-		"&redirect_uri=" + urlEncode(buildRedirectURI(r)) +
+		"&redirect_uri=" + urlEncode(redirectURI) +
 		"&scope=auth+capi" +
 		"&state=" + state +
 		"&code_challenge=" + challenge +
@@ -245,7 +253,9 @@ func (s *Server) handleCommanderAuthCallback(w http.ResponseWriter, r *http.Requ
 	}
 
 	// Look up and delete PKCE state — try browser flow first, then desktop flow.
-	codeVerifier, ok := s.commanderPKCEStore.consume(state)
+	// The stored redirectURI must be used for the Frontier token exchange; it
+	// must exactly match the value sent in the original auth request.
+	codeVerifier, redirectURI, ok := s.commanderPKCEStore.consume(state)
 	if !ok {
 		// Not a browser session — check if this is a desktop poll-based session.
 		if s.redisClient != nil {
@@ -268,8 +278,6 @@ func (s *Server) handleCommanderAuthCallback(w http.ResponseWriter, r *http.Requ
 		cfg.FrontierScope,
 		cfg.FrontierCAPITimeout,
 	)
-
-	redirectURI := buildRedirectURI(r)
 
 	am := initEdinMetrics()
 
@@ -433,14 +441,13 @@ func (s *Server) handleCommanderAuthToken(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	// Issue single-use nonce valid for 10 seconds.
-	// Store the commander as a synthetic KaineUser so we can reuse kaineNonceStore.
+	// Issue single-use nonce. Store the commander as a synthetic KaineUser so we can reuse kaineNonceStore.
 	user := &KaineUser{Sub: claims.FID, Name: claims.Name}
-	nonce := s.commanderNonceStore.Issue(user, 10*time.Second)
+	nonce := s.commanderNonceStore.Issue(user, cfg.NonceExpiry)
 
 	s.writeJSON(w, http.StatusOK, map[string]any{
 		"nonce":      nonce,
-		"expires_in": 10,
+		"expires_in": int(cfg.NonceExpiry.Seconds()),
 	})
 }
 

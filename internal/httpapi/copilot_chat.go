@@ -37,7 +37,8 @@ func (s *Server) handleCopilotChatWebSocket(w http.ResponseWriter, r *http.Reque
 	defer conn.Close()
 
 	// --- Auth via first-message frame ---
-	conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	copilotCfg := s.cfg.Copilot
+	conn.SetReadDeadline(time.Now().Add(copilotCfg.WSAuthTimeout))
 	_, authMsg, err := conn.ReadMessage()
 	if err != nil {
 		// Timeout or client closed — do not reconnect
@@ -72,7 +73,7 @@ func (s *Server) handleCopilotChatWebSocket(w http.ResponseWriter, r *http.Reque
 	}
 
 	// Reset read deadline for normal operation
-	conn.SetReadDeadline(time.Now().Add(60 * time.Second))
+	conn.SetReadDeadline(time.Now().Add(copilotCfg.WSReadDeadline))
 	// --- End auth ---
 
 	// Build a per-session runner with the commander's personalised system prompt.
@@ -116,15 +117,15 @@ func (s *Server) handleCopilotChatWebSocket(w http.ResponseWriter, r *http.Reque
 	}
 
 	// Configure connection
-	conn.SetReadLimit(64 * 1024) // 64KB max message size
-	conn.SetReadDeadline(time.Now().Add(60 * time.Second))
+	conn.SetReadLimit(copilotCfg.WSReadLimitBytes)
+	conn.SetReadDeadline(time.Now().Add(copilotCfg.WSReadDeadline))
 	conn.SetPongHandler(func(string) error {
-		conn.SetReadDeadline(time.Now().Add(60 * time.Second))
+		conn.SetReadDeadline(time.Now().Add(copilotCfg.WSReadDeadline))
 		return nil
 	})
 
 	// Start ping ticker
-	pingTicker := time.NewTicker(30 * time.Second)
+	pingTicker := time.NewTicker(copilotCfg.WSPingInterval)
 	defer pingTicker.Stop()
 
 	// Ping goroutine
@@ -133,7 +134,7 @@ func (s *Server) handleCopilotChatWebSocket(w http.ResponseWriter, r *http.Reque
 			select {
 			case <-pingTicker.C:
 				session.writeMu.Lock()
-				conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
+				conn.SetWriteDeadline(time.Now().Add(copilotCfg.WSWriteDeadline))
 				if err := conn.WriteMessage(websocket.PingMessage, nil); err != nil {
 					session.writeMu.Unlock()
 					return
@@ -164,7 +165,7 @@ func (s *Server) handleCopilotChatWebSocket(w http.ResponseWriter, r *http.Reque
 		}
 
 		// Reset read deadline
-		conn.SetReadDeadline(time.Now().Add(60 * time.Second))
+		conn.SetReadDeadline(time.Now().Add(copilotCfg.WSReadDeadline))
 		session.lastActive = time.Now()
 
 		// Parse incoming message
@@ -212,10 +213,14 @@ func (s *Server) handleCopilotMessage(session *chatSession, content string, sess
 	// Persist user message to store
 	s.llmStore.AppendMessage(session.sessionID, userMsg)
 
-	// Trim in-memory history to last 20 messages for the API call
+	// Trim in-memory history for the API call
+	historyLimit := s.cfg.Copilot.MessageHistoryLimit
+	if historyLimit <= 0 {
+		historyLimit = 20
+	}
 	historyForAPI := session.history
-	if len(historyForAPI) > 20 {
-		historyForAPI = historyForAPI[len(historyForAPI)-20:]
+	if len(historyForAPI) > historyLimit {
+		historyForAPI = historyForAPI[len(historyForAPI)-historyLimit:]
 	}
 
 	// Send thinking indicator

@@ -105,6 +105,9 @@ func newCommanderAuthTestServer(t *testing.T, frontierURL string, rdb *redis.Cli
 				CookiePath:           "/api/commander",
 				CookieSecure:         false,
 				CookieMaxAge:         86400,
+				NonceExpiry:          10 * time.Second,
+				InitiateRateLimit:    5,
+				InitiateRateWindow:   time.Minute,
 			},
 		},
 		logger:                observability.NewLogger("test"),
@@ -132,6 +135,8 @@ func TestAuthInitiate_ReturnsAuthURL(t *testing.T) {
 	assert.Contains(t, body["auth_url"], "https://auth.frontier.test/auth")
 	assert.Contains(t, body["auth_url"], "response_type=code")
 	assert.Contains(t, body["auth_url"], "code_challenge_method=S256")
+	// Redirect URI must point to the frontend callback page, not the backend endpoint.
+	assert.Contains(t, body["auth_url"], "copilot%2Fcallback", "redirect_uri must be /copilot/callback")
 }
 
 func TestAuthInitiate_AuthURLContainsCAPIScope(t *testing.T) {
@@ -193,7 +198,7 @@ func TestAuthCallback_ValidState_IssuesJWT(t *testing.T) {
 
 	// Seed a PKCE state entry.
 	state := "test-state-uuid"
-	srv.commanderPKCEStore.store(state, "test-verifier", 10*time.Minute)
+	srv.commanderPKCEStore.store(state, "test-verifier", "http://localhost/copilot/callback", 10*time.Minute)
 
 	req := httptest.NewRequest(http.MethodGet,
 		"/api/commander/auth/callback?code=mycode&state="+state, nil)
@@ -234,7 +239,7 @@ func TestAuthCallback_FrontierExchangeFails_Returns502(t *testing.T) {
 	srv := newCommanderAuthTestServer(t, badFrontier.URL, nil, 5*time.Second)
 
 	state := "my-state"
-	srv.commanderPKCEStore.store(state, "verifier", 10*time.Minute)
+	srv.commanderPKCEStore.store(state, "verifier", "http://localhost/copilot/callback", 10*time.Minute)
 
 	req := httptest.NewRequest(http.MethodGet,
 		"/api/commander/auth/callback?code=badcode&state="+state, nil)
@@ -257,7 +262,7 @@ func TestAuthCallback_CAPIFails_SucceedsWithPlaceholderName(t *testing.T) {
 	srv := newCommanderAuthTestServer(t, frontier.URL, rdb, 5*time.Second)
 
 	state := "state-capi-fail"
-	srv.commanderPKCEStore.store(state, "verifier", 10*time.Minute)
+	srv.commanderPKCEStore.store(state, "verifier", "http://localhost/copilot/callback", 10*time.Minute)
 
 	req := httptest.NewRequest(http.MethodGet,
 		"/api/commander/auth/callback?code=code&state="+state, nil)
@@ -288,7 +293,7 @@ func TestAuthCallback_CAPITimeout_SucceedsWithPlaceholderName(t *testing.T) {
 	srv := newCommanderAuthTestServer(t, frontierSrv.URL, rdb, 50*time.Millisecond)
 
 	state := "state-timeout"
-	srv.commanderPKCEStore.store(state, "verifier", 10*time.Minute)
+	srv.commanderPKCEStore.store(state, "verifier", "http://localhost/copilot/callback", 10*time.Minute)
 
 	req := httptest.NewRequest(http.MethodGet,
 		"/api/commander/auth/callback?code=code&state="+state, nil)
@@ -317,7 +322,7 @@ func TestAuthCallback_SetsHttpOnlyCookieSameSiteLax(t *testing.T) {
 	srv := newCommanderAuthTestServer(t, frontierSrv.URL, rdb, 5*time.Second)
 
 	state := "state-cookie"
-	srv.commanderPKCEStore.store(state, "verifier", 10*time.Minute)
+	srv.commanderPKCEStore.store(state, "verifier", "http://localhost/copilot/callback", 10*time.Minute)
 
 	req := httptest.NewRequest(http.MethodGet,
 		"/api/commander/auth/callback?code=code&state="+state, nil)
@@ -352,7 +357,7 @@ func TestAuthCallback_ResponseContainsCAPIPendingFlag(t *testing.T) {
 	srv := newCommanderAuthTestServer(t, frontierSrv.URL, rdb, 5*time.Second)
 
 	state := "state-capi-pending-check"
-	srv.commanderPKCEStore.store(state, "verifier", 10*time.Minute)
+	srv.commanderPKCEStore.store(state, "verifier", "http://localhost/copilot/callback", 10*time.Minute)
 
 	req := httptest.NewRequest(http.MethodGet,
 		"/api/commander/auth/callback?code=code&state="+state, nil)

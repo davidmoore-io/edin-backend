@@ -54,8 +54,16 @@ func (e *Executor) commanderEvents(ctx context.Context, args map[string]any) (an
 		return nil, fmt.Errorf("no commander identity in context")
 	}
 
-	// Parse limit (default 20, max 100)
-	limit := 20
+	// Parse limit using executor-configured bounds (defaults: 20 / 100).
+	defaultLimit := e.commanderEventsDefaultLimit
+	if defaultLimit <= 0 {
+		defaultLimit = 20
+	}
+	maxLimit := e.commanderEventsMaxLimit
+	if maxLimit <= 0 {
+		maxLimit = 100
+	}
+	limit := defaultLimit
 	if v, ok := args["limit"]; ok {
 		switch n := v.(type) {
 		case float64:
@@ -65,10 +73,10 @@ func (e *Executor) commanderEvents(ctx context.Context, args map[string]any) (an
 		}
 	}
 	if limit <= 0 {
-		limit = 20
+		limit = defaultLimit
 	}
-	if limit > 100 {
-		limit = 100
+	if limit > maxLimit {
+		limit = maxLimit
 	}
 
 	// Parse time range

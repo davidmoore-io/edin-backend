@@ -64,3 +64,31 @@ vault_edin_cmd_writer_password: "{{ vault_edin_cmd_writer_password }}"
 vault_edin_cmd_reader_password: "{{ vault_edin_cmd_reader_password }}"
 vault_edin_migrator_password: "{{ vault_edin_migrator_password }}"
 vault_timescaledb_superuser_password: "{{ vault_timescaledb_superuser_password }}"
+
+# Commander auth
+commander_auth_enabled: "true"
+commander_jwt_private_key_path: /srv/control-api/keys/commander-private.pem
+commander_jwt_public_key_path: /srv/control-api/keys/commander-public.pem
+commander_jwt_issuer: edin-space
+commander_jwt_expiry: 24h
+commander_cookie_domain: .edin.space
+commander_cookie_secure: "true"
+frontier_auth_url: https://auth.frontierstore.net
+frontier_capi_url: https://companion.orerve.net
+frontier_scope: "auth capi"
+frontier_capi_timeout: 10s
+pkce_state_ttl: 10m
+pkce_max_pending: 1000
+commander_nonce_expiry: 10s
+commander_auth_initiate_rate_limit: 5
+commander_auth_initiate_rate_window: 1m
+
+# Copilot WebSocket tuning
+copilot_ws_auth_timeout: 5s
+copilot_ws_read_deadline: 60s
+copilot_ws_ping_interval: 30s
+copilot_ws_write_deadline: 10s
+copilot_ws_read_limit_bytes: 65536
+copilot_message_history_limit: 20
+copilot_events_default_limit: 20
+copilot_events_max_limit: 100

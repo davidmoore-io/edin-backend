@@ -35,7 +35,7 @@ import (
 )
 
 // Run launches the HTTP API server with the provided dependencies.
-func Run(ctx context.Context, cfg *config.Config, opsManager *ops.Manager, llmStore llm.SessionBackend, llmClient *anthropic.Client, toolExec *tools.Executor, runner *assistant.Runner, spanshClient *spansh.Client, cacheStore *store.CacheStore, wsHub *ws.Hub, memgraphClient *memgraph.Client, dayzService *dayz.Service, kaineStore *kaine.Store, eddnIntelStore *store.SystemIntelStore) error {
+func Run(ctx context.Context, cfg *config.Config, opsManager *ops.Manager, llmStore llm.SessionBackend, llmClient *anthropic.Client, toolExec *tools.Executor, runner *assistant.Runner, spanshClient *spansh.Client, cacheStore *store.CacheStore, wsHub *ws.Hub, memgraphClient *memgraph.Client, dayzService *dayz.Service, kaineStore *kaine.Store, eddnIntelStore *store.SystemIntelStore, commanderRepo store.CommanderRepository) error {
 	if cfg == nil {
 		return fmt.Errorf("config is nil")
 	}
@@ -85,6 +85,7 @@ func Run(ctx context.Context, cfg *config.Config, opsManager *ops.Manager, llmSt
 		nonceStore:          nonceStore,
 		commanderPKCEStore:  pkceStore,
 		commanderNonceStore: commanderNonceStore,
+		commanderRepo:       commanderRepo,
 		ingestRateLimiter:   newIngestFIDRateLimiter(),
 	}
 

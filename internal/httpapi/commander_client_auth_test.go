@@ -312,7 +312,7 @@ func TestClientAuthCallback_BrowserFlow_StillWorksWithPKCEStore(t *testing.T) {
 
 	// Seed a PKCE state entry in the in-memory PKCE store (browser flow).
 	state := "browser-state-uuid"
-	srv.commanderPKCEStore.store(state, "browser-verifier", 10*time.Minute)
+	srv.commanderPKCEStore.store(state, "browser-verifier", "http://localhost/copilot/callback", 10*time.Minute)
 
 	req := httptest.NewRequest(http.MethodGet,
 		fmt.Sprintf("/api/commander/auth/callback?code=browser-code&state=%s", state), nil)

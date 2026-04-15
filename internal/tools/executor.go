@@ -147,6 +147,10 @@ type Executor struct {
 	historyClient  HistoryQuerier
 	broadcaster    UpdateBroadcaster
 	logger         func(msg string)
+
+	// Commander event limits (0 means use package defaults: 20 / 100)
+	commanderEventsDefaultLimit int
+	commanderEventsMaxLimit     int
 }
 
 // NewExecutor constructs a tool executor.
@@ -180,6 +184,13 @@ func (e *Executor) WithKaineStore(store *kaine.Store) *Executor {
 // WithCommanderRepository sets the commander repository for journal event and location tools.
 func (e *Executor) WithCommanderRepository(repo store.CommanderRepository) *Executor {
 	e.commanderRepo = repo
+	return e
+}
+
+// WithCommanderEventLimits sets the default and maximum event counts for the commander_events tool.
+func (e *Executor) WithCommanderEventLimits(defaultLimit, maxLimit int) *Executor {
+	e.commanderEventsDefaultLimit = defaultLimit
+	e.commanderEventsMaxLimit = maxLimit
 	return e
 }
 

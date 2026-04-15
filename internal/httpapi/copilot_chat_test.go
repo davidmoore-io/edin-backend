@@ -41,6 +41,13 @@ func newCopilotWSTestServer() (*Server, *kaineNonceStore) {
 			HTTP: config.HTTPConfig{
 				InternalKey: "test-key",
 			},
+			Copilot: config.CopilotConfig{
+				WSAuthTimeout:    5 * time.Second,
+				WSReadDeadline:   60 * time.Second,
+				WSPingInterval:   30 * time.Second,
+				WSWriteDeadline:  10 * time.Second,
+				WSReadLimitBytes: 65536,
+			},
 		},
 		logger:              observability.NewLogger("test"),
 		commanderNonceStore: ns,
