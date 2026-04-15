@@ -112,6 +112,7 @@ func newCommanderAuthTestServer(t *testing.T, frontierURL string, rdb *redis.Cli
 		commanderJWTIssuer:    issuer,
 		commanderJWTValidator: validator,
 		commanderPKCEStore:    newCommanderPKCEStore(1000),
+		commanderNonceStore:   newKaineNonceStore(),
 	}
 }
 
@@ -428,6 +429,110 @@ func TestAuthLogout_NoCookie_Returns401(t *testing.T) {
 	// No cookie set.
 	rr := httptest.NewRecorder()
 	srv.handleCommanderAuthLogout(rr, req)
+
+	assert.Equal(t, http.StatusUnauthorized, rr.Code)
+}
+
+// ─── Status tests ──────────────────────────────────────────────────────────────
+
+func TestAuthStatus_ValidCookie_ReturnsAuthenticatedTrue(t *testing.T) {
+	rdb := newTestMiniredis(t)
+	srv := newCommanderAuthTestServer(t, "http://frontier.invalid", rdb, 5*time.Second)
+
+	tokenStr := issueTestJWT(t, srv, "F1234", "Pattern State")
+
+	req := httptest.NewRequest(http.MethodGet, "/api/commander/auth/status", nil)
+	req.AddCookie(&http.Cookie{Name: "commander_session", Value: tokenStr})
+	rr := httptest.NewRecorder()
+	srv.handleCommanderAuthStatus(rr, req)
+
+	require.Equal(t, http.StatusOK, rr.Code, "body: %s", rr.Body.String())
+
+	var body map[string]any
+	require.NoError(t, json.NewDecoder(rr.Body).Decode(&body))
+	assert.Equal(t, true, body["authenticated"])
+	assert.Equal(t, "Pattern State", body["commander_name"])
+	assert.Equal(t, "F1234", body["fid"])
+}
+
+func TestAuthStatus_NoCookie_Returns401(t *testing.T) {
+	rdb := newTestMiniredis(t)
+	srv := newCommanderAuthTestServer(t, "http://frontier.invalid", rdb, 5*time.Second)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/commander/auth/status", nil)
+	// No cookie set.
+	rr := httptest.NewRecorder()
+	srv.handleCommanderAuthStatus(rr, req)
+
+	require.Equal(t, http.StatusUnauthorized, rr.Code)
+
+	var body map[string]any
+	require.NoError(t, json.NewDecoder(rr.Body).Decode(&body))
+	assert.Equal(t, false, body["authenticated"])
+}
+
+func TestAuthStatus_InvalidCookie_Returns401(t *testing.T) {
+	rdb := newTestMiniredis(t)
+	srv := newCommanderAuthTestServer(t, "http://frontier.invalid", rdb, 5*time.Second)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/commander/auth/status", nil)
+	req.AddCookie(&http.Cookie{Name: "commander_session", Value: "not-a-valid-jwt"})
+	rr := httptest.NewRecorder()
+	srv.handleCommanderAuthStatus(rr, req)
+
+	require.Equal(t, http.StatusUnauthorized, rr.Code)
+
+	var body map[string]any
+	require.NoError(t, json.NewDecoder(rr.Body).Decode(&body))
+	assert.Equal(t, false, body["authenticated"])
+}
+
+// ─── Token nonce tests ─────────────────────────────────────────────────────────
+
+func TestAuthToken_ValidCookie_WithCsrfHeader_ReturnsNonce(t *testing.T) {
+	rdb := newTestMiniredis(t)
+	srv := newCommanderAuthTestServer(t, "http://frontier.invalid", rdb, 5*time.Second)
+
+	tokenStr := issueTestJWT(t, srv, "F5678", "Elite Commander")
+
+	req := httptest.NewRequest(http.MethodGet, "/api/commander/auth/token", nil)
+	req.Header.Set("X-Edin-Fetch", "1")
+	req.AddCookie(&http.Cookie{Name: "commander_session", Value: tokenStr})
+	rr := httptest.NewRecorder()
+	srv.handleCommanderAuthToken(rr, req)
+
+	require.Equal(t, http.StatusOK, rr.Code, "body: %s", rr.Body.String())
+
+	var body map[string]any
+	require.NoError(t, json.NewDecoder(rr.Body).Decode(&body))
+	assert.NotEmpty(t, body["nonce"])
+	assert.Equal(t, float64(10), body["expires_in"])
+}
+
+func TestAuthToken_ValidCookie_MissingCsrfHeader_Returns403(t *testing.T) {
+	rdb := newTestMiniredis(t)
+	srv := newCommanderAuthTestServer(t, "http://frontier.invalid", rdb, 5*time.Second)
+
+	tokenStr := issueTestJWT(t, srv, "F5678", "Elite Commander")
+
+	req := httptest.NewRequest(http.MethodGet, "/api/commander/auth/token", nil)
+	// No X-Edin-Fetch header.
+	req.AddCookie(&http.Cookie{Name: "commander_session", Value: tokenStr})
+	rr := httptest.NewRecorder()
+	srv.handleCommanderAuthToken(rr, req)
+
+	assert.Equal(t, http.StatusForbidden, rr.Code)
+}
+
+func TestAuthToken_NoCookie_Returns401(t *testing.T) {
+	rdb := newTestMiniredis(t)
+	srv := newCommanderAuthTestServer(t, "http://frontier.invalid", rdb, 5*time.Second)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/commander/auth/token", nil)
+	req.Header.Set("X-Edin-Fetch", "1")
+	// No cookie set.
+	rr := httptest.NewRecorder()
+	srv.handleCommanderAuthToken(rr, req)
 
 	assert.Equal(t, http.StatusUnauthorized, rr.Code)
 }

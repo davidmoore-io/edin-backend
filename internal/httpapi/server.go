@@ -60,27 +60,31 @@ func Run(ctx context.Context, cfg *config.Config, opsManager *ops.Manager, llmSt
 	// Initialize PKCE store for commander auth
 	pkceStore := newCommanderPKCEStore(cfg.CommanderAuth.PKCEMaxPending)
 
+	// Initialize nonce store for commander WebSocket auth frames (separate from Kaine)
+	commanderNonceStore := newKaineNonceStore()
+
 	server := &Server{
-		cfg:                cfg,
-		ops:                opsManager,
-		llmStore:           llmStore,
-		llmClient:          llmClient,
-		logger:             observability.NewLogger("httpapi"),
-		apiKey:             cfg.HTTP.InternalKey,
-		metrics:            metrics,
-		rateLimiter:        newRateLimiter(cfg.RateLimit.RequestsPerWindow, cfg.RateLimit.Window),
-		toolExec:           toolExec,
-		llmRunner:          runner,
-		storeCfg:           cfg.LLM.Store,
-		spansh:             spanshClient,
-		cacheStore:         cacheStore,
-		wsHub:              wsHub,
-		memgraph:           memgraphClient,
-		dayz:               dayzService,
-		kaineStore:         kaineStore,
-		eddnIntelStore:     eddnIntelStore,
-		nonceStore:         nonceStore,
-		commanderPKCEStore: pkceStore,
+		cfg:                 cfg,
+		ops:                 opsManager,
+		llmStore:            llmStore,
+		llmClient:           llmClient,
+		logger:              observability.NewLogger("httpapi"),
+		apiKey:              cfg.HTTP.InternalKey,
+		metrics:             metrics,
+		rateLimiter:         newRateLimiter(cfg.RateLimit.RequestsPerWindow, cfg.RateLimit.Window),
+		toolExec:            toolExec,
+		llmRunner:           runner,
+		storeCfg:            cfg.LLM.Store,
+		spansh:              spanshClient,
+		cacheStore:          cacheStore,
+		wsHub:               wsHub,
+		memgraph:            memgraphClient,
+		dayz:                dayzService,
+		kaineStore:          kaineStore,
+		eddnIntelStore:      eddnIntelStore,
+		nonceStore:          nonceStore,
+		commanderPKCEStore:  pkceStore,
+		commanderNonceStore: commanderNonceStore,
 	}
 
 	if server.toolExec == nil {
@@ -281,6 +285,7 @@ type Server struct {
 	commanderJWTIssuer       *auth.CommanderJWTIssuer
 	commanderJWTValidator    *auth.CommanderJWTValidator
 	commanderPKCEStore       *commanderPKCEStore
+	commanderNonceStore      *kaineNonceStore // Single-use nonce store for commander WebSocket auth frames
 	commanderIPLimiter       sync.Map // map[string]*security.TokenBucket — per-IP rate limiters
 
 	// Power standings cache (lazy-loaded, 15-minute TTL)

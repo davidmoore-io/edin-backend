@@ -335,6 +335,94 @@ func (s *Server) handleCommanderAuthCallback(w http.ResponseWriter, r *http.Requ
 	})
 }
 
+// handleCommanderAuthStatus handles GET /api/commander/auth/status.
+// Public endpoint — returns the authentication state from the commander_session cookie.
+func (s *Server) handleCommanderAuthStatus(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		s.writeError(w, http.StatusMethodNotAllowed, "only GET allowed")
+		return
+	}
+
+	cfg := s.cfg.CommanderAuth
+
+	// Read commander_session cookie.
+	cookie, err := r.Cookie(cfg.CookieName)
+	if err != nil {
+		s.writeJSON(w, http.StatusUnauthorized, map[string]any{
+			"authenticated": false,
+		})
+		return
+	}
+
+	// Validate JWT.
+	if s.commanderJWTValidator == nil {
+		s.writeJSON(w, http.StatusUnauthorized, map[string]any{
+			"authenticated": false,
+		})
+		return
+	}
+	claims, err := s.commanderJWTValidator.Validate(r.Context(), cookie.Value)
+	if err != nil {
+		s.writeJSON(w, http.StatusUnauthorized, map[string]any{
+			"authenticated": false,
+		})
+		return
+	}
+
+	s.writeJSON(w, http.StatusOK, map[string]any{
+		"authenticated":  true,
+		"commander_name": claims.Name,
+		"fid":            claims.FID,
+	})
+}
+
+// handleCommanderAuthToken handles GET /api/commander/auth/token.
+// Public endpoint — CSRF-protected via X-Edin-Fetch header.
+// Validates the commander_session cookie and issues a single-use nonce.
+func (s *Server) handleCommanderAuthToken(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		s.writeError(w, http.StatusMethodNotAllowed, "only GET allowed")
+		return
+	}
+
+	// CSRF guard: browsers won't set this header for cross-site requests.
+	if r.Header.Get("X-Edin-Fetch") != "1" {
+		s.writeError(w, http.StatusForbidden, "missing X-Edin-Fetch header")
+		return
+	}
+
+	cfg := s.cfg.CommanderAuth
+
+	// Read commander_session cookie.
+	cookie, err := r.Cookie(cfg.CookieName)
+	if err != nil {
+		s.writeError(w, http.StatusUnauthorized, "no session cookie")
+		return
+	}
+
+	// Validate JWT.
+	if s.commanderJWTValidator == nil {
+		s.writeError(w, http.StatusUnauthorized, "commander auth not configured")
+		return
+	}
+	claims, err := s.commanderJWTValidator.Validate(r.Context(), cookie.Value)
+	if err != nil {
+		slog.Warn("commander_token: JWT validation failed", "error", err)
+		s.writeError(w, http.StatusUnauthorized, "invalid session")
+		return
+	}
+
+	// Issue single-use nonce valid for 10 seconds.
+	// Store the commander as a synthetic KaineUser so we can reuse kaineNonceStore.
+	user := &KaineUser{Sub: claims.FID, Name: claims.Name}
+	nonce := s.commanderNonceStore.Issue(user, 10*time.Second)
+
+	s.writeJSON(w, http.StatusOK, map[string]any{
+		"nonce":      nonce,
+		"expires_in": 10,
+	})
+}
+
 // handleCommanderAuthLogout handles POST /api/commander/auth/logout.
 func (s *Server) handleCommanderAuthLogout(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
@@ -387,6 +475,8 @@ func (s *Server) RegisterCommanderRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/commander/auth/initiate", s.handleCommanderAuthInitiate)
 	mux.HandleFunc("/api/commander/auth/callback", s.handleCommanderAuthCallback)
 	mux.HandleFunc("/api/commander/auth/logout", s.handleCommanderAuthLogout)
+	mux.HandleFunc("/api/commander/auth/status", s.handleCommanderAuthStatus)
+	mux.HandleFunc("/api/commander/auth/token", s.handleCommanderAuthToken)
 }
 
 // urlEncode encodes a string for use in a URL query value.
