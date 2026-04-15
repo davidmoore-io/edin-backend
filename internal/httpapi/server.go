@@ -105,6 +105,10 @@ func Run(ctx context.Context, cfg *config.Config, opsManager *ops.Manager, llmSt
 	if server.kaineRunner == nil && llmClient != nil {
 		server.kaineRunner = assistant.NewRunner(llmClient, server.toolExec, cfg.LLM.KaineSystemPrompt, cfg.LLM.MaxIterations)
 	}
+	// Create copilot runner — system prompt is set per-session by CopilotSystemPrompt(commanderName)
+	if server.copilotRunner == nil && llmClient != nil {
+		server.copilotRunner = assistant.NewRunner(llmClient, server.toolExec, "", cfg.LLM.MaxIterations)
+	}
 
 	// Load the active system prompt from the database, seeding v1 from the compiled
 	// default if the table is empty. Falls back to the config default on DB error.
@@ -217,6 +221,9 @@ func Run(ctx context.Context, cfg *config.Config, opsManager *ops.Manager, llmSt
 	// Commander (Copilot) auth routes
 	server.RegisterCommanderRoutes(mux)
 
+	// Copilot chat routes
+	server.RegisterCopilotRoutes(mux)
+
 	httpServer := &http.Server{
 		Addr:              cfg.HTTP.Address,
 		Handler:           server.applyMiddlewares(mux),
@@ -266,8 +273,9 @@ type Server struct {
 	metrics      *observability.Metrics
 	rateLimiter  *rateLimiter
 	toolExec     *tools.Executor
-	llmRunner    *assistant.Runner // Discord ops runner (has access to system management tools)
-	kaineRunner  *assistant.Runner // Kaine chat runner (Elite Dangerous tools only, no ops)
+	llmRunner     *assistant.Runner // Discord ops runner (has access to system management tools)
+	kaineRunner   *assistant.Runner // Kaine chat runner (Elite Dangerous tools only, no ops)
+	copilotRunner *assistant.Runner // Copilot chat runner (commander-authenticated, includes commander tools)
 	storeCfg     config.ConversationStoreConfig
 	spansh       *spansh.Client
 	cacheStore   *store.CacheStore

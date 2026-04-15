@@ -159,6 +159,8 @@ func MCPToolDefinitions() []mcp.Tool {
 			mcp.WithDescription("Return the current Memgraph database schema: node labels with counts, edge types with counts, indexes, and constraints. Use before writing ad-hoc Cypher queries to understand available data structures."),
 		),
 		DescribeToolMCPDefinition(),
+		CommanderEventsToolDefinition(),
+		CommanderLocationToolDefinition(),
 	}
 }
 
@@ -267,6 +269,19 @@ func SlimBetaToolDefinitionsForScope(scope authz.Scope) []sdk.BetaToolUnionParam
 
 	if scope == authz.ScopeLlmOperator || scope == authz.ScopeAdmin {
 		return allTools
+	}
+
+	if scope == authz.ScopeCopilotChat {
+		var filtered []sdk.BetaToolUnionParam
+		for _, tool := range allTools {
+			if tool.OfTool != nil {
+				name := ToolName(tool.OfTool.Name)
+				if copilotAllowedTools[name] {
+					filtered = append(filtered, tool)
+				}
+			}
+		}
+		return filtered
 	}
 
 	var filtered []sdk.BetaToolUnionParam

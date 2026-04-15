@@ -100,12 +100,31 @@ func (r *Runner) betaToolDefsForContext(ctx context.Context) []sdk.BetaToolUnion
 		}
 	}
 
+	for _, s := range scopes {
+		if s == authz.ScopeCopilotChat {
+			return tools.SlimBetaToolDefinitionsForScope(authz.ScopeCopilotChat)
+		}
+	}
+
 	return nil
 }
 
 // Run executes a single conversational turn given prior session history and the new user message.
 func (r *Runner) Run(ctx context.Context, history []llm.Message, userMessage string) (string, error) {
 	return r.RunWithProgress(ctx, history, userMessage, nil)
+}
+
+// WithSystemPrompt returns a new Runner with the provided system prompt, sharing the
+// same client and executor. Use this to create per-session runners with personalised
+// prompts (e.g. copilot chat where the prompt includes the commander name).
+func (r *Runner) WithSystemPrompt(systemPrompt string) *Runner {
+	return &Runner{
+		client:       r.client,
+		executor:     r.executor,
+		systemPrompt: strings.TrimSpace(systemPrompt),
+		maxIter:      r.maxIter,
+		logger:       r.logger,
+	}
 }
 
 // RunWithProgress executes a conversational turn with optional progress callbacks.
