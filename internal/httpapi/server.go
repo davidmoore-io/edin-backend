@@ -85,6 +85,7 @@ func Run(ctx context.Context, cfg *config.Config, opsManager *ops.Manager, llmSt
 		nonceStore:          nonceStore,
 		commanderPKCEStore:  pkceStore,
 		commanderNonceStore: commanderNonceStore,
+		ingestRateLimiter:   newIngestFIDRateLimiter(),
 	}
 
 	if server.toolExec == nil {
@@ -224,6 +225,10 @@ func Run(ctx context.Context, cfg *config.Config, opsManager *ops.Manager, llmSt
 	// Copilot chat routes
 	server.RegisterCopilotRoutes(mux)
 
+	// Ingest routes — commander JWT required
+	mux.Handle("/api/v1/ingest/event", server.withCommanderAuth(http.HandlerFunc(server.handleIngestSingle)))
+	mux.Handle("/api/v1/ingest/events", server.withCommanderAuth(http.HandlerFunc(server.handleIngestBatch)))
+
 	httpServer := &http.Server{
 		Addr:              cfg.HTTP.Address,
 		Handler:           server.applyMiddlewares(mux),
@@ -295,6 +300,10 @@ type Server struct {
 	commanderPKCEStore       *commanderPKCEStore
 	commanderNonceStore      *kaineNonceStore // Single-use nonce store for commander WebSocket auth frames
 	commanderIPLimiter       sync.Map // map[string]*security.TokenBucket — per-IP rate limiters
+
+	// Commander journal ingest
+	commanderRepo      store.CommanderRepository
+	ingestRateLimiter  *ingestFIDRateLimiter
 
 	// Power standings cache (lazy-loaded, 15-minute TTL)
 	standingsCacheMu    sync.RWMutex
