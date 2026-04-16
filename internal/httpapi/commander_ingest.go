@@ -54,7 +54,7 @@ type ingestResponse struct {
 }
 
 const (
-	ingestMaxBodyBytes = 2 * 1024 * 1024 // 2 MB
+	ingestMaxBodyBytes = 16 * 1024 * 1024 // 16 MB — EngineerCraft events with Modifiers arrays can be bulky
 	ingestMaxBatch     = 500
 	ingestMaxAgeBack   = 365 * 24 * time.Hour
 	ingestMaxAgeFwd    = 5 * time.Minute

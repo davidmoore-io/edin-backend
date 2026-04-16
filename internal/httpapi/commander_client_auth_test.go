@@ -91,7 +91,7 @@ func TestClientAuthInitiate_ReturnsAuthURLAndSessionID(t *testing.T) {
 	assert.Contains(t, body["auth_url"], "response_type=code")
 	assert.Contains(t, body["auth_url"], "code_challenge_method=S256")
 	// Must use the fixed registered redirect URI.
-	assert.Contains(t, body["auth_url"], urlEncode(desktopRedirectURI))
+	assert.Contains(t, body["auth_url"], urlEncode("https://edin.space/api/commander/auth/callback"))
 }
 
 func TestClientAuthInitiate_SessionIDIsCryptoRandom(t *testing.T) {

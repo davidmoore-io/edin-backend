@@ -240,8 +240,8 @@ func TestIngestSingle_OversizedPayload_Returns413(t *testing.T) {
 	repo := &mockCommanderRepo{}
 	srv := newIngestTestServer(t, repo)
 
-	// Build a payload larger than 2MB.
-	bigData := bytes.Repeat([]byte("x"), 3*1024*1024)
+	// Build a payload larger than 16MB.
+	bigData := bytes.Repeat([]byte("x"), 20*1024*1024)
 	body, _ := json.Marshal(map[string]any{
 		"event": map[string]any{
 			"timestamp":      validTimestamp(),

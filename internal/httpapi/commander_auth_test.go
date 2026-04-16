@@ -108,6 +108,7 @@ func newCommanderAuthTestServer(t *testing.T, frontierURL string, rdb *redis.Cli
 				NonceExpiry:          10 * time.Second,
 				InitiateRateLimit:    5,
 				InitiateRateWindow:   time.Minute,
+				DesktopRedirectURI:   "https://edin.space/api/commander/auth/callback",
 			},
 		},
 		logger:                observability.NewLogger("test"),

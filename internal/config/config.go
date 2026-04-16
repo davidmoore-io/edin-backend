@@ -68,6 +68,8 @@ type CommanderAuthConfig struct {
 	// Commander DB connections (DSN form — role-separated for RLS enforcement)
 	CmdWriterDSN string // postgres DSN for writes (edin_cmd_writer role)
 	CmdReaderDSN string // postgres DSN for reads  (edin_cmd_reader role)
+	// Desktop flow redirect URI — must match what's registered with Frontier
+	DesktopRedirectURI string // "https://edin.space/api/commander/auth/callback"
 }
 
 // CopilotConfig holds WebSocket tuning and AI call parameters for the Copilot chat feature.
@@ -629,6 +631,7 @@ func loadCommanderAuthConfig() CommanderAuthConfig {
 		InitiateRateWindow:   initiateRateWindow,
 		CmdWriterDSN:         os.Getenv("EDIN_CMD_WRITER_DSN"),
 		CmdReaderDSN:         os.Getenv("EDIN_CMD_READER_DSN"),
+		DesktopRedirectURI:   getenvDefault("DESKTOP_REDIRECT_URI", "https://edin.space/api/commander/auth/callback"),
 	}
 }
 
