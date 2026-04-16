@@ -101,30 +101,35 @@ Or even better, accumulate the wire JSON as a string buffer to avoid the decode 
 
 ---
 
-### 4. Immediate Sync on Coordinator Start (MEDIUM)
+### 4. Simplify Coordinator — Remove connectivity_plus, Add Immediate Trigger (MEDIUM)
 
 **File:** `packages/edin-journal/lib/src/core/sync_coordinator.dart`
 **Function:** `startBackgroundSync()` (line 32)
 
-Currently, the first sync fires only after the 5-second timer interval elapses. Add an immediate trigger:
+**GOTCHA:** The coordinator uses `connectivity_plus` for a `_isOnline` flag. On Linux desktop, this uses NetworkManager D-Bus which is slow and unreliable — it can report false negatives, causing the drain loop's `while (hasMore && _isOnline)` check to exit prematurely. The `_checkInitialConnectivity()` call is fire-and-forget (no `await`), so `_isOnline` may be stale when the timer first fires.
+
+**Fix:** Remove `connectivity_plus` from the coordinator entirely. Use HTTP failure as the connectivity signal instead — if a sync POST fails with a network error, set `_isOnline = false` and start a reconnect timer. This is more reliable on desktop than D-Bus. Also trigger the first sync immediately:
 
 ```dart
 void startBackgroundSync() {
   if (_isEnabled) return;
   _isEnabled = true;
 
-  _checkInitialConnectivity().then((_) {
-    if (_isOnline) _triggerSync(); // Immediate first sync
-  });
+  // Trigger immediate first sync (don't wait for timer)
+  _triggerSync();
 
-  _connectivitySubscription = Connectivity().onConnectivityChanged.listen(/* ... */);
+  // Periodic timer for steady-state
   _syncTimer = Timer.periodic(SyncService.SYNC_INTERVAL, (_) {
-    if (_isOnline && !_isSyncing && _isEnabled) _triggerSync();
+    if (!_isSyncing && _isEnabled) _triggerSync();
   });
 }
 ```
 
-**Impact:** Eliminates 0-5 second dead time after startup.
+Remove: `_checkInitialConnectivity()`, `_connectivitySubscription`, `_isOnline` flag, `connectivity_plus` import. The drain loop becomes `while (hasMore && _isEnabled)` — no connectivity check. If the HTTP POST fails, `SyncService` returns a failure result and the loop exits naturally. The timer retries 5 seconds later.
+
+Also remove `connectivity_plus` from `packages/edin-journal/pubspec.yaml`.
+
+**Impact:** Eliminates D-Bus stalls, removes false-negative offline detection, starts draining immediately.
 
 ---
 
