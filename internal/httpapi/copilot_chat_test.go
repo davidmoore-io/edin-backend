@@ -24,7 +24,7 @@ func newCopilotTestServer() *Server {
 			},
 		},
 		logger:              observability.NewLogger("test"),
-		commanderNonceStore: newKaineNonceStore(),
+		commanderNonceStore: newCommanderChatNonceStore(),
 		// copilotRunner intentionally nil
 	}
 }
@@ -32,8 +32,8 @@ func newCopilotTestServer() *Server {
 // newCopilotWSTestServer creates a test Server with a non-nil copilotRunner so the WS
 // handler upgrades the connection. The runner has nil client so actual LLM calls fail,
 // but the auth frame tests close the connection before any LLM use.
-func newCopilotWSTestServer() (*Server, *kaineNonceStore) {
-	ns := newKaineNonceStore()
+func newCopilotWSTestServer() (*Server, *commanderChatNonceStore) {
+	ns := newCommanderChatNonceStore()
 	runner := assistant.NewRunner(nil, nil, "", 1)
 
 	s := &Server{
@@ -146,7 +146,7 @@ func TestCopilotWS_InvalidToken_Closed4403(t *testing.T) {
 func TestCopilotWS_ValidToken_Connected(t *testing.T) {
 	s, ns := newCopilotWSTestServer()
 
-	user := &KaineUser{Sub: "F2504", Name: "Cmdr Test", Groups: []string{"kaine-chat"}}
+	user := &CommanderChatUser{FID: "F2504", Name: "Cmdr Test"}
 	nonce := ns.Issue(user, 10*time.Second)
 
 	ts := httptest.NewServer(http.HandlerFunc(s.handleCopilotChatWebSocket))

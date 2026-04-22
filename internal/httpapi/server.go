@@ -61,7 +61,7 @@ func Run(ctx context.Context, cfg *config.Config, opsManager *ops.Manager, llmSt
 	pkceStore := newCommanderPKCEStore(cfg.CommanderAuth.PKCEMaxPending)
 
 	// Initialize nonce store for commander WebSocket auth frames (separate from Kaine)
-	commanderNonceStore := newKaineNonceStore()
+	commanderNonceStore := newCommanderChatNonceStore()
 
 	server := &Server{
 		cfg:                 cfg,
@@ -312,7 +312,7 @@ type Server struct {
 	commanderJWTIssuer       *auth.CommanderJWTIssuer
 	commanderJWTValidator    *auth.CommanderJWTValidator
 	commanderPKCEStore       *commanderPKCEStore
-	commanderNonceStore      *kaineNonceStore // Single-use nonce store for commander WebSocket auth frames
+	commanderNonceStore      *commanderChatNonceStore // Single-use nonce store for commander WebSocket auth frames
 	commanderIPLimiter       sync.Map // map[string]*security.TokenBucket — per-IP rate limiters
 
 	// Commander journal ingest

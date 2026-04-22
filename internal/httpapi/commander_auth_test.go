@@ -116,7 +116,7 @@ func newCommanderAuthTestServer(t *testing.T, frontierURL string, rdb *redis.Cli
 		commanderJWTIssuer:    issuer,
 		commanderJWTValidator: validator,
 		commanderPKCEStore:    newCommanderPKCEStore(1000),
-		commanderNonceStore:   newKaineNonceStore(),
+		commanderNonceStore:   newCommanderChatNonceStore(),
 	}
 }
 

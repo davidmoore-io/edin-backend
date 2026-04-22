@@ -441,8 +441,10 @@ func (s *Server) handleCommanderAuthToken(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	// Issue single-use nonce. Store the commander as a synthetic KaineUser so we can reuse kaineNonceStore.
-	user := &KaineUser{Sub: claims.FID, Name: claims.Name}
+	// Issue single-use nonce for the copilot WebSocket auth frame. The JWT was
+	// just validated above, so any consumer of this nonce is a fully-authenticated
+	// commander — no secondary role check is performed on the WS side.
+	user := &CommanderChatUser{FID: claims.FID, Name: claims.Name}
 	nonce := s.commanderNonceStore.Issue(user, cfg.NonceExpiry)
 
 	s.writeJSON(w, http.StatusOK, map[string]any{
