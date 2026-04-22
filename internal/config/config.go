@@ -75,6 +75,16 @@ type CommanderAuthConfig struct {
 	CmdMigratorDSN string
 	// Desktop flow redirect URI — must match what's registered with Frontier
 	DesktopRedirectURI string // "https://edin.space/api/commander/auth/callback"
+
+	// AllowedFIDs — commander FIDs permitted to obtain an EDIN JWT. When nil
+	// the allowlist is disabled and any Frontier-authenticated commander may
+	// proceed. When non-empty, any FID not present is rejected at callback
+	// time and the attempt is logged to LoginAttemptLogPath.
+	// Managed by the access_list Ansible role via COMMANDER_FID_ALLOWLIST.
+	AllowedFIDs []string
+	// LoginAttemptLogPath — file to append rejected-login JSON lines to.
+	// Empty disables file logging; rejections still go to the server logger.
+	LoginAttemptLogPath string
 }
 
 // CopilotConfig holds WebSocket tuning and AI call parameters for the Copilot chat feature.
@@ -638,7 +648,31 @@ func loadCommanderAuthConfig() CommanderAuthConfig {
 		CmdReaderDSN:         os.Getenv("EDIN_CMD_READER_DSN"),
 		CmdMigratorDSN:       os.Getenv("EDIN_CMD_MIGRATOR_DSN"),
 		DesktopRedirectURI:   getenvDefault("DESKTOP_REDIRECT_URI", "https://edin.space/api/commander/auth/callback"),
+		AllowedFIDs:          parseFIDAllowlist(os.Getenv("COMMANDER_FID_ALLOWLIST")),
+		LoginAttemptLogPath:  os.Getenv("COMMANDER_LOGIN_ATTEMPT_LOG"),
 	}
+}
+
+// parseFIDAllowlist splits COMMANDER_FID_ALLOWLIST's comma-separated value
+// into a clean slice, dropping empty entries and trimming whitespace. An
+// empty or all-whitespace env var yields nil (allowlist disabled) — never
+// an empty-but-non-nil slice, which downstream code treats as "explicitly
+// closed to everyone" and would deny-all by mistake.
+func parseFIDAllowlist(raw string) []string {
+	if strings.TrimSpace(raw) == "" {
+		return nil
+	}
+	parts := strings.Split(raw, ",")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		if v := strings.TrimSpace(p); v != "" {
+			out = append(out, v)
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 func loadCopilotConfig() CopilotConfig {

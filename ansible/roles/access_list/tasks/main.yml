@@ -1,0 +1,19 @@
+---
+# access_list has no runtime tasks of its own — it exists to hold the
+# commander_fid_allowlist and commander_login_attempt_log variables in one
+# discoverable place. The control_api role reads these when rendering the
+# backend environment file, so the role is intentionally listed BEFORE
+# control_api in site.yml.
+#
+# Keeping the role present (rather than just having the vars in group_vars/)
+# means `ansible-playbook --tags access_list` is meaningful future-work:
+# a later iteration can ensure the log file exists with the right owner/mode,
+# rotate it, etc., without touching control_api.
+
+- name: access_list role placeholder
+  ansible.builtin.debug:
+    msg: >-
+      access_list provides commander_fid_allowlist
+      ({{ commander_fid_allowlist | length }} FID(s))
+      and commander_login_attempt_log={{ commander_login_attempt_log }}
+  tags: [access_list]

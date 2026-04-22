@@ -311,6 +311,12 @@ func (s *Server) handleClientAuthDesktopCallback(w http.ResponseWriter, r *http.
 		capiPending = true
 	}
 
+	// Allowlist gate — same policy as the browser callback. Denied attempts
+	// are logged with flow=desktop so the audit trail distinguishes them.
+	if !s.enforceCommanderAllowlist(w, r, loginFlowDesktop, fid, name) {
+		return
+	}
+
 	// Issue EDIN JWT.
 	if s.commanderJWTIssuer == nil {
 		s.writeError(w, http.StatusServiceUnavailable, "commander auth not configured")

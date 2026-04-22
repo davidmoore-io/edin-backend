@@ -316,6 +316,14 @@ func (s *Server) handleCommanderAuthCallback(w http.ResponseWriter, r *http.Requ
 		}
 	}
 
+	// Allowlist gate — refuse to mint a JWT for FIDs not on the allowlist.
+	// The check runs AFTER we've identified the commander so the attempt
+	// log captures who tried, not just that "someone" tried.
+	if !s.enforceCommanderAllowlist(w, r, loginFlowWeb, fid, name) {
+		am.commanderAuthAttemptsTotal.WithLabelValues("denied").Inc()
+		return
+	}
+
 	// Issue EDIN JWT.
 	if s.commanderJWTIssuer == nil {
 		am.commanderAuthAttemptsTotal.WithLabelValues("failure").Inc()

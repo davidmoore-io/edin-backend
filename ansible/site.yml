@@ -11,6 +11,12 @@
   roles:
     - role: redis
       tags: [redis]
+    - role: access_list
+      # Must run before control_api so commander_fid_allowlist and
+      # commander_login_attempt_log are resolvable in the env template.
+      # Tagged with control_api too so `--tags control_api` picks up
+      # access_list's variables (role vars are only loaded when the role runs).
+      tags: [access_list, control_api]
     - role: control_api
       tags: [control_api]
     - role: discord_bot
