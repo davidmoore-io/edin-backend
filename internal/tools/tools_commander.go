@@ -179,9 +179,14 @@ func (e *Executor) commanderEvents(ctx context.Context, args map[string]any) (an
 	}, nil
 }
 
-// toEventSummary builds the per-event response entry, caring for size budget
-// and for event_data that somehow didn't round-trip as valid JSON (treat it
-// as an opaque string rather than silently dropping it).
+// toEventSummary builds the per-event response entry. For the common case
+// — a small, valid journal payload — event_data passes through verbatim so
+// the model sees the exact shape it was trained on. For events whose raw
+// JSON exceeds the per-event budget (Cargo, Loadout, Colonisation depots,
+// StoredModules/Ships) we try a per-type compactor that keeps the useful
+// fields and drops the bulk. Only if the compactor still overshoots — or
+// the event type is unknown and the raw is too large — do we fall back to
+// the "omitted" note.
 func toEventSummary(ts time.Time, eventType string, data json.RawMessage) commanderEventSummary {
 	out := commanderEventSummary{
 		Timestamp: ts.UTC().Format(time.RFC3339),
@@ -191,21 +196,27 @@ func toEventSummary(ts time.Time, eventType string, data json.RawMessage) comman
 	if len(data) == 0 {
 		return out
 	}
-	if len(data) > perEventDataBytesCap {
-		out.Note = fmt.Sprintf(
-			"event_data omitted (%d bytes exceeds %d-byte per-event cap; query with a narrower event_types filter to see the full payload for this type)",
-			len(data), perEventDataBytesCap,
-		)
-		return out
-	}
-	// Validate the payload parses as JSON. pg rows should always carry valid
-	// JSON here (event_data is jsonb), but surface any surprise cleanly rather
-	// than emitting invalid JSON to the tool-result stream.
 	if !json.Valid(data) {
 		out.Note = "event_data was not valid JSON and has been omitted"
 		return out
 	}
-	out.EventData = data
+
+	if len(data) <= perEventDataBytesCap {
+		out.EventData = data
+		return out
+	}
+
+	// Over the cap — try the event-type-specific compactor.
+	if compacted, ok := tryCompactEventData(eventType, data); ok && len(compacted) <= perEventDataBytesCap {
+		out.EventData = compacted
+		out.Note = fmt.Sprintf("event_data compacted (original %d bytes)", len(data))
+		return out
+	}
+
+	out.Note = fmt.Sprintf(
+		"event_data omitted (%d bytes exceeds %d-byte per-event cap; query with a narrower event_types filter to see the full payload for this type)",
+		len(data), perEventDataBytesCap,
+	)
 	return out
 }
 

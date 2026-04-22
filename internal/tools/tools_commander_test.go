@@ -197,12 +197,12 @@ func TestCommanderEvents_IncludesEventDataPayload(t *testing.T) {
 	assert.Empty(t, r.Events[0].Note)
 }
 
-// TestCommanderEvents_TruncatesOversizedEventData covers high-volume event
-// types (StoredModules, Cargo, ...) whose payloads can be tens or hundreds of
-// KB each and would otherwise blow the context window.
+// TestCommanderEvents_TruncatesOversizedEventData covers the fallback path:
+// an event type with NO registered compactor whose raw payload overshoots
+// the cap must be omitted with a note. Events that DO have a compactor take
+// a different path (covered in event_compactors_test.go).
 func TestCommanderEvents_TruncatesOversizedEventData(t *testing.T) {
 	now := time.Now().UTC()
-	// Build a payload comfortably over the 2KB cap.
 	bigFiller := strings.Repeat("x", perEventDataBytesCap+500)
 	bigPayload := json.RawMessage(`{"filler":"` + bigFiller + `"}`)
 	repo := &mockCommanderRepo{
@@ -211,7 +211,7 @@ func TestCommanderEvents_TruncatesOversizedEventData(t *testing.T) {
 				CommanderID: uuid.New(),
 				FID:         "F2504",
 				Timestamp:   now,
-				EventType:   "StoredModules",
+				EventType:   "UnknownHugeEventType", // no compactor registered → fallback path
 				EventData:   bigPayload,
 			},
 		},
@@ -221,9 +221,9 @@ func TestCommanderEvents_TruncatesOversizedEventData(t *testing.T) {
 	require.NoError(t, err)
 	r := result.(commanderEventsResult)
 	require.Len(t, r.Events, 1)
-	assert.Empty(t, r.Events[0].EventData, "oversized payload must be dropped")
+	assert.Empty(t, r.Events[0].EventData, "oversized payload with no compactor must be dropped")
 	assert.Contains(t, r.Events[0].Note, "omitted")
-	assert.Equal(t, "StoredModules", r.Events[0].EventType)
+	assert.Equal(t, "UnknownHugeEventType", r.Events[0].EventType)
 }
 
 // TestCommanderEvents_HandlesInvalidEventDataJSON — defensive: should never
