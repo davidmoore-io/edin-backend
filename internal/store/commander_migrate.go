@@ -2,38 +2,44 @@ package store
 
 import (
 	"context"
+	"embed"
 	"fmt"
-	"os"
+	"io/fs"
 	"path/filepath"
-	"runtime"
 	"sort"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// MigrateCommanderSchema applies all commander schema migrations from the
-// internal/store/migrations/commander/ directory against the provided pool.
-// Uses runtime.Caller to locate the migrations directory relative to this source file.
+// commanderMigrations embeds the .sql migration files so they travel with the
+// compiled binary. The previous runtime.Caller(0) approach was broken outside
+// `go test` / `go run` — in a scratch-layered container there is no source tree
+// for Caller to point at, and migrations silently didn't run.
+//
+//go:embed migrations/commander/*.sql
+var commanderMigrations embed.FS
+
+const commanderMigrationsDir = "migrations/commander"
+
+// MigrateCommanderSchema applies every embedded .sql file under
+// migrations/commander/ against the provided pool in lexicographic order.
+//
+// Each .sql file is executed as a single Exec call — Postgres processes
+// multi-statement input as an implicit transaction per statement (pgx v5), and
+// the migrations themselves use IF NOT EXISTS / DROP POLICY IF EXISTS / DO
+// blocks so re-running is safe.
+//
+// The pool must connect as a role with owner privileges (CREATE SCHEMA, CREATE
+// TABLE, create_hypertable, GRANT, ALTER DEFAULT PRIVILEGES, ENABLE ROW LEVEL
+// SECURITY). Typically the TimescaleDB superuser. Do NOT reuse the runtime
+// edin_cmd_writer pool — those grants are deliberately restricted to the point
+// where migrations would fail.
 func MigrateCommanderSchema(ctx context.Context, pool *pgxpool.Pool) error {
-	_, thisFile, _, _ := runtime.Caller(0)
-	migrationsDir := filepath.Join(filepath.Dir(thisFile), "migrations", "commander")
-
-	return applyMigrations(ctx, pool, migrationsDir)
-}
-
-// applyMigrations reads all .sql files from dir in sorted (lexicographic) order
-// and executes each file's contents as a single Exec call against pool.
-// If dir does not exist or contains no .sql files, applyMigrations returns nil.
-func applyMigrations(ctx context.Context, pool *pgxpool.Pool, dir string) error {
-	entries, err := os.ReadDir(dir)
+	entries, err := fs.ReadDir(commanderMigrations, commanderMigrationsDir)
 	if err != nil {
-		if os.IsNotExist(err) {
-			return nil
-		}
-		return fmt.Errorf("read migrations dir %q: %w", dir, err)
+		return fmt.Errorf("read embedded migrations dir %q: %w", commanderMigrationsDir, err)
 	}
 
-	// Collect .sql files
 	var files []string
 	for _, e := range entries {
 		if e.IsDir() {
@@ -44,18 +50,17 @@ func applyMigrations(ctx context.Context, pool *pgxpool.Pool, dir string) error 
 		}
 	}
 	if len(files) == 0 {
-		return nil
+		return fmt.Errorf("no .sql migrations found in %q — build embedded incorrectly?", commanderMigrationsDir)
 	}
 
 	sort.Strings(files)
 
 	for _, name := range files {
-		path := filepath.Join(dir, name)
-		contents, err := os.ReadFile(path)
+		path := commanderMigrationsDir + "/" + name
+		contents, err := commanderMigrations.ReadFile(path)
 		if err != nil {
-			return fmt.Errorf("read migration %q: %w", name, err)
+			return fmt.Errorf("read embedded migration %q: %w", name, err)
 		}
-
 		if _, err := pool.Exec(ctx, string(contents)); err != nil {
 			return fmt.Errorf("execute migration %q: %w", name, err)
 		}

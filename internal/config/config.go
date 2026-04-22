@@ -68,6 +68,11 @@ type CommanderAuthConfig struct {
 	// Commander DB connections (DSN form — role-separated for RLS enforcement)
 	CmdWriterDSN string // postgres DSN for writes (edin_cmd_writer role)
 	CmdReaderDSN string // postgres DSN for reads  (edin_cmd_reader role)
+	// Migrator DSN — runs the embedded commander schema migrations at startup.
+	// Must use a role with owner privileges (CREATE SCHEMA, CREATE TABLE, create_hypertable,
+	// GRANT) so realistically the TimescaleDB superuser. Leave empty to skip
+	// migrations (e.g. test envs that bring their own schema).
+	CmdMigratorDSN string
 	// Desktop flow redirect URI — must match what's registered with Frontier
 	DesktopRedirectURI string // "https://edin.space/api/commander/auth/callback"
 }
@@ -631,6 +636,7 @@ func loadCommanderAuthConfig() CommanderAuthConfig {
 		InitiateRateWindow:   initiateRateWindow,
 		CmdWriterDSN:         os.Getenv("EDIN_CMD_WRITER_DSN"),
 		CmdReaderDSN:         os.Getenv("EDIN_CMD_READER_DSN"),
+		CmdMigratorDSN:       os.Getenv("EDIN_CMD_MIGRATOR_DSN"),
 		DesktopRedirectURI:   getenvDefault("DESKTOP_REDIRECT_URI", "https://edin.space/api/commander/auth/callback"),
 	}
 }

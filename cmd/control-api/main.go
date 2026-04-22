@@ -180,6 +180,25 @@ func main() {
 		toolExecutor.WithHistoryClient(cacheStore)
 	}
 
+	// Run commander schema migrations BEFORE opening the runtime (cmd_writer) pool.
+	// cmd_writer deliberately lacks CREATE / owner privileges, so migrations must run
+	// as the TimescaleDB superuser via a short-lived migrator pool that is closed
+	// immediately after. If no migrator DSN is configured, skip — matches dev/test
+	// setups that provision the schema externally.
+	if cfg.CommanderAuth.CmdMigratorDSN != "" {
+		migratorPool, err := pgxpool.New(ctx, cfg.CommanderAuth.CmdMigratorDSN)
+		if err != nil {
+			logger.Error("commander migrator pool (commander schema not migrated)", err)
+		} else {
+			if err := store.MigrateCommanderSchema(ctx, migratorPool); err != nil {
+				logger.Error("commander schema migration failed", err)
+			} else {
+				logger.Info("Commander schema migrations applied")
+			}
+			migratorPool.Close()
+		}
+	}
+
 	// Initialize commander repository if DSN is configured
 	var commanderRepo store.CommanderRepository
 	if cfg.CommanderAuth.CmdWriterDSN != "" {
