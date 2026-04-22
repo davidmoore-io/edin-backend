@@ -1417,6 +1417,7 @@ func (s *Server) handleEDINInaraLinks(w http.ResponseWriter, r *http.Request) {
 // Routes:
 //   - /api/edin/systems/{systemName}/history?hours=24 - merit history (reinforcement/undermining)
 //   - /api/edin/systems/{systemName}/expansion-history?hours=168 - expansion conflict progress history
+//   - /api/edin/systems/{systemName}/factions - current factions (name, influence, states, happiness)
 func (s *Server) handleEDINSystemHistory(w http.ResponseWriter, r *http.Request) {
 	s.applyCORSHeaders(w, r)
 	if r.Method == http.MethodOptions {
@@ -1428,16 +1429,11 @@ func (s *Server) handleEDINSystemHistory(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	if s.cacheStore == nil {
-		s.writeError(w, http.StatusServiceUnavailable, "EDIN cache not configured")
-		return
-	}
-
-	// Parse system name and endpoint from path: /api/edin/systems/{name}/history or /expansion-history
+	// Parse system name and endpoint from path: /api/edin/systems/{name}/{history|expansion-history|factions}
 	path := strings.TrimPrefix(r.URL.Path, "/api/edin/systems/")
 	parts := strings.Split(path, "/")
 	if len(parts) < 2 {
-		s.writeError(w, http.StatusBadRequest, "invalid path, expected /api/edin/systems/{name}/history or /expansion-history")
+		s.writeError(w, http.StatusBadRequest, "invalid path, expected /api/edin/systems/{name}/{history|expansion-history|factions}")
 		return
 	}
 
@@ -1464,6 +1460,10 @@ func (s *Server) handleEDINSystemHistory(w http.ResponseWriter, r *http.Request)
 
 	switch endpoint {
 	case "history":
+		if s.cacheStore == nil {
+			s.writeError(w, http.StatusServiceUnavailable, "EDIN cache not configured")
+			return
+		}
 		history, err := s.cacheStore.GetSystemHistory(r.Context(), systemName, hours)
 		if err != nil {
 			s.logger.Error(fmt.Sprintf("edin_system_history error for %s", systemName), err)
@@ -1484,6 +1484,10 @@ func (s *Server) handleEDINSystemHistory(w http.ResponseWriter, r *http.Request)
 		})
 
 	case "expansion-history":
+		if s.cacheStore == nil {
+			s.writeError(w, http.StatusServiceUnavailable, "EDIN cache not configured")
+			return
+		}
 		history, err := s.cacheStore.GetExpansionHistory(r.Context(), systemName, hours)
 		if err != nil {
 			s.logger.Error(fmt.Sprintf("edin_expansion_history error for %s", systemName), err)
@@ -1503,8 +1507,27 @@ func (s *Server) handleEDINSystemHistory(w http.ResponseWriter, r *http.Request)
 			"history":     history,
 		})
 
+	case "factions":
+		if s.memgraph == nil {
+			s.writeError(w, http.StatusServiceUnavailable, "Memgraph not configured")
+			return
+		}
+		factions, err := s.memgraph.GetFactionsInSystem(r.Context(), systemName)
+		if err != nil {
+			s.logger.Error(fmt.Sprintf("edin_system_factions error for %s", systemName), err)
+			s.writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		if factions == nil {
+			factions = []memgraph.FactionPresence{}
+		}
+		s.writeJSON(w, http.StatusOK, map[string]any{
+			"system_name": systemName,
+			"factions":    factions,
+		})
+
 	default:
-		s.writeError(w, http.StatusBadRequest, "invalid endpoint, expected 'history' or 'expansion-history'")
+		s.writeError(w, http.StatusBadRequest, "invalid endpoint, expected 'history', 'expansion-history' or 'factions'")
 	}
 }
 
