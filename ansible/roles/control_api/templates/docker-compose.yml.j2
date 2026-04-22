@@ -8,6 +8,9 @@ services:
     restart: unless-stopped
     env_file:
       - {{ control_api_env_file }}
+    volumes:
+      # Commander JWT keypair — generated on the host by jwt_keygen; read-only mount.
+      - {{ commander_jwt_private_key_path | dirname }}:{{ commander_jwt_private_key_path | dirname }}:ro
     networks:
       - {{ edin_app_network }}
       - {{ edin_data_network }}
