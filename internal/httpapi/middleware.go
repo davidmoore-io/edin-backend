@@ -70,7 +70,16 @@ func (s *Server) applyMiddlewares(next http.Handler) http.Handler {
 			return
 		}
 
-		if !s.rateLimiter.Allow(s.rateLimitKey(r)) {
+		// Skip the global limiter for endpoints that enforce their own per-FID
+		// budget. The global bucket is keyed on the full Authorization header
+		// and shared across every request from the same client; letting bulk-
+		// ingest bursts drain it starved heartbeat (and every other commander
+		// call) until it refilled, which is how the web presence indicator
+		// kept flipping to "offline" mid-backfill. The per-FID limiters in the
+		// respective handlers remain authoritative for those paths.
+		if !isGloballyRateLimited(r.URL.Path) {
+			// fall through — handler has its own limiter
+		} else if !s.rateLimiter.Allow(s.rateLimitKey(r)) {
 			s.logger.Warn(fmt.Sprintf("rate limit exceeded: %s %s request_id=%s client_ip=%s", r.Method, r.URL.Path, requestID, clientIP))
 			s.metrics.ObserveHTTP(r.Method, r.URL.Path, http.StatusTooManyRequests, time.Since(start))
 			s.writeError(w, http.StatusTooManyRequests, "rate limit exceeded")
@@ -85,6 +94,26 @@ func (s *Server) applyMiddlewares(next http.Handler) http.Handler {
 		s.metrics.ObserveHTTP(r.Method, r.URL.Path, recorder.status, duration)
 		s.logger.Info(fmt.Sprintf("%s %s -> %d (%s) request_id=%s client_ip=%s", r.Method, r.URL.Path, recorder.status, duration, requestID, clientIP))
 	})
+}
+
+// isGloballyRateLimited decides whether a request path should be gated by the
+// blanket middleware rate limiter. Paths that run their own per-FID limiter
+// inside the handler are exempt — the global layer would just create false
+// 429s when a single client legitimately bursts above the blanket cap (e.g.
+// during first-time journal backfill) without adding any incremental safety.
+//
+// Be explicit about exemptions: new endpoints default to "globally limited"
+// unless deliberately added here. The list is intentionally small.
+func isGloballyRateLimited(path string) bool {
+	// Per-FID ingest limiter: commander_ingest.go — 100 req/min per FID.
+	if path == "/api/v1/ingest/event" || path == "/api/v1/ingest/events" {
+		return false
+	}
+	// Per-FID heartbeat limiter: commander_presence.go — 6 req/min per FID.
+	if path == "/api/v1/commander/heartbeat" {
+		return false
+	}
+	return true
 }
 
 func clientIP(r *http.Request) string {

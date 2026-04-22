@@ -2,6 +2,7 @@ package tools
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -25,10 +26,22 @@ func commanderFIDFromContext(ctx context.Context) string {
 	return v
 }
 
+// perEventDataBytesCap bounds how much of an individual event's event_data
+// JSON we forward to the LLM. Most journal events are under 1KB; a handful
+// (StoredModules, StoredShips, Cargo, MaterialsCollected) can balloon into
+// tens or hundreds of KB. Truncating per-event keeps a page of 20 events
+// well within the context window without blinding the AI to the common case.
+const perEventDataBytesCap = 2048
+
 // CommanderEventsToolDefinition returns the MCP tool definition for commander_events.
 func CommanderEventsToolDefinition() mcp.Tool {
 	return mcp.NewTool(string(ToolCommanderEvents),
-		mcp.WithDescription("Query the commander's synced journal events from their Elite Dangerous game session. Returns recent events, optionally filtered by type and time range."),
+		mcp.WithDescription(
+			"Query the commander's synced Elite Dangerous journal events. Returns each event's timestamp, event_type, and the full event_data JSON payload. "+
+				"Use this to answer questions about where the commander has been, what they've done, what station they last docked at, what they bought or sold, mission state, etc. — "+
+				"each journal event carries its own named fields inside event_data (e.g. Docked events have StationName/StarSystem, FSDJump events have StarSystem/JumpDist, MissionAccepted has Faction/Reward). "+
+				"When a filter is helpful, set event_types to narrow the page.",
+		),
 		mcp.WithString("event_types", mcp.Description("Comma-separated event types to filter (e.g. 'FSDJump,Docked'). Omit for all types.")),
 		mcp.WithString("since", mcp.Description("Start time in RFC3339 format. Omit for no lower bound.")),
 		mcp.WithString("until", mcp.Description("End time in RFC3339 format. Omit for now.")),
@@ -41,6 +54,26 @@ func CommanderLocationToolDefinition() mcp.Tool {
 	return mcp.NewTool(string(ToolCommanderLocation),
 		mcp.WithDescription("Get the commander's last known location from their synced Elite Dangerous journal events."),
 	)
+}
+
+// commanderEventSummary is the per-event shape returned to the LLM.
+// EventData is the raw journal payload so the model can read any field it
+// needs (station names, system coords, mission state, ...). Oversized
+// payloads are replaced with a short note rather than dropped entirely, so
+// the model still sees that the event occurred even if the details are
+// beyond the context budget.
+type commanderEventSummary struct {
+	Timestamp string          `json:"timestamp"`
+	EventType string          `json:"event_type"`
+	EventData json.RawMessage `json:"event_data,omitempty"`
+	Note      string          `json:"note,omitempty"`
+}
+
+// commanderEventsResult is the structured response for commander_events.
+type commanderEventsResult struct {
+	FID    string                  `json:"fid"`
+	Count  int                     `json:"count"`
+	Events []commanderEventSummary `json:"events"`
 }
 
 // commanderEvents queries journal events for the authenticated commander.
@@ -109,10 +142,7 @@ func (e *Executor) commanderEvents(ctx context.Context, args map[string]any) (an
 		}
 	}
 
-	var events []struct {
-		Timestamp time.Time
-		EventType string
-	}
+	summaries := make([]commanderEventSummary, 0, limit)
 
 	if len(eventTypes) > 0 || !since.IsZero() || !until.IsZero() {
 		// EventsByType's SQL uses `timestamp <= until`, so an unset `until` must
@@ -127,13 +157,10 @@ func (e *Executor) commanderEvents(ctx context.Context, args map[string]any) (an
 			return nil, fmt.Errorf("querying commander events: %w", err)
 		}
 		for _, r := range rows {
-			events = append(events, struct {
-				Timestamp time.Time
-				EventType string
-			}{r.Timestamp, r.EventType})
-		}
-		if len(events) > limit {
-			events = events[:limit]
+			if len(summaries) >= limit {
+				break
+			}
+			summaries = append(summaries, toEventSummary(r.Timestamp, r.EventType, r.EventData))
 		}
 	} else {
 		rows, err := e.commanderRepo.RecentEvents(ctx, fid, limit)
@@ -141,23 +168,45 @@ func (e *Executor) commanderEvents(ctx context.Context, args map[string]any) (an
 			return nil, fmt.Errorf("querying commander events: %w", err)
 		}
 		for _, r := range rows {
-			events = append(events, struct {
-				Timestamp time.Time
-				EventType string
-			}{r.Timestamp, r.EventType})
+			summaries = append(summaries, toEventSummary(r.Timestamp, r.EventType, r.EventData))
 		}
 	}
 
-	if len(events) == 0 {
-		return "No events found for this commander.", nil
+	return commanderEventsResult{
+		FID:    fid,
+		Count:  len(summaries),
+		Events: summaries,
+	}, nil
+}
+
+// toEventSummary builds the per-event response entry, caring for size budget
+// and for event_data that somehow didn't round-trip as valid JSON (treat it
+// as an opaque string rather than silently dropping it).
+func toEventSummary(ts time.Time, eventType string, data json.RawMessage) commanderEventSummary {
+	out := commanderEventSummary{
+		Timestamp: ts.UTC().Format(time.RFC3339),
+		EventType: eventType,
 	}
 
-	var sb strings.Builder
-	fmt.Fprintf(&sb, "Recent events for commander (last %d):\n", len(events))
-	for _, ev := range events {
-		fmt.Fprintf(&sb, "- %s | %s\n", ev.Timestamp.UTC().Format("2006-01-02 15:04:05"), ev.EventType)
+	if len(data) == 0 {
+		return out
 	}
-	return strings.TrimRight(sb.String(), "\n"), nil
+	if len(data) > perEventDataBytesCap {
+		out.Note = fmt.Sprintf(
+			"event_data omitted (%d bytes exceeds %d-byte per-event cap; query with a narrower event_types filter to see the full payload for this type)",
+			len(data), perEventDataBytesCap,
+		)
+		return out
+	}
+	// Validate the payload parses as JSON. pg rows should always carry valid
+	// JSON here (event_data is jsonb), but surface any surprise cleanly rather
+	// than emitting invalid JSON to the tool-result stream.
+	if !json.Valid(data) {
+		out.Note = "event_data was not valid JSON and has been omitted"
+		return out
+	}
+	out.EventData = data
+	return out
 }
 
 // commanderLocation returns the commander's last known location.

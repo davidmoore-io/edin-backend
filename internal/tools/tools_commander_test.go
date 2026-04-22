@@ -92,10 +92,13 @@ func TestCommanderEvents_ReturnsFormattedList(t *testing.T) {
 	exec := NewExecutor(nil, nil, nil, nil).WithCommanderRepository(repo)
 	result, err := exec.commanderEvents(ctxWithFID("F2504"), map[string]any{})
 	require.NoError(t, err)
-	s := result.(string)
-	assert.Contains(t, s, "FSDJump")
-	assert.Contains(t, s, "Docked")
-	assert.Contains(t, s, "Recent events")
+	r := result.(commanderEventsResult)
+	require.Len(t, r.Events, 2)
+	assert.Equal(t, "F2504", r.FID)
+	assert.Equal(t, 2, r.Count)
+	assert.Equal(t, "FSDJump", r.Events[0].EventType)
+	assert.Equal(t, "Docked", r.Events[1].EventType)
+	assert.NotEmpty(t, r.Events[0].Timestamp)
 }
 
 func TestCommanderEvents_FiltersByEventType(t *testing.T) {
@@ -110,7 +113,9 @@ func TestCommanderEvents_FiltersByEventType(t *testing.T) {
 		"event_types": "FSDJump",
 	})
 	require.NoError(t, err)
-	assert.Contains(t, result.(string), "FSDJump")
+	r := result.(commanderEventsResult)
+	require.Len(t, r.Events, 1)
+	assert.Equal(t, "FSDJump", r.Events[0].EventType)
 }
 
 // TestCommanderEvents_DefaultsUntilToNow is a regression test for a bug where
@@ -147,23 +152,103 @@ func TestCommanderEvents_RespectsLimit(t *testing.T) {
 		"limit": float64(3),
 	})
 	require.NoError(t, err)
-	// Should only have 3 event lines (each starts with "- ")
-	lines := strings.Split(result.(string), "\n")
-	eventLines := 0
-	for _, l := range lines {
-		if strings.HasPrefix(l, "- ") {
-			eventLines++
-		}
-	}
-	assert.Equal(t, 3, eventLines)
+	r := result.(commanderEventsResult)
+	assert.Len(t, r.Events, 3)
+	assert.Equal(t, 3, r.Count)
 }
 
-func TestCommanderEvents_ReturnsNoEventsMessage(t *testing.T) {
+func TestCommanderEvents_ReturnsEmptyResultForNoEvents(t *testing.T) {
 	repo := &mockCommanderRepo{recentEvents: nil}
 	exec := NewExecutor(nil, nil, nil, nil).WithCommanderRepository(repo)
 	result, err := exec.commanderEvents(ctxWithFID("F2504"), map[string]any{})
 	require.NoError(t, err)
-	assert.Contains(t, result.(string), "No events found")
+	r := result.(commanderEventsResult)
+	assert.Equal(t, 0, r.Count)
+	assert.Empty(t, r.Events)
+}
+
+// TestCommanderEvents_IncludesEventDataPayload is the feature test for the
+// change that unblocks "where am I docked?" style questions — the LLM needs
+// to see the named fields inside each event (StationName, StarSystem etc.),
+// not just the event type.
+func TestCommanderEvents_IncludesEventDataPayload(t *testing.T) {
+	now := time.Now().UTC()
+	repo := &mockCommanderRepo{
+		recentEvents: []store.JournalEvent{
+			{
+				CommanderID: uuid.New(),
+				FID:         "F2504",
+				Timestamp:   now,
+				EventType:   "Docked",
+				EventData:   json.RawMessage(`{"StationName":"Jameson Memorial","StarSystem":"Shinrarta Dezhra"}`),
+			},
+		},
+	}
+	exec := NewExecutor(nil, nil, nil, nil).WithCommanderRepository(repo)
+	result, err := exec.commanderEvents(ctxWithFID("F2504"), map[string]any{})
+	require.NoError(t, err)
+	r := result.(commanderEventsResult)
+	require.Len(t, r.Events, 1)
+	// Raw payload must reach the LLM verbatim, not be stringified or mangled.
+	assert.JSONEq(t,
+		`{"StationName":"Jameson Memorial","StarSystem":"Shinrarta Dezhra"}`,
+		string(r.Events[0].EventData),
+	)
+	assert.Empty(t, r.Events[0].Note)
+}
+
+// TestCommanderEvents_TruncatesOversizedEventData covers high-volume event
+// types (StoredModules, Cargo, ...) whose payloads can be tens or hundreds of
+// KB each and would otherwise blow the context window.
+func TestCommanderEvents_TruncatesOversizedEventData(t *testing.T) {
+	now := time.Now().UTC()
+	// Build a payload comfortably over the 2KB cap.
+	bigFiller := strings.Repeat("x", perEventDataBytesCap+500)
+	bigPayload := json.RawMessage(`{"filler":"` + bigFiller + `"}`)
+	repo := &mockCommanderRepo{
+		recentEvents: []store.JournalEvent{
+			{
+				CommanderID: uuid.New(),
+				FID:         "F2504",
+				Timestamp:   now,
+				EventType:   "StoredModules",
+				EventData:   bigPayload,
+			},
+		},
+	}
+	exec := NewExecutor(nil, nil, nil, nil).WithCommanderRepository(repo)
+	result, err := exec.commanderEvents(ctxWithFID("F2504"), map[string]any{})
+	require.NoError(t, err)
+	r := result.(commanderEventsResult)
+	require.Len(t, r.Events, 1)
+	assert.Empty(t, r.Events[0].EventData, "oversized payload must be dropped")
+	assert.Contains(t, r.Events[0].Note, "omitted")
+	assert.Equal(t, "StoredModules", r.Events[0].EventType)
+}
+
+// TestCommanderEvents_HandlesInvalidEventDataJSON — defensive: should never
+// happen (event_data is jsonb in Postgres) but if the field somehow returned
+// non-JSON bytes we surface a note rather than emit broken JSON to the tool
+// result channel.
+func TestCommanderEvents_HandlesInvalidEventDataJSON(t *testing.T) {
+	repo := &mockCommanderRepo{
+		recentEvents: []store.JournalEvent{
+			{
+				CommanderID: uuid.New(),
+				FID:         "F2504",
+				Timestamp:   time.Now().UTC(),
+				EventType:   "Mystery",
+				EventData:   json.RawMessage(`this is not json`),
+			},
+		},
+	}
+	exec := NewExecutor(nil, nil, nil, nil).WithCommanderRepository(repo)
+	result, err := exec.commanderEvents(ctxWithFID("F2504"), map[string]any{})
+	require.NoError(t, err)
+	r := result.(commanderEventsResult)
+	require.Len(t, r.Events, 1)
+	assert.Empty(t, r.Events[0].EventData)
+	assert.Contains(t, r.Events[0].Note, "not valid JSON")
 }
 
 func TestCommanderEvents_ReturnsErrorOnRepoFailure(t *testing.T) {
