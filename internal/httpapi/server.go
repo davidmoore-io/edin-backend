@@ -85,8 +85,9 @@ func Run(ctx context.Context, cfg *config.Config, opsManager *ops.Manager, llmSt
 		nonceStore:          nonceStore,
 		commanderPKCEStore:  pkceStore,
 		commanderNonceStore: commanderNonceStore,
-		commanderRepo:       commanderRepo,
-		ingestRateLimiter:   newIngestFIDRateLimiter(),
+		commanderRepo:        commanderRepo,
+		ingestRateLimiter:    newIngestFIDRateLimiter(),
+		heartbeatRateLimiter: newHeartbeatFIDRateLimiter(),
 	}
 
 	if server.toolExec == nil {
@@ -243,6 +244,12 @@ func Run(ctx context.Context, cfg *config.Config, opsManager *ops.Manager, llmSt
 	mux.Handle("GET /api/v1/commander/location", server.withCommanderAuth(http.HandlerFunc(server.handleCommanderLocation)))
 	mux.Handle("GET /api/v1/commander/profile", server.withCommanderAuth(http.HandlerFunc(server.handleCommanderProfile)))
 
+	// Presence: desktop client heartbeat lives under /api/v1/ (Bearer territory);
+	// the web frontend read lives under /api/commander/ so the session cookie
+	// is in scope. Both resolve identity from withCommanderAuth, keyed on JWT.
+	mux.Handle("POST /api/v1/commander/heartbeat", server.withCommanderAuth(http.HandlerFunc(server.handleCommanderHeartbeat)))
+	mux.Handle("GET /api/commander/presence", server.withCommanderAuth(http.HandlerFunc(server.handleCommanderPresence)))
+
 	httpServer := &http.Server{
 		Addr:              cfg.HTTP.Address,
 		Handler:           server.applyMiddlewares(mux),
@@ -317,7 +324,8 @@ type Server struct {
 
 	// Commander journal ingest
 	commanderRepo      store.CommanderRepository
-	ingestRateLimiter  *ingestFIDRateLimiter
+	ingestRateLimiter    *ingestFIDRateLimiter
+	heartbeatRateLimiter *heartbeatFIDRateLimiter
 
 	// Power standings cache (lazy-loaded, 15-minute TTL)
 	standingsCacheMu    sync.RWMutex
