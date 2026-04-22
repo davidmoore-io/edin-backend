@@ -2,12 +2,17 @@ package httpapi
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"path/filepath"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/edin-space/edin-backend/internal/kaine"
 	"github.com/xuri/excelize/v2"
@@ -29,6 +34,78 @@ type kaineUserKey struct{}
 func KaineUserFromContext(ctx context.Context) *KaineUser {
 	user, _ := ctx.Value(kaineUserKey{}).(*KaineUser)
 	return user
+}
+
+// kaineNonceStore is an in-memory single-use nonce store with TTL.
+// Nonces map to a KaineUser for 10 seconds, then expire.
+// Used for WebSocket auth frame authentication.
+// Note: In-memory is sufficient for a single-server deployment.
+// If we scale horizontally, replace with Redis.
+type kaineNonceStore struct {
+	mu    sync.Mutex
+	items map[string]kaineNonceEntry
+}
+
+type kaineNonceEntry struct {
+	user      *KaineUser
+	expiresAt time.Time
+}
+
+func newKaineNonceStore() *kaineNonceStore {
+	s := &kaineNonceStore{items: make(map[string]kaineNonceEntry)}
+	go s.cleanup()
+	return s
+}
+
+// Issue creates a new single-use nonce for the user, expiring in ttl.
+func (s *kaineNonceStore) Issue(user *KaineUser, ttl time.Duration) string {
+	b := make([]byte, 16)
+	if _, err := rand.Read(b); err != nil {
+		// Fallback: use time-based value (should never happen)
+		b = []byte(fmt.Sprintf("%016x", time.Now().UnixNano()))
+	}
+	nonce := hex.EncodeToString(b)
+
+	s.mu.Lock()
+	s.items[nonce] = kaineNonceEntry{user: user, expiresAt: time.Now().Add(ttl)}
+	s.mu.Unlock()
+
+	return nonce
+}
+
+// Consume retrieves and deletes the nonce. Returns nil if not found or expired.
+func (s *kaineNonceStore) Consume(nonce string) *KaineUser {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	entry, ok := s.items[nonce]
+	if !ok {
+		return nil
+	}
+
+	// Always delete — single-use even if expired
+	delete(s.items, nonce)
+
+	if time.Now().After(entry.expiresAt) {
+		return nil
+	}
+
+	return entry.user
+}
+
+// cleanup removes expired entries every 30s.
+func (s *kaineNonceStore) cleanup() {
+	for {
+		time.Sleep(30 * time.Second)
+		now := time.Now()
+		s.mu.Lock()
+		for nonce, entry := range s.items {
+			if now.After(entry.expiresAt) {
+				delete(s.items, nonce)
+			}
+		}
+		s.mu.Unlock()
+	}
 }
 
 // HasRole checks if the user has a specific role (handles -test suffix).
@@ -118,8 +195,9 @@ func (u *KaineUser) GetAccessLevels() []string {
 	return levels
 }
 
-// withKaineAuth validates the Authentik JWT token against the JWKS endpoint and extracts user info.
-// This middleware cryptographically verifies the token signature, expiration, issuer, and audience.
+// withKaineAuth validates the Authentik JWT token and extracts user info.
+// Priority: Authorization: Bearer <token> header > kaine_session httpOnly cookie.
+// The query-string ?token= fallback has been removed (security: tokens in URLs appear in logs).
 func (s *Server) withKaineAuth(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if s.jwtValidator == nil {
@@ -130,13 +208,13 @@ func (s *Server) withKaineAuth(next http.HandlerFunc) http.HandlerFunc {
 
 		var token string
 
-		// Check Authorization header first
+		// Priority 1: Authorization header (API clients, tests)
 		authHeader := r.Header.Get("Authorization")
 		if strings.HasPrefix(authHeader, "Bearer ") {
 			token = strings.TrimPrefix(authHeader, "Bearer ")
-		} else {
-			// Fall back to query parameter (for WebSocket connections)
-			token = r.URL.Query().Get("token")
+		} else if cookie, err := r.Cookie(s.cfg.KaineAuth.CookieName); err == nil {
+			// Priority 2: kaine_session httpOnly cookie (browser sessions)
+			token = cookie.Value
 		}
 
 		if token == "" {
@@ -231,8 +309,14 @@ func (s *Server) RegisterKaineRoutes(mux *http.ServeMux) {
 	// Unified search for @ mentions (systems + stations)
 	mux.HandleFunc("/api/kaine/search", s.withKaineAuth(s.handleKaineSearch))
 
-	// Chat WebSocket - requires chat access
-	mux.HandleFunc("/api/kaine/chat/ws", s.withKaineAuth(s.withChatAccess(s.handleKaineChatWebSocket)))
+	// Auth endpoints - public (no withKaineAuth wrapper)
+	mux.HandleFunc("/api/kaine/token", s.handleKaineToken)
+	mux.HandleFunc("/api/kaine/auth/exchange", s.handleKaineAuthExchange)
+	mux.HandleFunc("/api/kaine/auth/logout", s.handleKaineAuthLogout)
+	mux.HandleFunc("/api/kaine/auth/me", s.handleKaineAuthMe)
+
+	// Chat WebSocket - auth via first-message frame (no middleware)
+	mux.HandleFunc("/api/kaine/chat/ws", s.handleKaineChatWebSocket)
 	// Chat session management
 	mux.HandleFunc("/api/kaine/chat/sessions", s.withKaineAuth(s.withChatAccess(s.handleKaineChatSessions)))
 	mux.HandleFunc("/api/kaine/chat/sessions/", s.withKaineAuth(s.withChatAccess(s.handleKaineChatActivateSession)))
@@ -244,6 +328,188 @@ func (s *Server) RegisterKaineRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/kaine/admin/system-prompt", s.withKaineAuth(s.withKaineAdmin(s.handleKaineAdminSystemPrompt)))
 	mux.HandleFunc("/api/kaine/admin/system-prompt/default", s.withKaineAuth(s.withKaineAdmin(s.handleKaineAdminSystemPromptDefault)))
 	mux.HandleFunc("/api/kaine/admin/system-prompt/", s.withKaineAuth(s.withKaineAdmin(s.handleKaineAdminSystemPromptByPath)))
+}
+
+// handleKaineToken handles GET /api/kaine/token.
+// Reads the kaine_session cookie, validates the JWT, issues a single-use nonce.
+// Requires the X-Edin-Fetch: 1 header as a CSRF guard.
+func (s *Server) handleKaineToken(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		s.writeError(w, http.StatusMethodNotAllowed, "only GET allowed")
+		return
+	}
+
+	// CSRF guard: browsers won't set this header for cross-site requests
+	if r.Header.Get("X-Edin-Fetch") != "1" {
+		s.writeError(w, http.StatusForbidden, "missing X-Edin-Fetch header")
+		return
+	}
+
+	// Read kaine_session cookie
+	cookie, err := r.Cookie(s.cfg.KaineAuth.CookieName)
+	if err != nil {
+		s.writeError(w, http.StatusUnauthorized, "no session cookie")
+		return
+	}
+
+	// Validate JWT
+	user, err := s.jwtValidator.ValidateToken(cookie.Value)
+	if err != nil {
+		s.logger.Warn(fmt.Sprintf("kaine_token: JWT validation failed: %v", err))
+		s.writeError(w, http.StatusUnauthorized, "invalid session")
+		return
+	}
+
+	// Issue single-use nonce valid for 10 seconds
+	nonce := s.nonceStore.Issue(user, 10*time.Second)
+
+	s.writeJSON(w, http.StatusOK, map[string]any{
+		"nonce":      nonce,
+		"expires_in": 10,
+	})
+}
+
+// handleKaineAuthExchange handles POST /api/kaine/auth/exchange.
+// Exchanges an OAuth2 authorization code with Authentik, validates the id_token,
+// and sets an httpOnly kaine_session cookie.
+func (s *Server) handleKaineAuthExchange(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		s.writeError(w, http.StatusMethodNotAllowed, "only POST allowed")
+		return
+	}
+
+	var req struct {
+		Code        string `json:"code"`
+		RedirectURI string `json:"redirect_uri"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		s.writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if req.Code == "" || req.RedirectURI == "" {
+		s.writeError(w, http.StatusBadRequest, "code and redirect_uri are required")
+		return
+	}
+
+	// POST to Authentik token endpoint with a 10s timeout
+	httpClient := &http.Client{Timeout: 10 * time.Second}
+	tokenResp, err := httpClient.PostForm(s.cfg.KaineAuth.TokenURL, url.Values{
+		"grant_type":   {"authorization_code"},
+		"client_id":    {s.cfg.KaineAuth.ClientID},
+		"code":         {req.Code},
+		"redirect_uri": {req.RedirectURI},
+	})
+	if err != nil {
+		s.logger.Error("kaine_auth_exchange: token endpoint request failed", err)
+		s.writeError(w, http.StatusBadGateway, "auth service unavailable")
+		return
+	}
+	defer tokenResp.Body.Close()
+
+	body, err := io.ReadAll(tokenResp.Body)
+	if err != nil {
+		s.logger.Error("kaine_auth_exchange: failed to read token response", err)
+		s.writeError(w, http.StatusBadGateway, "auth service error")
+		return
+	}
+
+	if tokenResp.StatusCode != http.StatusOK {
+		s.logger.Warn(fmt.Sprintf("kaine_auth_exchange: token endpoint returned %d: %s", tokenResp.StatusCode, string(body)))
+		s.writeError(w, http.StatusUnauthorized, "token exchange failed")
+		return
+	}
+
+	var tokens struct {
+		IDToken string `json:"id_token"`
+	}
+	if err := json.Unmarshal(body, &tokens); err != nil {
+		s.logger.Error("kaine_auth_exchange: failed to parse token response", err)
+		s.writeError(w, http.StatusBadGateway, "invalid auth service response")
+		return
+	}
+	if tokens.IDToken == "" {
+		s.writeError(w, http.StatusBadGateway, "no id_token in auth response")
+		return
+	}
+
+	// Validate the id_token
+	user, err := s.jwtValidator.ValidateToken(tokens.IDToken)
+	if err != nil {
+		s.logger.Warn(fmt.Sprintf("kaine_auth_exchange: id_token validation failed: %v", err))
+		s.writeError(w, http.StatusUnauthorized, "invalid id_token")
+		return
+	}
+
+	// Set httpOnly session cookie — SameSite=Lax allows top-level navigation from external links
+	http.SetCookie(w, &http.Cookie{
+		Name:     s.cfg.KaineAuth.CookieName,
+		Value:    tokens.IDToken,
+		HttpOnly: true,
+		Secure:   s.cfg.KaineAuth.CookieSecure,
+		SameSite: http.SameSiteLaxMode,
+		Path:     s.cfg.KaineAuth.CookiePath,
+		Domain:   s.cfg.KaineAuth.CookieDomain,
+		MaxAge:   s.cfg.KaineAuth.CookieMaxAge,
+	})
+
+	// Return user info — NO token in body
+	s.writeJSON(w, http.StatusOK, map[string]any{
+		"user": map[string]any{
+			"sub":    user.Sub,
+			"name":   user.Name,
+			"email":  user.Email,
+			"groups": user.Groups,
+		},
+	})
+}
+
+// handleKaineAuthLogout handles POST /api/kaine/auth/logout.
+// Clears the kaine_session cookie.
+func (s *Server) handleKaineAuthLogout(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		s.writeError(w, http.StatusMethodNotAllowed, "only POST allowed")
+		return
+	}
+
+	http.SetCookie(w, &http.Cookie{
+		Name:     s.cfg.KaineAuth.CookieName,
+		Value:    "",
+		HttpOnly: true,
+		Path:     s.cfg.KaineAuth.CookiePath,
+		MaxAge:   -1,
+	})
+
+	s.writeJSON(w, http.StatusOK, map[string]string{"status": "logged_out"})
+}
+
+// handleKaineAuthMe handles GET /api/kaine/auth/me.
+// Reads the kaine_session cookie, validates the JWT, returns user info.
+func (s *Server) handleKaineAuthMe(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		s.writeError(w, http.StatusMethodNotAllowed, "only GET allowed")
+		return
+	}
+
+	cookie, err := r.Cookie(s.cfg.KaineAuth.CookieName)
+	if err != nil {
+		s.writeError(w, http.StatusUnauthorized, "no session")
+		return
+	}
+
+	user, err := s.jwtValidator.ValidateToken(cookie.Value)
+	if err != nil {
+		s.writeError(w, http.StatusUnauthorized, "invalid session")
+		return
+	}
+
+	s.writeJSON(w, http.StatusOK, map[string]any{
+		"user": map[string]any{
+			"sub":    user.Sub,
+			"name":   user.Name,
+			"email":  user.Email,
+			"groups": user.Groups,
+		},
+	})
 }
 
 // handleKaineObjectives handles GET /api/kaine/objectives - list objectives.

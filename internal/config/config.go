@@ -19,16 +19,18 @@ type Config struct {
 	MCPBaseURL        string
 	EnableMCPStdIO    bool
 
-	HTTP       HTTPConfig
-	Discord    DiscordConfig
-	Anthropic  AnthropicConfig
-	LLM        LLMConfig
-	Operations OperationsConfig
-	RateLimit  RateLimitConfig
-	Logging    LoggingConfig
-	EDIN       EDINConfig
-	KaineAuth  KaineAuthConfig
-	Authentik  AuthentikConfig
+	HTTP          HTTPConfig
+	Discord       DiscordConfig
+	Anthropic     AnthropicConfig
+	LLM           LLMConfig
+	Operations    OperationsConfig
+	RateLimit     RateLimitConfig
+	Logging       LoggingConfig
+	EDIN          EDINConfig
+	KaineAuth     KaineAuthConfig
+	Authentik     AuthentikConfig
+	CommanderAuth CommanderAuthConfig
+	Copilot       CopilotConfig
 }
 
 // AuthentikConfig holds Authentik identity provider API settings.
@@ -38,6 +40,50 @@ type AuthentikConfig struct {
 	Token   string
 }
 
+// CommanderAuthConfig holds Frontier PKCE auth + EDIN JWT settings for the Commander (Copilot) feature.
+type CommanderAuthConfig struct {
+	Enabled              bool
+	PrivateKeyPath       string        // Path to RSA-2048 PEM private key file
+	PublicKeyPath        string        // Path to RSA-2048 PEM public key file
+	JWTIssuer            string        // "edin-space"
+	JWTExpiry            time.Duration // 24h default
+	FrontierClientID     string        // Frontier OAuth2 client ID
+	FrontierClientSecret string        // Frontier OAuth2 client secret
+	FrontierAuthURL      string        // "https://auth.frontierstore.net"
+	FrontierCAPIURL      string        // "https://companion.orerve.net"
+	FrontierScope        string        // "auth capi" — MUST default to "auth capi"
+	FrontierCAPITimeout  time.Duration // 10s default — CAPI is unreliable/slow
+	PKCEStateTTL         time.Duration // 10m — how long PKCE state is valid
+	PKCEMaxPending       int           // 1000 — max pending PKCE auth sessions
+	CookieName           string        // "commander_session"
+	CookiePath           string        // "/api/commander"
+	CookieDomain         string        // ".edin.space" in prod, "" in dev
+	CookieSecure         bool          // true in prod (Caddy adds Secure)
+	CookieMaxAge         int           // 86400 (24h)
+	// Nonce settings
+	NonceExpiry       time.Duration // 10s — single-use nonce TTL for WebSocket auth frame
+	// Per-IP rate limit for the /initiate endpoint
+	InitiateRateLimit  int           // 5 — requests per window per IP
+	InitiateRateWindow time.Duration // 1m — window duration
+	// Commander DB connections (DSN form — role-separated for RLS enforcement)
+	CmdWriterDSN string // postgres DSN for writes (edin_cmd_writer role)
+	CmdReaderDSN string // postgres DSN for reads  (edin_cmd_reader role)
+	// Desktop flow redirect URI — must match what's registered with Frontier
+	DesktopRedirectURI string // "https://edin.space/api/commander/auth/callback"
+}
+
+// CopilotConfig holds WebSocket tuning and AI call parameters for the Copilot chat feature.
+type CopilotConfig struct {
+	WSAuthTimeout       time.Duration // 5s  — wait for auth frame after upgrade
+	WSReadDeadline      time.Duration // 60s — read deadline reset on each message/ping
+	WSPingInterval      time.Duration // 30s — server ping interval
+	WSWriteDeadline     time.Duration // 10s — write deadline for outgoing frames
+	WSReadLimitBytes    int64         // 65536 (64 KB) — max incoming message size
+	MessageHistoryLimit int           // 20  — messages sent to Anthropic per call
+	EventsDefaultLimit  int           // 20  — default event count for commander_events tool
+	EventsMaxLimit      int           // 100 — maximum event count for commander_events tool
+}
+
 // KaineAuthConfig holds Kaine portal JWT authentication settings.
 type KaineAuthConfig struct {
 	Enabled         bool
@@ -45,6 +91,17 @@ type KaineAuthConfig struct {
 	Issuer          string
 	Audience        string
 	RefreshInterval time.Duration
+
+	// OAuth2 code exchange settings (Story 1.2)
+	ClientID string // OAuth2 client ID for Kaine portal (e.g. "kaine-portal")
+	TokenURL string // Authentik token endpoint (e.g. "https://auth.ssg.sh/application/o/token/")
+
+	// httpOnly cookie settings (Story 1.2)
+	CookieName   string // "kaine_session"
+	CookiePath   string // "/api/kaine"
+	CookieDomain string // ".edin.space" in prod, "" in dev
+	CookieSecure bool   // true in prod, false in dev
+	CookieMaxAge int    // 3600 (1 hour)
 }
 
 // EDINConfig holds configuration for the EDIN (Elite Dangerous Intel Network) database.
@@ -221,6 +278,8 @@ func Load() (*Config, error) {
 	edinCfg := loadEDINConfig()
 	kaineAuthCfg := loadKaineAuthConfig()
 	authentikCfg := loadAuthentikConfig()
+	commanderAuthCfg := loadCommanderAuthConfig()
+	copilotCfg := loadCopilotConfig()
 
 	return &Config{
 		DomainName:        domain,
@@ -240,6 +299,8 @@ func Load() (*Config, error) {
 		EDIN:              edinCfg,
 		KaineAuth:         kaineAuthCfg,
 		Authentik:         authentikCfg,
+		CommanderAuth:     commanderAuthCfg,
+		Copilot:           copilotCfg,
 	}, nil
 }
 
@@ -486,6 +547,13 @@ func loadKaineAuthConfig() KaineAuthConfig {
 		Issuer:          getenvDefault("KAINE_AUTH_ISSUER", "https://auth.ssg.sh/application/o/kaine-portal/"),
 		Audience:        getenvDefault("KAINE_AUTH_AUDIENCE", "kaine-portal"),
 		RefreshInterval: refresh,
+		ClientID:        getenvDefault("KAINE_AUTH_CLIENT_ID", "kaine-portal"),
+		TokenURL:        getenvDefault("KAINE_AUTH_TOKEN_URL", "https://auth.ssg.sh/application/o/token/"),
+		CookieName:      "kaine_session",
+		CookiePath:      "/api/kaine",
+		CookieDomain:    os.Getenv("KAINE_AUTH_COOKIE_DOMAIN"),
+		CookieSecure:    getEnvBool("KAINE_AUTH_COOKIE_SECURE", false),
+		CookieMaxAge:    3600,
 	}
 }
 
@@ -494,6 +562,101 @@ func loadAuthentikConfig() AuthentikConfig {
 		Enabled: getEnvBool("AUTHENTIK_API_ENABLED", false),
 		URL:     getenvDefault("AUTHENTIK_API_URL", "https://auth.ssg.sh"),
 		Token:   os.Getenv("AUTHENTIK_API_TOKEN"),
+	}
+}
+
+func loadCommanderAuthConfig() CommanderAuthConfig {
+	privateKeyPath := os.Getenv("COMMANDER_JWT_PRIVATE_KEY_PATH")
+	publicKeyPath := os.Getenv("COMMANDER_JWT_PUBLIC_KEY_PATH")
+
+	// Enabled is false if either key path is empty, regardless of the env var.
+	enabled := getEnvBool("COMMANDER_AUTH_ENABLED", false) && privateKeyPath != "" && publicKeyPath != ""
+
+	jwtExpiry := getEnvDuration("COMMANDER_JWT_EXPIRY", 24*time.Hour)
+	if jwtExpiry <= 0 {
+		jwtExpiry = 24 * time.Hour
+	}
+
+	capiTimeout := getEnvDuration("FRONTIER_CAPI_TIMEOUT", 10*time.Second)
+	if capiTimeout <= 0 {
+		capiTimeout = 10 * time.Second
+	}
+
+	pkceStateTTL := getEnvDuration("PKCE_STATE_TTL", 10*time.Minute)
+	if pkceStateTTL <= 0 {
+		pkceStateTTL = 10 * time.Minute
+	}
+
+	pkceMaxPending := getenvInt("PKCE_MAX_PENDING", 1000)
+	if pkceMaxPending <= 0 {
+		pkceMaxPending = 1000
+	}
+
+	nonceExpiry := getEnvDuration("COMMANDER_NONCE_EXPIRY", 10*time.Second)
+	if nonceExpiry <= 0 {
+		nonceExpiry = 10 * time.Second
+	}
+
+	initiateRateLimit := getenvInt("COMMANDER_AUTH_INITIATE_RATE_LIMIT", 5)
+	if initiateRateLimit <= 0 {
+		initiateRateLimit = 5
+	}
+
+	initiateRateWindow := getEnvDuration("COMMANDER_AUTH_INITIATE_RATE_WINDOW", time.Minute)
+	if initiateRateWindow <= 0 {
+		initiateRateWindow = time.Minute
+	}
+
+	return CommanderAuthConfig{
+		Enabled:              enabled,
+		PrivateKeyPath:       privateKeyPath,
+		PublicKeyPath:        publicKeyPath,
+		JWTIssuer:            getenvDefault("COMMANDER_JWT_ISSUER", "edin-space"),
+		JWTExpiry:            jwtExpiry,
+		FrontierClientID:     os.Getenv("FRONTIER_CLIENT_ID"),
+		FrontierClientSecret: os.Getenv("FRONTIER_CLIENT_SECRET"),
+		FrontierAuthURL:      getenvDefault("FRONTIER_AUTH_URL", "https://auth.frontierstore.net"),
+		FrontierCAPIURL:      getenvDefault("FRONTIER_CAPI_URL", "https://companion.orerve.net"),
+		FrontierScope:        getenvDefault("FRONTIER_SCOPE", "auth capi"),
+		FrontierCAPITimeout:  capiTimeout,
+		PKCEStateTTL:         pkceStateTTL,
+		PKCEMaxPending:       pkceMaxPending,
+		CookieName:           "commander_session",
+		CookiePath:           "/api/commander",
+		CookieDomain:         os.Getenv("COMMANDER_COOKIE_DOMAIN"),
+		CookieSecure:         getEnvBool("COMMANDER_COOKIE_SECURE", false),
+		CookieMaxAge:         86400,
+		NonceExpiry:          nonceExpiry,
+		InitiateRateLimit:    initiateRateLimit,
+		InitiateRateWindow:   initiateRateWindow,
+		CmdWriterDSN:         os.Getenv("EDIN_CMD_WRITER_DSN"),
+		CmdReaderDSN:         os.Getenv("EDIN_CMD_READER_DSN"),
+		DesktopRedirectURI:   getenvDefault("DESKTOP_REDIRECT_URI", "https://edin.space/api/commander/auth/callback"),
+	}
+}
+
+func loadCopilotConfig() CopilotConfig {
+	wsReadLimit := int64(getenvInt("COPILOT_WS_READ_LIMIT_BYTES", 65536))
+	if wsReadLimit <= 0 {
+		wsReadLimit = 65536
+	}
+	eventsDefault := getenvInt("COPILOT_EVENTS_DEFAULT_LIMIT", 20)
+	if eventsDefault <= 0 {
+		eventsDefault = 20
+	}
+	eventsMax := getenvInt("COPILOT_EVENTS_MAX_LIMIT", 100)
+	if eventsMax <= 0 {
+		eventsMax = 100
+	}
+	return CopilotConfig{
+		WSAuthTimeout:       getEnvDuration("COPILOT_WS_AUTH_TIMEOUT", 5*time.Second),
+		WSReadDeadline:      getEnvDuration("COPILOT_WS_READ_DEADLINE", 60*time.Second),
+		WSPingInterval:      getEnvDuration("COPILOT_WS_PING_INTERVAL", 30*time.Second),
+		WSWriteDeadline:     getEnvDuration("COPILOT_WS_WRITE_DEADLINE", 10*time.Second),
+		WSReadLimitBytes:    wsReadLimit,
+		MessageHistoryLimit: getenvInt("COPILOT_MESSAGE_HISTORY_LIMIT", 20),
+		EventsDefaultLimit:  eventsDefault,
+		EventsMaxLimit:      eventsMax,
 	}
 }
 

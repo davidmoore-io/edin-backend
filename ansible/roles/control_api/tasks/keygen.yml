@@ -1,0 +1,64 @@
+---
+# Commander JWT RS256 keypair provisioning — generates the signing keys on the
+# prod host the first time this role is run with the `jwt_keygen` tag, then is a
+# no-op thanks to `creates:`. All tasks are tagged [never, jwt_keygen] so normal
+# deploys never touch the keys. Run explicitly:
+#
+#   make deploy-backend-api ANSIBLE_ARGS="--tags jwt_keygen"
+#
+# Losing these keys invalidates every issued commander JWT — do not regenerate
+# casually.
+
+- name: Ensure commander key directory exists
+  ansible.builtin.file:
+    path: "{{ commander_jwt_private_key_path | dirname }}"
+    state: directory
+    owner: root
+    group: root
+    mode: '0700'
+  tags: [never, jwt_keygen]
+
+- name: Generate RSA-2048 private key for commander JWTs
+  ansible.builtin.command:
+    cmd: "openssl genrsa -out {{ commander_jwt_private_key_path }} 2048"
+    creates: "{{ commander_jwt_private_key_path }}"
+  tags: [never, jwt_keygen]
+
+- name: Derive public key from private key
+  ansible.builtin.command:
+    cmd: "openssl rsa -in {{ commander_jwt_private_key_path }} -pubout -out {{ commander_jwt_public_key_path }}"
+    creates: "{{ commander_jwt_public_key_path }}"
+  tags: [never, jwt_keygen]
+
+- name: Lock down private key permissions
+  ansible.builtin.file:
+    path: "{{ commander_jwt_private_key_path }}"
+    owner: root
+    group: root
+    mode: '0600'
+  tags: [never, jwt_keygen]
+
+- name: Set public key permissions
+  ansible.builtin.file:
+    path: "{{ commander_jwt_public_key_path }}"
+    owner: root
+    group: root
+    mode: '0644'
+  tags: [never, jwt_keygen]
+
+- name: Verify private key is RSA-2048 or larger
+  ansible.builtin.shell:
+    cmd: |
+      set -o pipefail
+      openssl rsa -in {{ commander_jwt_private_key_path }} -text -noout 2>/dev/null | grep -oE 'Private-Key: \([0-9]+ bit' | grep -oE '[0-9]+'
+    executable: /bin/bash
+  register: key_bits
+  changed_when: false
+  tags: [never, jwt_keygen]
+
+- name: Fail if key is smaller than 2048 bits
+  ansible.builtin.assert:
+    that:
+      - (key_bits.stdout | int) >= 2048
+    fail_msg: "Commander JWT private key is {{ key_bits.stdout }} bits — must be 2048 or larger"
+  tags: [never, jwt_keygen]

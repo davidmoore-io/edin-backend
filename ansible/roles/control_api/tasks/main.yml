@@ -89,3 +89,15 @@
   until: api_health is not failed
   failed_when: false
   tags: [control_api, verify]
+
+# Database role provisioning — run explicitly with --tags db_roles (NOT included in normal deploys).
+# Requires timescaledb_admin_host to be reachable and vault_timescaledb_superuser_password set.
+- name: Include DB role provisioning tasks
+  ansible.builtin.import_tasks: db_roles.yml
+  tags: [db_roles]
+
+# Commander JWT keypair provisioning — run explicitly with --tags jwt_keygen (first-time only).
+# Tasks inside are tagged [never, jwt_keygen] so normal deploys skip them entirely.
+- name: Include commander JWT keygen tasks
+  ansible.builtin.import_tasks: keygen.yml
+  tags: [never, jwt_keygen]

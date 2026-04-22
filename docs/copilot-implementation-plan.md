@@ -122,7 +122,7 @@ depend on. Integration tests for the commander data layer need a real TimescaleD
 
 ---
 
-### Story 0.1 — Go Integration Test Database Harness
+### Story 0.1 ✅ — Go Integration Test Database Harness
 
 **Complexity:** S
 
@@ -165,7 +165,7 @@ func TestFixtures_CreateJournalEvents(t *testing.T)            // inserts events
 
 ---
 
-### Story 0.2 — RS256 Key Generation Helper
+### Story 0.2 ✅ — RS256 Key Generation Helper
 
 **Complexity:** S
 
@@ -212,7 +212,7 @@ Write both together so `onopen` is async from day one.
 
 ---
 
-### Story 1.1 — WebSocket Auth: Query String → First-Message Frame
+### Story 1.1 ✅ — WebSocket Auth: Query String → First-Message Frame
 
 **Why:** JWT in `?token=...` appears in Caddy access logs, browser history, and referrer headers.
 
@@ -264,7 +264,7 @@ test('close code 4403 → redirects to login with error')
 
 ---
 
-### Story 1.2 — Kaine Frontend: localStorage → httpOnly Cookie
+### Story 1.2 ✅ — Kaine Frontend: localStorage → httpOnly Cookie
 
 **Why:** JWTs in `localStorage` are readable by any JS on the page, including injected XSS scripts.
 
@@ -331,7 +331,7 @@ commander's FID embedded.
 
 ---
 
-### Story 2.1 — Config & Key Loading for Commander Auth
+### Story 2.1 ✅ — Config & Key Loading for Commander Auth
 
 **Complexity:** S
 
@@ -381,7 +381,7 @@ func TestConfig_CommanderAuth_MissingKeys_DisabledByDefault(t *testing.T)
 
 ---
 
-### Story 2.2 — RS256 JWT Issuer & Validator for Commander Tokens
+### Story 2.2 ✅ — RS256 JWT Issuer & Validator for Commander Tokens
 
 **Complexity:** M
 
@@ -421,7 +421,7 @@ func TestCommanderJWT_Roundtrip_FIDPreserved(t *testing.T)
 
 ---
 
-### Story 2.3 — Frontier PKCE Auth Endpoints
+### Story 2.3 ✅ — Frontier PKCE Auth Endpoints
 
 **Complexity:** L
 
@@ -504,7 +504,7 @@ func TestFrontierClient_ExchangeCode_ScopeInRequest(t *testing.T)           // v
 
 ---
 
-### Story 2.4 — Commander Auth Middleware
+### Story 2.4 ✅ — Commander Auth Middleware
 
 **Complexity:** M
 
@@ -552,7 +552,7 @@ func TestFIDFromContext_Returns500_NotPanic_WhenMisused(t *testing.T)
 
 ---
 
-### Story 2.5 — Token Refresh Endpoint & Frontier Token Storage
+### Story 2.5 ✅ — Token Refresh Endpoint & Frontier Token Storage
 
 **Complexity:** M
 
@@ -614,7 +614,7 @@ existing edin.space TimescaleDB instance.
 
 ---
 
-### Story 3.1 — Database Schema & Migrations
+### Story 3.1 ✅ — Database Schema & Migrations
 
 **Complexity:** M
 
@@ -730,7 +730,7 @@ does NOT leak data — the safe-by-default behaviour.
 
 ---
 
-### Story 3.2 — Commander Repository (Go)
+### Story 3.2 ✅ — Commander Repository (Go)
 
 **Complexity:** M
 
@@ -1079,7 +1079,7 @@ func TestCommanderLocationTool_FIDFromContextOnly(t *testing.T)
 
 ---
 
-### Story 6.1 — Copilot System Prompt
+### Story 6.1 ✅ — Copilot System Prompt
 
 **Complexity:** S
 
@@ -1099,7 +1099,7 @@ func TestCopilotPrompt_ContainsUntrustedDataWarning(t *testing.T)
 
 ---
 
-### Story 6.2 — Copilot WebSocket Handler, Scope & Routes
+### Story 6.2 ✅ — Copilot WebSocket Handler, Scope & Routes
 
 **Complexity:** L
 
@@ -1178,7 +1178,7 @@ func TestRunner_CopilotScope_ToolListNonEmpty(t *testing.T)
 
 ---
 
-### Story 7.1 — Frontier Auth Context
+### Story 7.1 ✅ — Frontier Auth Context
 
 **Complexity:** M
 
@@ -1224,7 +1224,7 @@ test('getWSNonce() calls /api/commander/auth/token with X-Edin-Fetch header')
 
 ---
 
-### Story 7.2 — Login, Callback, and Chat Pages
+### Story 7.2 ✅ — Login, Callback, and Chat Pages
 
 **Complexity:** M
 
@@ -1282,7 +1282,7 @@ test('navigating to /copilot/chat without auth redirects to /copilot/login')
 
 ---
 
-### Story 8.1 — Go Backend: edin-client Desktop Auth Flow (Poll-Based)
+### Story 8.1 ✅ — Go Backend: edin-client Desktop Auth Flow (Poll-Based)
 
 **Complexity:** M
 

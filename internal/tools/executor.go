@@ -53,6 +53,10 @@ const (
 	ToolGalaxyLTDBuyers         ToolName = "galaxy_ltd_buyers"
 	ToolGalaxyExpansionTargets  ToolName = "galaxy_expansion_targets"
 	ToolGalaxySchema            ToolName = "galaxy_schema"
+
+	// Commander tools (full implementation in Stories 5.2/5.3)
+	ToolCommanderEvents   ToolName = "commander_events"
+	ToolCommanderLocation ToolName = "commander_location"
 )
 
 // opsOnlyTools are restricted to ScopeLlmOperator (Discord operators only).
@@ -97,6 +101,34 @@ var kaineAllowedTools = map[ToolName]bool{
 	ToolDescribeTool: true,
 }
 
+// copilotAllowedTools are available to Copilot chat users (ScopeCopilotChat).
+// Same as Kaine except: plasmium_buyers and ltd_buyers excluded; commander tools included.
+var copilotAllowedTools = map[ToolName]bool{
+	ToolGalaxySystem:            true,
+	ToolGalaxyStation:           true,
+	ToolGalaxyFleetCarrier:      true,
+	ToolGalaxyBodies:            true,
+	ToolGalaxySignals:           true,
+	ToolGalaxyPower:             true,
+	ToolGalaxyFaction:           true,
+	ToolGalaxyStats:             true,
+	ToolGalaxyQuery:             true,
+	ToolGalaxyMarket:            true,
+	ToolGalaxyExpansionCheck:    true,
+	ToolGalaxyNearbyPowerplay:   true,
+	ToolGalaxyExpansionFrontier: true,
+	ToolGalaxyHistory:           true,
+	ToolGalaxyPowerplayCycle:    true,
+	ToolGalaxyExpansionTargets:  true,
+	ToolSpanshQuery:             true,
+	ToolRetrieveRoute:           true,
+	ToolSystemProfile:           true,
+	ToolDescribeTool:            true,
+	ToolCommanderEvents:         true,
+	ToolCommanderLocation:       true,
+	// Explicitly excluded: ToolGalaxyPlasmiumBuyers, ToolGalaxyLTDBuyers
+}
+
 // UpdateBroadcaster is an interface for broadcasting system updates via WebSocket.
 type UpdateBroadcaster interface {
 	BroadcastSystemUpdate(systemName, source string)
@@ -105,15 +137,20 @@ type UpdateBroadcaster interface {
 
 // Executor wires low-level operations to tool invocations.
 type Executor struct {
-	ops           *ops.Manager
-	spansh        *spansh.Client
-	edsm          *edsm.Client
-	cacheStore    *store.CacheStore
-	memgraph      *memgraph.Client
-	kaineStore    *kaine.Store
-	historyClient HistoryQuerier
-	broadcaster   UpdateBroadcaster
-	logger        func(msg string)
+	ops            *ops.Manager
+	spansh         *spansh.Client
+	edsm           *edsm.Client
+	cacheStore     *store.CacheStore
+	memgraph       *memgraph.Client
+	kaineStore     *kaine.Store
+	commanderRepo  store.CommanderRepository
+	historyClient  HistoryQuerier
+	broadcaster    UpdateBroadcaster
+	logger         func(msg string)
+
+	// Commander event limits (0 means use package defaults: 20 / 100)
+	commanderEventsDefaultLimit int
+	commanderEventsMaxLimit     int
 }
 
 // NewExecutor constructs a tool executor.
@@ -141,6 +178,19 @@ func (e *Executor) WithMemgraph(client *memgraph.Client) *Executor {
 // WithKaineStore sets the Kaine store for accessing mining maps and objectives.
 func (e *Executor) WithKaineStore(store *kaine.Store) *Executor {
 	e.kaineStore = store
+	return e
+}
+
+// WithCommanderRepository sets the commander repository for journal event and location tools.
+func (e *Executor) WithCommanderRepository(repo store.CommanderRepository) *Executor {
+	e.commanderRepo = repo
+	return e
+}
+
+// WithCommanderEventLimits sets the default and maximum event counts for the commander_events tool.
+func (e *Executor) WithCommanderEventLimits(defaultLimit, maxLimit int) *Executor {
+	e.commanderEventsDefaultLimit = defaultLimit
+	e.commanderEventsMaxLimit = maxLimit
 	return e
 }
 
@@ -258,6 +308,12 @@ func (e *Executor) Invoke(ctx context.Context, name string, args map[string]any)
 		return e.galaxyExpansionTargets(ctx, args)
 	case ToolGalaxySchema:
 		return e.galaxySchema(ctx, args)
+
+	// Commander tools
+	case ToolCommanderEvents:
+		return e.commanderEvents(ctx, args)
+	case ToolCommanderLocation:
+		return e.commanderLocation(ctx)
 
 	default:
 		return nil, fmt.Errorf("unknown tool %q", name)

@@ -7,14 +7,17 @@ import (
 	"fmt"
 	"math"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/gorilla/websocket"
+	"github.com/redis/go-redis/v9"
 	"github.com/edin-space/edin-backend/internal/anthropic"
 	"github.com/edin-space/edin-backend/internal/assistant"
+	"github.com/edin-space/edin-backend/internal/auth"
 	"github.com/edin-space/edin-backend/internal/authentik"
 	"github.com/edin-space/edin-backend/internal/authz"
 	"github.com/edin-space/edin-backend/internal/config"
@@ -32,7 +35,7 @@ import (
 )
 
 // Run launches the HTTP API server with the provided dependencies.
-func Run(ctx context.Context, cfg *config.Config, opsManager *ops.Manager, llmStore llm.SessionBackend, llmClient *anthropic.Client, toolExec *tools.Executor, runner *assistant.Runner, spanshClient *spansh.Client, cacheStore *store.CacheStore, wsHub *ws.Hub, memgraphClient *memgraph.Client, dayzService *dayz.Service, kaineStore *kaine.Store, eddnIntelStore *store.SystemIntelStore) error {
+func Run(ctx context.Context, cfg *config.Config, opsManager *ops.Manager, llmStore llm.SessionBackend, llmClient *anthropic.Client, toolExec *tools.Executor, runner *assistant.Runner, spanshClient *spansh.Client, cacheStore *store.CacheStore, wsHub *ws.Hub, memgraphClient *memgraph.Client, dayzService *dayz.Service, kaineStore *kaine.Store, eddnIntelStore *store.SystemIntelStore, commanderRepo store.CommanderRepository) error {
 	if cfg == nil {
 		return fmt.Errorf("config is nil")
 	}
@@ -51,25 +54,39 @@ func Run(ctx context.Context, cfg *config.Config, opsManager *ops.Manager, llmSt
 		go wsHub.Run()
 	}
 
+	// Initialize nonce store for WebSocket auth frame authentication
+	nonceStore := newKaineNonceStore()
+
+	// Initialize PKCE store for commander auth
+	pkceStore := newCommanderPKCEStore(cfg.CommanderAuth.PKCEMaxPending)
+
+	// Initialize nonce store for commander WebSocket auth frames (separate from Kaine)
+	commanderNonceStore := newKaineNonceStore()
+
 	server := &Server{
-		cfg:            cfg,
-		ops:            opsManager,
-		llmStore:       llmStore,
-		llmClient:      llmClient,
-		logger:         observability.NewLogger("httpapi"),
-		apiKey:         cfg.HTTP.InternalKey,
-		metrics:        metrics,
-		rateLimiter:    newRateLimiter(cfg.RateLimit.RequestsPerWindow, cfg.RateLimit.Window),
-		toolExec:       toolExec,
-		llmRunner:      runner,
-		storeCfg:       cfg.LLM.Store,
-		spansh:         spanshClient,
-		cacheStore:     cacheStore,
-		wsHub:          wsHub,
-		memgraph:       memgraphClient,
-		dayz:           dayzService,
-		kaineStore:     kaineStore,
-		eddnIntelStore: eddnIntelStore,
+		cfg:                 cfg,
+		ops:                 opsManager,
+		llmStore:            llmStore,
+		llmClient:           llmClient,
+		logger:              observability.NewLogger("httpapi"),
+		apiKey:              cfg.HTTP.InternalKey,
+		metrics:             metrics,
+		rateLimiter:         newRateLimiter(cfg.RateLimit.RequestsPerWindow, cfg.RateLimit.Window),
+		toolExec:            toolExec,
+		llmRunner:           runner,
+		storeCfg:            cfg.LLM.Store,
+		spansh:              spanshClient,
+		cacheStore:          cacheStore,
+		wsHub:               wsHub,
+		memgraph:            memgraphClient,
+		dayz:                dayzService,
+		kaineStore:          kaineStore,
+		eddnIntelStore:      eddnIntelStore,
+		nonceStore:          nonceStore,
+		commanderPKCEStore:  pkceStore,
+		commanderNonceStore: commanderNonceStore,
+		commanderRepo:       commanderRepo,
+		ingestRateLimiter:   newIngestFIDRateLimiter(),
 	}
 
 	if server.toolExec == nil {
@@ -83,12 +100,20 @@ func Run(ctx context.Context, cfg *config.Config, opsManager *ops.Manager, llmSt
 	if server.kaineStore != nil {
 		server.toolExec = server.toolExec.WithKaineStore(server.kaineStore)
 	}
+	// Wire up commander repository for journal event and location tools
+	if server.commanderRepo != nil {
+		server.toolExec = server.toolExec.WithCommanderRepository(server.commanderRepo)
+	}
 	if server.llmRunner == nil && llmClient != nil {
 		server.llmRunner = assistant.NewRunner(llmClient, server.toolExec, cfg.LLM.SystemPrompt, cfg.LLM.MaxIterations)
 	}
 	// Create separate runner for Kaine chat with Elite Dangerous-only prompt (no ops tools)
 	if server.kaineRunner == nil && llmClient != nil {
 		server.kaineRunner = assistant.NewRunner(llmClient, server.toolExec, cfg.LLM.KaineSystemPrompt, cfg.LLM.MaxIterations)
+	}
+	// Create copilot runner — system prompt is set per-session by CopilotSystemPrompt(commanderName)
+	if server.copilotRunner == nil && llmClient != nil {
+		server.copilotRunner = assistant.NewRunner(llmClient, server.toolExec, "", cfg.LLM.MaxIterations)
 	}
 
 	// Load the active system prompt from the database, seeding v1 from the compiled
@@ -118,6 +143,44 @@ func Run(ctx context.Context, cfg *config.Config, opsManager *ops.Manager, llmSt
 	if cfg.Authentik.Enabled && cfg.Authentik.Token != "" {
 		server.authentikClient = authentik.NewClient(cfg.Authentik.URL, cfg.Authentik.Token)
 		server.logger.Info("Authentik API client initialized")
+	}
+
+	// Commander auth initialization (if enabled)
+	var rdb *redis.Client
+	if cfg.LLM.Store.Redis.Enabled {
+		rdb = redis.NewClient(&redis.Options{
+			Addr:     cfg.LLM.Store.Redis.Addr,
+			Username: cfg.LLM.Store.Redis.Username,
+			Password: cfg.LLM.Store.Redis.Password,
+			DB:       cfg.LLM.Store.Redis.DB,
+		})
+		server.redisClient = rdb
+	}
+
+	if cfg.CommanderAuth.Enabled {
+		privPEM, err := os.ReadFile(cfg.CommanderAuth.PrivateKeyPath)
+		if err != nil {
+			return fmt.Errorf("read commander private key: %w", err)
+		}
+		privKey, err := auth.LoadPrivateKey(privPEM)
+		if err != nil {
+			return fmt.Errorf("load commander private key: %w", err)
+		}
+
+		pubPEM, err := os.ReadFile(cfg.CommanderAuth.PublicKeyPath)
+		if err != nil {
+			return fmt.Errorf("read commander public key: %w", err)
+		}
+		pubKey, err := auth.LoadPublicKey(pubPEM)
+		if err != nil {
+			return fmt.Errorf("load commander public key: %w", err)
+		}
+
+		server.commanderJWTIssuer = auth.NewCommanderJWTIssuer(privKey, cfg.CommanderAuth.JWTIssuer, cfg.CommanderAuth.JWTExpiry)
+		if rdb != nil {
+			server.commanderJWTValidator = auth.NewCommanderJWTValidator(pubKey, cfg.CommanderAuth.JWTIssuer, rdb)
+		}
+		server.logger.Info("Commander auth initialized")
 	}
 
 	mux := http.NewServeMux()
@@ -160,6 +223,25 @@ func Run(ctx context.Context, cfg *config.Config, opsManager *ops.Manager, llmSt
 
 	// Galaxy Visualization API
 	server.RegisterGalaxyRoutes(mux)
+
+	// Commander (Copilot) auth routes
+	server.RegisterCommanderRoutes(mux)
+
+	// Desktop client poll-based auth routes
+	server.RegisterClientAuthRoutes(mux)
+
+	// Copilot chat routes
+	server.RegisterCopilotRoutes(mux)
+
+	// Ingest routes — commander JWT required
+	mux.Handle("/api/v1/ingest/event", server.withCommanderAuth(http.HandlerFunc(server.handleIngestSingle)))
+	mux.Handle("/api/v1/ingest/events", server.withCommanderAuth(http.HandlerFunc(server.handleIngestBatch)))
+	mux.Handle("GET /api/v1/ingest/stats", server.withCommanderAuth(http.HandlerFunc(server.handleIngestStats)))
+
+	// Commander query routes — commander JWT required
+	mux.Handle("GET /api/v1/commander/events", server.withCommanderAuth(http.HandlerFunc(server.handleCommanderEvents)))
+	mux.Handle("GET /api/v1/commander/location", server.withCommanderAuth(http.HandlerFunc(server.handleCommanderLocation)))
+	mux.Handle("GET /api/v1/commander/profile", server.withCommanderAuth(http.HandlerFunc(server.handleCommanderProfile)))
 
 	httpServer := &http.Server{
 		Addr:              cfg.HTTP.Address,
@@ -210,8 +292,9 @@ type Server struct {
 	metrics      *observability.Metrics
 	rateLimiter  *rateLimiter
 	toolExec     *tools.Executor
-	llmRunner    *assistant.Runner // Discord ops runner (has access to system management tools)
-	kaineRunner  *assistant.Runner // Kaine chat runner (Elite Dangerous tools only, no ops)
+	llmRunner     *assistant.Runner // Discord ops runner (has access to system management tools)
+	kaineRunner   *assistant.Runner // Kaine chat runner (Elite Dangerous tools only, no ops)
+	copilotRunner *assistant.Runner // Copilot chat runner (commander-authenticated, includes commander tools)
 	storeCfg     config.ConversationStoreConfig
 	spansh       *spansh.Client
 	cacheStore   *store.CacheStore
@@ -219,9 +302,22 @@ type Server struct {
 	memgraph     *memgraph.Client
 	dayz         *dayz.Service
 	kaineStore   *kaine.Store
-	jwtValidator TokenValidator
-	eddnIntelStore *store.SystemIntelStore // EDDN raw feed queries for system intel
+	jwtValidator    TokenValidator
+	nonceStore      *kaineNonceStore        // Single-use nonce store for WebSocket auth frames
+	eddnIntelStore  *store.SystemIntelStore // EDDN raw feed queries for system intel
 	authentikClient *authentik.Client       // Authentik API client for user management
+
+	// Commander (Copilot) auth
+	redisClient              *redis.Client
+	commanderJWTIssuer       *auth.CommanderJWTIssuer
+	commanderJWTValidator    *auth.CommanderJWTValidator
+	commanderPKCEStore       *commanderPKCEStore
+	commanderNonceStore      *kaineNonceStore // Single-use nonce store for commander WebSocket auth frames
+	commanderIPLimiter       sync.Map // map[string]*security.TokenBucket — per-IP rate limiters
+
+	// Commander journal ingest
+	commanderRepo      store.CommanderRepository
+	ingestRateLimiter  *ingestFIDRateLimiter
 
 	// Power standings cache (lazy-loaded, 15-minute TTL)
 	standingsCacheMu    sync.RWMutex
@@ -1321,6 +1417,7 @@ func (s *Server) handleEDINInaraLinks(w http.ResponseWriter, r *http.Request) {
 // Routes:
 //   - /api/edin/systems/{systemName}/history?hours=24 - merit history (reinforcement/undermining)
 //   - /api/edin/systems/{systemName}/expansion-history?hours=168 - expansion conflict progress history
+//   - /api/edin/systems/{systemName}/factions - current factions (name, influence, states, happiness)
 func (s *Server) handleEDINSystemHistory(w http.ResponseWriter, r *http.Request) {
 	s.applyCORSHeaders(w, r)
 	if r.Method == http.MethodOptions {
@@ -1332,16 +1429,11 @@ func (s *Server) handleEDINSystemHistory(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	if s.cacheStore == nil {
-		s.writeError(w, http.StatusServiceUnavailable, "EDIN cache not configured")
-		return
-	}
-
-	// Parse system name and endpoint from path: /api/edin/systems/{name}/history or /expansion-history
+	// Parse system name and endpoint from path: /api/edin/systems/{name}/{history|expansion-history|factions}
 	path := strings.TrimPrefix(r.URL.Path, "/api/edin/systems/")
 	parts := strings.Split(path, "/")
 	if len(parts) < 2 {
-		s.writeError(w, http.StatusBadRequest, "invalid path, expected /api/edin/systems/{name}/history or /expansion-history")
+		s.writeError(w, http.StatusBadRequest, "invalid path, expected /api/edin/systems/{name}/{history|expansion-history|factions}")
 		return
 	}
 
@@ -1368,6 +1460,10 @@ func (s *Server) handleEDINSystemHistory(w http.ResponseWriter, r *http.Request)
 
 	switch endpoint {
 	case "history":
+		if s.cacheStore == nil {
+			s.writeError(w, http.StatusServiceUnavailable, "EDIN cache not configured")
+			return
+		}
 		history, err := s.cacheStore.GetSystemHistory(r.Context(), systemName, hours)
 		if err != nil {
 			s.logger.Error(fmt.Sprintf("edin_system_history error for %s", systemName), err)
@@ -1388,6 +1484,10 @@ func (s *Server) handleEDINSystemHistory(w http.ResponseWriter, r *http.Request)
 		})
 
 	case "expansion-history":
+		if s.cacheStore == nil {
+			s.writeError(w, http.StatusServiceUnavailable, "EDIN cache not configured")
+			return
+		}
 		history, err := s.cacheStore.GetExpansionHistory(r.Context(), systemName, hours)
 		if err != nil {
 			s.logger.Error(fmt.Sprintf("edin_expansion_history error for %s", systemName), err)
@@ -1407,8 +1507,27 @@ func (s *Server) handleEDINSystemHistory(w http.ResponseWriter, r *http.Request)
 			"history":     history,
 		})
 
+	case "factions":
+		if s.memgraph == nil {
+			s.writeError(w, http.StatusServiceUnavailable, "Memgraph not configured")
+			return
+		}
+		factions, err := s.memgraph.GetFactionsInSystem(r.Context(), systemName)
+		if err != nil {
+			s.logger.Error(fmt.Sprintf("edin_system_factions error for %s", systemName), err)
+			s.writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		if factions == nil {
+			factions = []memgraph.FactionPresence{}
+		}
+		s.writeJSON(w, http.StatusOK, map[string]any{
+			"system_name": systemName,
+			"factions":    factions,
+		})
+
 	default:
-		s.writeError(w, http.StatusBadRequest, "invalid endpoint, expected 'history' or 'expansion-history'")
+		s.writeError(w, http.StatusBadRequest, "invalid endpoint, expected 'history', 'expansion-history' or 'factions'")
 	}
 }
 

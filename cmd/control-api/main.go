@@ -6,11 +6,13 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"log/slog"
 	"os/signal"
 	"strings"
 	"syscall"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/redis/go-redis/v9"
 	"github.com/edin-space/edin-backend/internal/anthropic"
 	"github.com/edin-space/edin-backend/internal/assistant"
@@ -178,6 +180,21 @@ func main() {
 		toolExecutor.WithHistoryClient(cacheStore)
 	}
 
+	// Initialize commander repository if DSN is configured
+	var commanderRepo store.CommanderRepository
+	if cfg.CommanderAuth.CmdWriterDSN != "" {
+		cmdPool, err := pgxpool.New(ctx, cfg.CommanderAuth.CmdWriterDSN)
+		if err != nil {
+			logger.Warn(fmt.Sprintf("commander repo pool: %v (commander tools and ingest disabled)", err))
+		} else {
+			defer cmdPool.Close()
+			commanderRepo = store.NewPgCommanderRepository(cmdPool, slog.Default())
+			toolExecutor.WithCommanderRepository(commanderRepo)
+			logger.Info("Commander repository initialized")
+		}
+	}
+	toolExecutor.WithCommanderEventLimits(cfg.Copilot.EventsDefaultLimit, cfg.Copilot.EventsMaxLimit)
+
 	var assistantRunner *assistant.Runner
 	if anthropicClient != nil {
 		assistantRunner = assistant.NewRunner(anthropicClient, toolExecutor, cfg.LLM.SystemPrompt, cfg.LLM.MaxIterations)
@@ -190,7 +207,7 @@ func main() {
 		}
 	}()
 
-	if err := httpapi.Run(ctx, cfg, opsManager, llmStore, anthropicClient, toolExecutor, assistantRunner, spanshClient, cacheStore, wsHub, memgraphClient, dayzService, kaineStore, eddnIntelStore); err != nil && !errors.Is(err, context.Canceled) {
+	if err := httpapi.Run(ctx, cfg, opsManager, llmStore, anthropicClient, toolExecutor, assistantRunner, spanshClient, cacheStore, wsHub, memgraphClient, dayzService, kaineStore, eddnIntelStore, commanderRepo); err != nil && !errors.Is(err, context.Canceled) {
 		logger.Error("http api server", err)
 		cancel()
 	}

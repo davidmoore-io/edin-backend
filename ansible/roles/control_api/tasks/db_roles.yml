@@ -1,0 +1,57 @@
+---
+# DB role provisioning — creates application-level PostgreSQL roles on TimescaleDB.
+# Run once during initial environment setup or when roles need to be (re)created.
+# Requires community.postgresql collection: ansible-galaxy collection install community.postgresql
+
+- name: Create edin_cmd_writer role
+  community.postgresql.postgresql_user:
+    name: edin_cmd_writer
+    password: "{{ vault_edin_cmd_writer_password }}"
+    role_attr_flags: LOGIN,NOSUPERUSER,NOBYPASSRLS
+    db: edin
+    login_host: "{{ timescaledb_admin_host }}"
+    login_port: "{{ edin_db_port }}"
+    login_user: "{{ timescaledb_superuser }}"
+    login_password: "{{ vault_timescaledb_superuser_password }}"
+
+- name: Create edin_cmd_reader role
+  community.postgresql.postgresql_user:
+    name: edin_cmd_reader
+    password: "{{ vault_edin_cmd_reader_password }}"
+    role_attr_flags: LOGIN,NOSUPERUSER,NOBYPASSRLS
+    db: edin
+    login_host: "{{ timescaledb_admin_host }}"
+    login_port: "{{ edin_db_port }}"
+    login_user: "{{ timescaledb_superuser }}"
+    login_password: "{{ vault_timescaledb_superuser_password }}"
+
+- name: Create edin_migrator role (data migration use only — has BYPASSRLS)
+  community.postgresql.postgresql_user:
+    name: edin_migrator
+    password: "{{ vault_edin_migrator_password }}"
+    role_attr_flags: LOGIN,NOSUPERUSER,BYPASSRLS
+    db: edin
+    login_host: "{{ timescaledb_admin_host }}"
+    login_port: "{{ edin_db_port }}"
+    login_user: "{{ timescaledb_superuser }}"
+    login_password: "{{ vault_timescaledb_superuser_password }}"
+
+- name: Verify edin_cmd_writer has no SUPERUSER or BYPASSRLS
+  community.postgresql.postgresql_query:
+    db: edin
+    login_host: "{{ timescaledb_admin_host }}"
+    login_port: "{{ edin_db_port }}"
+    login_user: "{{ timescaledb_superuser }}"
+    login_password: "{{ vault_timescaledb_superuser_password }}"
+    query: >
+      SELECT rolname, rolsuper, rolbypassrls
+      FROM pg_roles
+      WHERE rolname IN ('edin_cmd_writer', 'edin_cmd_reader', 'edin_migrator')
+  register: role_check
+
+- name: Assert writer and reader do not have elevated privileges
+  ansible.builtin.assert:
+    that:
+      - item.rolsuper == false
+    fail_msg: "Role {{ item.rolname }} unexpectedly has SUPERUSER — investigate immediately"
+  loop: "{{ role_check.query_result | selectattr('rolname', 'in', ['edin_cmd_writer', 'edin_cmd_reader']) | list }}"

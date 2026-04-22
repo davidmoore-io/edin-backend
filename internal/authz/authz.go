@@ -4,9 +4,10 @@ package authz
 type Scope string
 
 const (
-	ScopeAdmin       Scope = "admin"
-	ScopeLlmOperator Scope = "llm_operator" // Full ops access (Discord operators)
-	ScopeKaineChat   Scope = "kaine_chat"   // Limited Elite queries (public users)
+	ScopeAdmin        Scope = "admin"
+	ScopeLlmOperator  Scope = "llm_operator"  // Full ops access (Discord operators)
+	ScopeKaineChat    Scope = "kaine_chat"    // Limited Elite queries (public users)
+	ScopeCopilotChat  Scope = "copilot_chat"  // ED commander authenticated via Frontier PKCE
 )
 
 // Resolver determines scopes available to a principal.

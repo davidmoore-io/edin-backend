@@ -78,14 +78,11 @@ func (cs *chatSession) send(msg ChatWSMessage) error {
 }
 
 // handleKaineChatWebSocket handles the WebSocket connection for galaxy chat.
+// Auth is performed via a first-message auth frame (Story 1.1): the server upgrades
+// freely, then waits 5s for {"type":"auth","token":"<nonce>"}. Closes 4401 on timeout,
+// 4403 on invalid nonce or insufficient permissions.
 func (s *Server) handleKaineChatWebSocket(w http.ResponseWriter, r *http.Request) {
-	user := KaineUserFromContext(r.Context())
-	if user == nil {
-		s.writeError(w, http.StatusUnauthorized, "not authenticated")
-		return
-	}
-
-	// Check if Kaine LLM runner is available
+	// Check LLM runner first (before upgrade — cheaper than a WS handshake)
 	if s.kaineRunner == nil {
 		s.writeError(w, http.StatusServiceUnavailable, "chat service not available")
 		return
@@ -94,10 +91,49 @@ func (s *Server) handleKaineChatWebSocket(w http.ResponseWriter, r *http.Request
 	// Upgrade to WebSocket
 	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
-		s.logger.Error(fmt.Sprintf("chat_ws upgrade failed user=%s", user.Sub), err)
+		s.logger.Error("chat_ws upgrade failed", err)
 		return
 	}
 	defer conn.Close()
+
+	// --- Auth via first-message frame ---
+	conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	_, authMsg, err := conn.ReadMessage()
+	if err != nil {
+		// Timeout or client closed — do not reconnect
+		conn.WriteMessage(websocket.CloseMessage,
+			websocket.FormatCloseMessage(4401, "auth timeout"))
+		return
+	}
+
+	var authFrame struct {
+		Type  string `json:"type"`
+		Token string `json:"token"`
+	}
+	if err := json.Unmarshal(authMsg, &authFrame); err != nil || authFrame.Type != "auth" || authFrame.Token == "" {
+		conn.WriteMessage(websocket.CloseMessage,
+			websocket.FormatCloseMessage(4403, "invalid auth frame"))
+		return
+	}
+
+	// Resolve nonce → user (single-use)
+	user := s.nonceStore.Consume(authFrame.Token)
+	if user == nil {
+		conn.WriteMessage(websocket.CloseMessage,
+			websocket.FormatCloseMessage(4403, "invalid or expired nonce"))
+		return
+	}
+
+	// Check chat access
+	if !user.CanAccessChat() {
+		conn.WriteMessage(websocket.CloseMessage,
+			websocket.FormatCloseMessage(4403, "chat access denied"))
+		return
+	}
+
+	// Reset read deadline for normal operation
+	conn.SetReadDeadline(time.Now().Add(60 * time.Second))
+	// --- End auth ---
 
 	// Load or create session
 	sessionID, history := s.loadOrCreateChatSession(user.Sub)
