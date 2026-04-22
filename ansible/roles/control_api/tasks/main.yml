@@ -95,3 +95,9 @@
 - name: Include DB role provisioning tasks
   ansible.builtin.import_tasks: db_roles.yml
   tags: [db_roles]
+
+# Commander JWT keypair provisioning — run explicitly with --tags jwt_keygen (first-time only).
+# Tasks inside are tagged [never, jwt_keygen] so normal deploys skip them entirely.
+- name: Include commander JWT keygen tasks
+  ansible.builtin.import_tasks: keygen.yml
+  tags: [never, jwt_keygen]

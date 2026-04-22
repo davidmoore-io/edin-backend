@@ -57,7 +57,9 @@ edin_domain: edin.space
 # NOTE: edin_db_host is a Docker network name (edin-timescaledb) — only reachable
 # from within Docker. For Ansible running on the host, use the VPN address instead.
 timescaledb_admin_host: "{{ vpn_interface_address }}"
-timescaledb_superuser: postgres
+# The TimescaleDB container is initialised with POSTGRES_USER=edin_admin, so that
+# role (not the default 'postgres') is the cluster superuser.
+timescaledb_superuser: edin_admin
 
 # Commander DB role credentials (values stored in ansible-vault encrypted creds.yml)
 vault_edin_cmd_writer_password: "{{ vault_edin_cmd_writer_password }}"
