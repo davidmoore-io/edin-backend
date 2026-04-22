@@ -22,6 +22,12 @@ type mockCommanderRepo struct {
 	byTypeErr     error
 	location      *store.LocationState
 	locationErr   error
+
+	// Captured args from the last EventsByType call — lets tests assert that
+	// the tool wrapper is forwarding sensible time bounds.
+	lastByTypeTypes []string
+	lastByTypeSince time.Time
+	lastByTypeUntil time.Time
 }
 
 func (m *mockCommanderRepo) UpsertCommander(ctx context.Context, fid, name, platform string) (uuid.UUID, error) {
@@ -40,6 +46,9 @@ func (m *mockCommanderRepo) RecentEvents(ctx context.Context, fid string, count 
 	return m.recentEvents, nil
 }
 func (m *mockCommanderRepo) EventsByType(ctx context.Context, fid string, types []string, since, until time.Time) ([]store.JournalEvent, error) {
+	m.lastByTypeTypes = types
+	m.lastByTypeSince = since
+	m.lastByTypeUntil = until
 	return m.byTypeEvents, m.byTypeErr
 }
 func (m *mockCommanderRepo) CurrentLocation(ctx context.Context, fid string) (*store.LocationState, error) {
@@ -102,6 +111,28 @@ func TestCommanderEvents_FiltersByEventType(t *testing.T) {
 	})
 	require.NoError(t, err)
 	assert.Contains(t, result.(string), "FSDJump")
+}
+
+// TestCommanderEvents_DefaultsUntilToNow is a regression test for a bug where
+// passing event_types without an explicit `until` caused the SQL predicate
+// `timestamp <= until` to evaluate against Go's zero time (year 1 AD), filtering
+// out every real event and returning "No events found for this commander".
+// The tool wrapper must default `until` to the current time.
+func TestCommanderEvents_DefaultsUntilToNow(t *testing.T) {
+	repo := &mockCommanderRepo{byTypeEvents: nil}
+	exec := NewExecutor(nil, nil, nil, nil).WithCommanderRepository(repo)
+
+	before := time.Now().UTC()
+	_, err := exec.commanderEvents(ctxWithFID("F2504"), map[string]any{
+		"event_types": "Docked",
+	})
+	after := time.Now().UTC()
+
+	require.NoError(t, err)
+	require.False(t, repo.lastByTypeUntil.IsZero(),
+		"until must not be zero when caller omits it; otherwise timestamp <= $4 matches nothing")
+	assert.True(t, !repo.lastByTypeUntil.Before(before) && !repo.lastByTypeUntil.After(after.Add(time.Second)),
+		"until should default to approximately now; got %v", repo.lastByTypeUntil)
 }
 
 func TestCommanderEvents_RespectsLimit(t *testing.T) {

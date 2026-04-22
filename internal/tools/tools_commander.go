@@ -79,7 +79,10 @@ func (e *Executor) commanderEvents(ctx context.Context, args map[string]any) (an
 		limit = maxLimit
 	}
 
-	// Parse time range
+	// Parse time range. We must NOT default `until` here — the branch below uses
+	// `!until.IsZero()` to decide between EventsByType and RecentEvents, and an
+	// auto-populated `until` would force every call into the EventsByType path.
+	// The default is applied inside the EventsByType branch only (see below).
 	var since, until time.Time
 	if s, ok := args["since"].(string); ok && s != "" {
 		t, err := time.Parse(time.RFC3339, s)
@@ -112,6 +115,13 @@ func (e *Executor) commanderEvents(ctx context.Context, args map[string]any) (an
 	}
 
 	if len(eventTypes) > 0 || !since.IsZero() || !until.IsZero() {
+		// EventsByType's SQL uses `timestamp <= until`, so an unset `until` must
+		// fall forward to "now" — Go's zero time is year 1 AD, and every real
+		// event fails `timestamp <= year-1 AD`. Regression guarded by
+		// TestCommanderEvents_DefaultsUntilToNow.
+		if until.IsZero() {
+			until = time.Now().UTC()
+		}
 		rows, err := e.commanderRepo.EventsByType(ctx, fid, eventTypes, since, until)
 		if err != nil {
 			return nil, fmt.Errorf("querying commander events: %w", err)
