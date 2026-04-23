@@ -14,6 +14,10 @@ commander_fid_allowlist:
   - F2504   # Pattern State (David)
 
 # Where the backend writes rejected login attempts as one JSON object per
-# line. Kept inside the control-api service directory so it lives alongside
-# the JWT keys and is excluded from other services' file systems.
-commander_login_attempt_log: /srv/control-api/login-attempts.log
+# line. Lives under /var/log/ — the conventional Linux location for system
+# and service logs, independent of any container rebuild. The access_list
+# role ensures the directory exists on the host with the right perms, and
+# the control_api docker-compose template bind-mounts it read-write into
+# the container so writes land on the host filesystem, not in the container
+# overlay (where they'd be lost on the next deploy).
+commander_login_attempt_log: /var/log/edin/login-attempts.log

@@ -11,6 +11,12 @@ services:
     volumes:
       # Commander JWT keypair — generated on the host by jwt_keygen; read-only mount.
       - {{ commander_jwt_private_key_path | dirname }}:{{ commander_jwt_private_key_path | dirname }}:ro
+      # Login-attempt audit log — created on the host by the access_list role.
+      # Read-write so denials written inside the container land on the host
+      # filesystem and survive container rebuilds. Operators tail the file
+      # from the host (sudo tail -f /var/log/edin/login-attempts.log) —
+      # there's no need for `docker exec`.
+      - {{ commander_login_attempt_log | dirname }}:{{ commander_login_attempt_log | dirname }}:rw
     networks:
       - {{ edin_app_network }}
       - {{ edin_data_network }}

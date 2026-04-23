@@ -1,16 +1,25 @@
 ---
-# access_list has no runtime tasks of its own — it exists to hold the
-# commander_fid_allowlist and commander_login_attempt_log variables in one
-# discoverable place. The control_api role reads these when rendering the
-# backend environment file, so the role is intentionally listed BEFORE
-# control_api in site.yml.
-#
-# Keeping the role present (rather than just having the vars in group_vars/)
-# means `ansible-playbook --tags access_list` is meaningful future-work:
-# a later iteration can ensure the log file exists with the right owner/mode,
-# rotate it, etc., without touching control_api.
+# access_list's main task surface is the login-attempt log directory. The
+# role's other job is to provide commander_fid_allowlist and
+# commander_login_attempt_log as Ansible variables for the control_api
+# role; those are set in defaults/main.yml and don't need tasks.
 
-- name: access_list role placeholder
+- name: Ensure login-attempt log directory exists on the host
+  # Lives on the host (under /var/log/edin by default) and is bind-mounted
+  # read-write into the control-api container. Keeps denial audit records
+  # across container rebuilds and makes them accessible to operators via
+  # plain `sudo tail` without docker exec. Mode 0750 — the file contains
+  # IPs and User-Agents of denied attempts which isn't secret but also
+  # isn't world-readable.
+  ansible.builtin.file:
+    path: "{{ commander_login_attempt_log | dirname }}"
+    state: directory
+    owner: root
+    group: root
+    mode: '0750'
+  tags: [access_list, control_api]
+
+- name: access_list role summary
   ansible.builtin.debug:
     msg: >-
       access_list provides commander_fid_allowlist
