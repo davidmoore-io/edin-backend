@@ -3,11 +3,27 @@ package authz
 // Scope represents a named permission.
 type Scope string
 
+// EDIN uses two classes of scope, both represented by the Scope type:
+//
+//  1. Coarse endpoint gates — grant access to a product surface:
+//     admin, llm_operator, kaine_chat, copilot_chat. These decide whether
+//     a caller may reach a given HTTP/WebSocket endpoint at all.
+//
+//  2. Fine per-tool scopes — gate individual MCP tools:
+//     galaxy_read, kaine_mining, commander_data. These decide which
+//     tools the executor will list and dispatch for a caller who has
+//     already passed the coarse gate. Per-tool scopes are derived from
+//     Authentik group membership (see ScopesForGroups) and layered on
+//     top of the coarse scope for the product surface.
 const (
-	ScopeAdmin        Scope = "admin"
-	ScopeLlmOperator  Scope = "llm_operator"  // Full ops access (Discord operators)
-	ScopeKaineChat    Scope = "kaine_chat"    // Limited Elite queries (public users)
-	ScopeCopilotChat  Scope = "copilot_chat"  // ED commander authenticated via Frontier PKCE
+	ScopeAdmin       Scope = "admin"
+	ScopeLlmOperator Scope = "llm_operator" // Full ops access (Discord operators)
+	ScopeKaineChat   Scope = "kaine_chat"   // Limited Elite queries (public users)
+	ScopeCopilotChat Scope = "copilot_chat" // ED commander authenticated via Frontier PKCE
+
+	ScopeGalaxyRead    Scope = "galaxy_read"    // Galaxy/Memgraph read-only queries (shared by Kaine and copilot)
+	ScopeKaineMining   Scope = "kaine_mining"   // Mining intel tools (plasmium/LTD buyers, galaxy schema)
+	ScopeCommanderData Scope = "commander_data" // Commander-scoped tools (own journal events, location)
 )
 
 // Resolver determines scopes available to a principal.
