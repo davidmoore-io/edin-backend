@@ -685,6 +685,19 @@ func (s *Server) handleCommanderAuthRefresh(w http.ResponseWriter, r *http.Reque
 		// Non-fatal — continue with the new token.
 	}
 
+	// Refresh rotates the jti — the old jti has already been revoked
+	// via RevokeJTI above; remove it from the per-FID tracking set and
+	// add the new jti. Preserves the invariant that every active jti
+	// for a FID is enumerable via SMEMBERS commander:jtis:{fid} —
+	// Task 8's revokeAllSessions depends on this.
+	if s.redisClient != nil {
+		_ = s.redisClient.SRem(ctx, "commander:jtis:"+fid, oldJTI).Err()
+		if err := s.redisClient.SAdd(ctx, "commander:jtis:"+fid, newJTI).Err(); err != nil {
+			slog.Warn("commander_jti_track_failed", "fid", fid, "err", err)
+		}
+		_ = s.redisClient.Expire(ctx, "commander:jtis:"+fid, 24*time.Hour).Err()
+	}
+
 	// Step 10: Store Frontier tokens under the new JTI.
 	if newTokenResp != nil {
 		// We got fresh Frontier tokens — store them.

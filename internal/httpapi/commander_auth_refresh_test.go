@@ -312,3 +312,61 @@ func TestAuthRefresh_CAPIPending_RetrySucceeds_UpdatesName(t *testing.T) {
 	assert.Equal(t, false, body["capi_pending"])
 	assert.Equal(t, "F9999", body["fid"])
 }
+
+// TestCommanderAuth_RefreshTracksNewJTIAndUntracksOld verifies that a successful
+// refresh rotates the per-FID tracking set: the old jti is SREM'd and the new
+// jti is SADD'd under commander:jtis:{fid}, with the 24h TTL refreshed. This
+// keeps the invariant that every active jti for a FID is enumerable via
+// SMEMBERS, which Task 8's revokeAllSessions relies on.
+func TestCommanderAuth_RefreshTracksNewJTIAndUntracksOld(t *testing.T) {
+	rdb, mr := newRefreshMiniredis(t)
+	srv := newCommanderAuthTestServer(t, "http://frontier.invalid", rdb, 5*time.Second)
+
+	tokenStr, oldJTI, err := srv.commanderJWTIssuer.Issue("F2504", "Pattern State", nil)
+	require.NoError(t, err)
+
+	// Seed the tracking set with the old jti (as a successful callback would
+	// have done) plus an unrelated jti that must NOT be disturbed.
+	const otherJTI = "unrelated-active-jti"
+	_, err = mr.SetAdd("commander:jtis:F2504", oldJTI, otherJTI)
+	require.NoError(t, err)
+
+	// Frontier token still valid so we don't exercise the refresh-grant path.
+	seedFrontierToken(t, mr, oldJTI, 1*time.Hour, "ref-token", false)
+
+	req := makeRefreshRequest(tokenStr)
+	rr := httptest.NewRecorder()
+	srv.handleCommanderAuthRefresh(rr, req)
+
+	require.Equal(t, http.StatusOK, rr.Code, "body: %s", rr.Body.String())
+
+	// Extract the new jti from the freshly-issued cookie.
+	var newCookieValue string
+	for _, c := range rr.Result().Cookies() {
+		if c.Name == "commander_session" {
+			newCookieValue = c.Value
+			break
+		}
+	}
+	require.NotEmpty(t, newCookieValue, "commander_session cookie must be set on refresh")
+
+	newClaims, err := srv.commanderJWTValidator.Validate(req.Context(), newCookieValue)
+	require.NoError(t, err)
+	newJTI := newClaims.ID
+	require.NotEqual(t, oldJTI, newJTI, "refresh must mint a new jti")
+
+	// Tracking set must contain the new jti, not the old one, and must still
+	// hold the unrelated jti.
+	members, err := mr.SMembers("commander:jtis:F2504")
+	require.NoError(t, err)
+	assert.NotContains(t, members, oldJTI, "refresh must SREM the rotated-out jti from the per-FID tracking set")
+	assert.Contains(t, members, newJTI, "refresh must SADD the new jti to the per-FID tracking set")
+	assert.Contains(t, members, otherJTI, "refresh must not touch unrelated jtis in the set")
+
+	// TTL must be ~24h (allow some slack for test latency).
+	ttl := mr.TTL("commander:jtis:F2504")
+	assert.True(t, ttl > 0 && ttl <= 24*time.Hour,
+		"per-FID tracking set TTL must be (0, 24h]; got %s", ttl)
+	assert.True(t, ttl > 23*time.Hour,
+		"per-FID tracking set TTL must be refreshed to roughly 24h; got %s", ttl)
+}
