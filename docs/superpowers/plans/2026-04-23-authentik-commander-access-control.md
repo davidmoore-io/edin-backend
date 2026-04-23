@@ -583,9 +583,34 @@ trip — far too slow and fragile.
     will move into a helper in Task 7.
 - `internal/httpapi/commander_client_auth.go`:
   - Same update at `Issue` call site
+- `internal/httpapi/commander_auth.go` — `handleCommanderAuthRefresh`
+  (third `Issue` call site, currently ~line 642):
+  - Pass the same default commander scope set as the third argument
+    (Task 7 will migrate this to carrying forward `claims.Scopes` from
+    the old JWT once scope derivation is dynamic).
+  - Refresh rotates the jti — the old jti is revoked via `RevokeJTI`
+    and a new jti is minted. Keep the per-FID tracking set accurate
+    by doing BOTH:
+    ```go
+    _ = s.redisClient.SRem(ctx, "commander:jtis:"+fid, oldJTI).Err()
+    if err := s.redisClient.SAdd(ctx, "commander:jtis:"+fid, newJTI).Err(); err != nil {
+        slog.Warn("commander_jti_track_failed", "fid", fid, "err", err)
+    }
+    _ = s.redisClient.Expire(ctx, "commander:jtis:"+fid, 24*time.Hour).Err()
+    ```
+    Rationale: refresh is a real mint site; without this, refresh-minted
+    sessions escape `revokeAllSessions` in Task 8 (they keep working
+    until natural expiry no matter how many times an admin Denies /
+    Unlinks / Revokes). Security-relevant — the tracking-set invariant
+    is "every active jti for a FID is enumerable via SMEMBERS."
 - `internal/httpapi/commander_auth_test.go`, `commander_client_auth_test.go`:
   - Add one new test per file asserting the issued JWT's Scopes slice equals
-    the default commander set
+    the default commander set.
+  - Add `TestCommanderAuth_RefreshTracksNewJTIAndUntracksOld` (only in
+    `commander_auth_test.go`, since refresh is web-only today):
+    seed `commander:jtis:F2504` with the initial jti, call refresh,
+    assert the old jti is gone from the set and the new jti is present,
+    and the Expire was refreshed.
 
 **Gate:**
 ```bash
