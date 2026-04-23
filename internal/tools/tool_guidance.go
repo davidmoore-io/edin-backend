@@ -183,4 +183,36 @@ Common patterns:
 
 For multi-system distance calculations, prefer galaxy_query with a Cypher distance formula
 over calling galaxy_system 6 times.`,
+
+	ToolBgsGuideSearch: `bgs_guide_search — Keyword search over the Elite Dangerous Background Simulation (BGS) reference guide. Returns ~2000-token text chunks around match clusters.
+
+Use for questions about BGS rules and mechanics. NOT for live galaxy data — use galaxy_* tools for that.
+
+Topics in the guide (use these as landmark search keywords):
+  - BGS basics: systems, factions, reputation, influence, system states, sliders (economy, security), station news, leaderboards
+  - Ticks: daily tick, weekly server maintenance tick
+  - Squadron setup: earning money, BGS ship types, BGS plan, diplomacy, goals, system preparation, backfilling
+  - Manipulation mechanics: daily scan, bucket model, ten levers, diminishing returns, influence distribution
+  - Boosting/reducing influence via: missions, combat, exploration, trade, mining, smuggling, negative actions
+  - Inducing states: Boom, Bust, War, Civil War, Election, Expansion, Retreat, Lockdown, Famine, Outbreak
+  - Conflicts: government ethos, conflict table, coups, elections
+  - Expansions: expansion diplomacy, detecting inactive PMFs
+  - Retreat, Crime and Punishment
+
+Parameters:
+- query (string, required): Keyword or distinctive phrase. Case-insensitive, min 2 chars.
+- max_chunks (number, optional): 1–5, default 3. Each chunk ~2000 tokens (~8000 chars).
+
+Search behaviour:
+- Matching is literal case-insensitive substring. Two-word phrases must appear verbatim.
+- If a multi-word phrase returns 0 matches, RETRY with a single distinctive keyword.
+- Results are ranked by match density: the first chunk is usually the main section for the topic.
+- Chunks are nudged to line boundaries so they open/close cleanly.
+
+!IMPORTANT — STRICT GROUNDING RULE:
+When you use this tool, you MUST answer using ONLY the text contained in the returned chunks.
+Do NOT assume, presuppose, infer, extrapolate, or draw on any other knowledge about Elite
+Dangerous BGS, even if you believe you know the answer. If the returned chunks do not contain
+enough information to answer the user's question, say so explicitly and offer to search with
+a different keyword. Quote or paraphrase the chunks directly; do not embellish.`,
 }
