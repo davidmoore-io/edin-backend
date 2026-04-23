@@ -331,12 +331,30 @@ func (s *Server) handleCommanderAuthCallback(w http.ResponseWriter, r *http.Requ
 		s.writeError(w, http.StatusServiceUnavailable, "commander auth not configured")
 		return
 	}
-	tokenString, jti, err := s.commanderJWTIssuer.Issue(fid, name)
+	// Default commander scope set — Task 6 will replace this literal with a
+	// dynamic resolution via resolveCommanderAccess. Do not extract into a
+	// constant; the literal goes away when the refactor lands.
+	tokenString, jti, err := s.commanderJWTIssuer.Issue(fid, name, []authz.Scope{
+		authz.ScopeCopilotChat,
+		authz.ScopeGalaxyRead,
+		authz.ScopeCommanderData,
+	})
 	if err != nil {
 		slog.Error("JWT issue failed", "error", err)
 		am.commanderAuthAttemptsTotal.WithLabelValues("failure").Inc()
 		s.writeError(w, http.StatusInternalServerError, "failed to issue session token")
 		return
+	}
+
+	// Track the jti under the per-FID set so Task 8 admin actions (Deny/Unlink)
+	// can enumerate and revoke every live JWT for this commander. Best-effort:
+	// a failure here means we lose instant-revoke for this jti, but the JWT
+	// still expires naturally at its normal TTL.
+	if s.redisClient != nil {
+		if err := s.redisClient.SAdd(r.Context(), "commander:jtis:"+fid, jti).Err(); err != nil {
+			slog.Warn("commander_jti_track_failed", "fid", fid, "err", err)
+		}
+		_ = s.redisClient.Expire(r.Context(), "commander:jtis:"+fid, 24*time.Hour).Err()
 	}
 
 	// Store Frontier tokens in Redis.
@@ -509,6 +527,15 @@ func (s *Server) handleCommanderAuthLogout(w http.ResponseWriter, r *http.Reques
 		// Non-fatal — clear cookie anyway.
 	}
 
+	// Drop this jti from the per-FID tracking set so the set stays accurate.
+	// Best-effort — a failure here just leaves a stale member that will expire
+	// naturally with the 24h TTL on the set.
+	if s.redisClient != nil {
+		if err := s.redisClient.SRem(r.Context(), "commander:jtis:"+claims.FID, claims.ID).Err(); err != nil {
+			slog.Warn("commander_jti_untrack_failed", "fid", claims.FID, "err", err)
+		}
+	}
+
 	// Clear cookie.
 	http.SetCookie(w, &http.Cookie{
 		Name:     cfg.CookieName,
@@ -639,7 +666,13 @@ func (s *Server) handleCommanderAuthRefresh(w http.ResponseWriter, r *http.Reque
 		s.writeError(w, http.StatusServiceUnavailable, "commander auth not configured")
 		return
 	}
-	newTokenString, newJTI, err := s.commanderJWTIssuer.Issue(fid, name)
+	// Default commander scope set — same literal as the web and desktop
+	// callbacks. Task 6 replaces this with resolveCommanderAccess.
+	newTokenString, newJTI, err := s.commanderJWTIssuer.Issue(fid, name, []authz.Scope{
+		authz.ScopeCopilotChat,
+		authz.ScopeGalaxyRead,
+		authz.ScopeCommanderData,
+	})
 	if err != nil {
 		slog.Error("commander_refresh: JWT issue failed", "error", err)
 		s.writeError(w, http.StatusInternalServerError, "failed to issue session token")

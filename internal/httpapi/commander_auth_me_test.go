@@ -15,7 +15,7 @@ func TestAuthMe_ValidJWT_ReturnsFIDAndName(t *testing.T) {
 	rdb, _ := newClientAuthMiniredis(t)
 	srv := newCommanderAuthTestServer(t, "http://frontier.invalid", rdb, 5*time.Second)
 
-	token, _, err := srv.commanderJWTIssuer.Issue("F2504", "Pattern State")
+	token, _, err := srv.commanderJWTIssuer.Issue("F2504", "Pattern State", nil)
 	require.NoError(t, err)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/auth/me", nil)

@@ -54,9 +54,19 @@ func newMiddlewareTestServer(t *testing.T, validator *auth.CommanderJWTValidator
 }
 
 // issueMiddlewareTestJWT signs a token using the given issuer.
+// Scopes are nil — tests that exercise scope-injection pass their own via
+// issueMiddlewareTestJWTWithScopes.
 func issueMiddlewareTestJWT(t *testing.T, issuer *auth.CommanderJWTIssuer, fid, name string) (tokenStr string, jti string) {
 	t.Helper()
-	tok, jtiVal, err := issuer.Issue(fid, name)
+	tok, jtiVal, err := issuer.Issue(fid, name, nil)
+	require.NoError(t, err)
+	return tok, jtiVal
+}
+
+// issueMiddlewareTestJWTWithScopes signs a token including the given scopes.
+func issueMiddlewareTestJWTWithScopes(t *testing.T, issuer *auth.CommanderJWTIssuer, fid, name string, scopes []authz.Scope) (tokenStr string, jti string) {
+	t.Helper()
+	tok, jtiVal, err := issuer.Issue(fid, name, scopes)
 	require.NoError(t, err)
 	return tok, jtiVal
 }
@@ -202,12 +212,18 @@ func TestCommanderAuth_FIDFromContext_MatchesJWTClaim(t *testing.T) {
 	assert.Equal(t, "F7777", fidFromCtx)
 }
 
-func TestCommanderAuth_ScopeCopilotChatInjected(t *testing.T) {
+// TestCommanderAuth_JWTScopes_InjectedToContext asserts that every scope
+// carried in the JWT's "scopes" claim lands in the authz context via
+// authz.ScopesFromContext — the middleware must not hardcode a scope list.
+func TestCommanderAuth_JWTScopes_InjectedToContext(t *testing.T) {
 	_, rdb := newMiddlewareTestMiniredis(t)
 	issuer, validator := newCommanderTestIssuerValidator(t, rdb)
 	srv := newMiddlewareTestServer(t, validator)
 
-	tokenStr, _ := issueMiddlewareTestJWT(t, issuer, "F2222", "Scope Commander")
+	tokenStr, _ := issueMiddlewareTestJWTWithScopes(t, issuer, "F2222", "Scope Commander", []authz.Scope{
+		authz.ScopeCopilotChat,
+		authz.ScopeCommanderData,
+	})
 
 	var scopes []authz.Scope
 	handler := srv.withCommanderAuth(func(w http.ResponseWriter, r *http.Request) {
@@ -222,6 +238,34 @@ func TestCommanderAuth_ScopeCopilotChatInjected(t *testing.T) {
 
 	require.Equal(t, http.StatusOK, rr.Code)
 	assert.Contains(t, scopes, authz.ScopeCopilotChat)
+	assert.Contains(t, scopes, authz.ScopeCommanderData)
+	// Scopes not on the JWT must NOT appear in the context.
+	assert.NotContains(t, scopes, authz.ScopeGalaxyRead)
+}
+
+// TestCommanderAuth_EmptyScopesJWT_LeavesContextEmpty asserts the fail-closed
+// behaviour: a legacy JWT issued without a scopes claim does not silently get
+// a default scope set from the middleware.
+func TestCommanderAuth_EmptyScopesJWT_LeavesContextEmpty(t *testing.T) {
+	_, rdb := newMiddlewareTestMiniredis(t)
+	issuer, validator := newCommanderTestIssuerValidator(t, rdb)
+	srv := newMiddlewareTestServer(t, validator)
+
+	tokenStr, _ := issueMiddlewareTestJWT(t, issuer, "F3333", "Legacy Commander")
+
+	var scopes []authz.Scope
+	handler := srv.withCommanderAuth(func(w http.ResponseWriter, r *http.Request) {
+		scopes = authz.ScopesFromContext(r.Context())
+		w.WriteHeader(http.StatusOK)
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.AddCookie(&http.Cookie{Name: "commander_session", Value: tokenStr})
+	rr := httptest.NewRecorder()
+	handler(rr, req)
+
+	require.Equal(t, http.StatusOK, rr.Code)
+	assert.Empty(t, scopes, "legacy JWT without scopes must yield an empty scope context")
 }
 
 func TestCommanderAuth_ValidatorNil_Returns503(t *testing.T) {

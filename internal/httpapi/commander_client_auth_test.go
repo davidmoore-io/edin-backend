@@ -9,6 +9,8 @@ import (
 	"time"
 
 	"github.com/alicebob/miniredis/v2"
+	"github.com/edin-space/edin-backend/internal/auth"
+	"github.com/golang-jwt/jwt/v5"
 	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -339,4 +341,87 @@ func TestClientAuthCallback_BrowserFlow_StillWorksWithPKCEStore(t *testing.T) {
 	require.NotNil(t, sessionCookie, "commander_session cookie must be set for browser flow")
 	assert.True(t, sessionCookie.HttpOnly)
 	assert.NotEmpty(t, sessionCookie.Value)
+}
+
+// TestCommanderClientAuth_IssuedJWTContainsDefaultScopes asserts the JWT minted
+// by the desktop /callback path carries the default commander scope set —
+// {copilot_chat, galaxy_read, commander_data}. The desktop flow must receive
+// the same scopes as the browser flow so the desktop client sees the same
+// tool set in its copilot chat.
+func TestCommanderClientAuth_IssuedJWTContainsDefaultScopes(t *testing.T) {
+	tokenPayload := map[string]any{
+		"access_token":  "acc-desktop",
+		"token_type":    "Bearer",
+		"expires_in":    3600,
+		"refresh_token": "ref-desktop",
+	}
+	frontierSrv := frontierTestServer(t, tokenPayload, "7777", "Desktop Commander", 0, false)
+	defer frontierSrv.Close()
+
+	rdb, mr := newClientAuthMiniredis(t)
+	srv := newCommanderAuthTestServer(t, frontierSrv.URL, rdb, 5*time.Second)
+
+	sessionID, state := seedPendingSession(t, mr, rdb, "desktop-verifier")
+
+	req := httptest.NewRequest(http.MethodGet,
+		fmt.Sprintf("/api/commander/auth/callback?code=desktop-code&state=%s", state), nil)
+	rr := httptest.NewRecorder()
+	srv.handleCommanderAuthCallback(rr, req)
+
+	require.Equal(t, http.StatusOK, rr.Code, "desktop callback must return 200; body: %s", rr.Body.String())
+
+	// Read the session back from Redis and parse the stored JWT to inspect scopes.
+	raw, err := mr.Get(clientAuthSessionKey(sessionID))
+	require.NoError(t, err)
+	var session clientAuthSession
+	require.NoError(t, json.Unmarshal([]byte(raw), &session))
+	require.NotEmpty(t, session.Token)
+
+	claims := &auth.CommanderClaims{}
+	_, _, err = new(jwt.Parser).ParseUnverified(session.Token, claims)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"copilot_chat", "galaxy_read", "commander_data"}, claims.Scopes)
+}
+
+// TestCommanderClientAuth_CallbackTracksJTIUnderPerFIDSet asserts that the
+// desktop callback records the minted jti under commander:jtis:{fid} — same
+// behaviour as the browser callback, so Task 8 admin revocation works against
+// sessions minted through either flow.
+func TestCommanderClientAuth_CallbackTracksJTIUnderPerFIDSet(t *testing.T) {
+	tokenPayload := map[string]any{
+		"access_token": "acc-desktop",
+		"expires_in":   3600,
+	}
+	frontierSrv := frontierTestServer(t, tokenPayload, "7777", "Desktop Commander", 0, false)
+	defer frontierSrv.Close()
+
+	rdb, mr := newClientAuthMiniredis(t)
+	srv := newCommanderAuthTestServer(t, frontierSrv.URL, rdb, 5*time.Second)
+
+	sessionID, state := seedPendingSession(t, mr, rdb, "desktop-verifier-jti")
+
+	req := httptest.NewRequest(http.MethodGet,
+		fmt.Sprintf("/api/commander/auth/callback?code=desktop-code&state=%s", state), nil)
+	rr := httptest.NewRecorder()
+	srv.handleCommanderAuthCallback(rr, req)
+
+	require.Equal(t, http.StatusOK, rr.Code, "body: %s", rr.Body.String())
+
+	raw, err := mr.Get(clientAuthSessionKey(sessionID))
+	require.NoError(t, err)
+	var session clientAuthSession
+	require.NoError(t, json.Unmarshal([]byte(raw), &session))
+
+	claims := &auth.CommanderClaims{}
+	_, _, err = new(jwt.Parser).ParseUnverified(session.Token, claims)
+	require.NoError(t, err)
+	require.NotEmpty(t, claims.ID, "jti must be present")
+
+	members, err := mr.SMembers("commander:jtis:F7777")
+	require.NoError(t, err)
+	assert.Contains(t, members, claims.ID, "per-FID tracking set must contain the new jti")
+
+	ttl := mr.TTL("commander:jtis:F7777")
+	assert.True(t, ttl > 23*time.Hour && ttl <= 24*time.Hour,
+		"per-FID tracking set TTL must be roughly 24h; got %s", ttl)
 }

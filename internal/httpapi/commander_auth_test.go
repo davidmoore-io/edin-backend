@@ -17,6 +17,7 @@ import (
 	"github.com/edin-space/edin-backend/internal/authz"
 	"github.com/edin-space/edin-backend/internal/config"
 	"github.com/edin-space/edin-backend/internal/observability"
+	"github.com/golang-jwt/jwt/v5"
 	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -376,11 +377,129 @@ func TestAuthCallback_ResponseContainsCAPIPendingFlag(t *testing.T) {
 	assert.Equal(t, false, capiPending)
 }
 
+// parseIssuedSessionJWT extracts CommanderClaims from the cookie set by a
+// successful callback. Does not verify the signature — we just want to inspect
+// what was claimed.
+func parseIssuedSessionJWT(t *testing.T, rr *httptest.ResponseRecorder) *auth.CommanderClaims {
+	t.Helper()
+	var sessionCookie *http.Cookie
+	for _, c := range rr.Result().Cookies() {
+		if c.Name == "commander_session" {
+			sessionCookie = c
+			break
+		}
+	}
+	require.NotNil(t, sessionCookie, "commander_session cookie must be set")
+
+	claims := &auth.CommanderClaims{}
+	_, _, err := new(jwt.Parser).ParseUnverified(sessionCookie.Value, claims)
+	require.NoError(t, err)
+	return claims
+}
+
+// TestCommanderAuth_IssuedJWTContainsDefaultScopes asserts the JWT minted by
+// the browser /callback endpoint carries the default commander scope set —
+// {copilot_chat, galaxy_read, commander_data}. Task 6 replaces the literal
+// with a dynamic resolution; until then every authenticated commander gets
+// exactly this set.
+func TestCommanderAuth_IssuedJWTContainsDefaultScopes(t *testing.T) {
+	tokenPayload := map[string]any{
+		"access_token": "acc123",
+		"expires_in":   3600,
+	}
+	frontierSrv := frontierTestServer(t, tokenPayload, "2504", "Pattern State", 0, false)
+	defer frontierSrv.Close()
+
+	rdb := newTestMiniredis(t)
+	srv := newCommanderAuthTestServer(t, frontierSrv.URL, rdb, 5*time.Second)
+
+	state := "state-scopes-default"
+	srv.commanderPKCEStore.store(state, "verifier", "http://localhost/copilot/callback", 10*time.Minute)
+
+	req := httptest.NewRequest(http.MethodGet,
+		"/api/commander/auth/callback?code=code&state="+state, nil)
+	rr := httptest.NewRecorder()
+	srv.handleCommanderAuthCallback(rr, req)
+
+	require.Equal(t, http.StatusOK, rr.Code, "body: %s", rr.Body.String())
+
+	claims := parseIssuedSessionJWT(t, rr)
+	assert.Equal(t, []string{"copilot_chat", "galaxy_read", "commander_data"}, claims.Scopes)
+}
+
+// TestCommanderAuth_CallbackTracksJTIUnderPerFIDSet verifies that a successful
+// browser callback records the minted jti under commander:jtis:{fid} with
+// the expected 24h TTL.
+func TestCommanderAuth_CallbackTracksJTIUnderPerFIDSet(t *testing.T) {
+	tokenPayload := map[string]any{
+		"access_token": "acc123",
+		"expires_in":   3600,
+	}
+	frontierSrv := frontierTestServer(t, tokenPayload, "2504", "Pattern State", 0, false)
+	defer frontierSrv.Close()
+
+	mr := miniredis.RunT(t)
+	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	srv := newCommanderAuthTestServer(t, frontierSrv.URL, rdb, 5*time.Second)
+
+	state := "state-jti-tracking"
+	srv.commanderPKCEStore.store(state, "verifier", "http://localhost/copilot/callback", 10*time.Minute)
+
+	req := httptest.NewRequest(http.MethodGet,
+		"/api/commander/auth/callback?code=code&state="+state, nil)
+	rr := httptest.NewRecorder()
+	srv.handleCommanderAuthCallback(rr, req)
+
+	require.Equal(t, http.StatusOK, rr.Code, "body: %s", rr.Body.String())
+
+	claims := parseIssuedSessionJWT(t, rr)
+	require.NotEmpty(t, claims.ID, "jti must be present")
+
+	members, err := mr.SMembers("commander:jtis:F2504")
+	require.NoError(t, err)
+	assert.Contains(t, members, claims.ID, "per-FID tracking set must contain the new jti")
+
+	// TTL must be ~24h (allow some slack for test latency).
+	ttl := mr.TTL("commander:jtis:F2504")
+	assert.True(t, ttl > 23*time.Hour && ttl <= 24*time.Hour,
+		"per-FID tracking set TTL must be roughly 24h; got %s", ttl)
+}
+
+// TestCommanderAuth_LogoutRemovesJTIFromPerFIDSet verifies that handleCommanderAuthLogout
+// SREMs the revoked jti from the per-FID tracking set.
+func TestCommanderAuth_LogoutRemovesJTIFromPerFIDSet(t *testing.T) {
+	mr := miniredis.RunT(t)
+	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	srv := newCommanderAuthTestServer(t, "http://frontier.invalid", rdb, 5*time.Second)
+
+	tokenStr, jti, err := srv.commanderJWTIssuer.Issue("F1234", "Test Commander", nil)
+	require.NoError(t, err)
+
+	// Simulate the callback's SAdd so the set has something to remove. Seed two
+	// jtis so removing the logout target leaves an observable remainder — this
+	// sidesteps miniredis auto-deleting the empty set key.
+	otherJTI := "other-active-jti"
+	_, err = rdb.SAdd(context.Background(), "commander:jtis:F1234", jti, otherJTI).Result()
+	require.NoError(t, err)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/commander/auth/logout", nil)
+	req.AddCookie(&http.Cookie{Name: "commander_session", Value: tokenStr})
+	rr := httptest.NewRecorder()
+	srv.handleCommanderAuthLogout(rr, req)
+
+	require.Equal(t, http.StatusOK, rr.Code, "body: %s", rr.Body.String())
+
+	members, err := mr.SMembers("commander:jtis:F1234")
+	require.NoError(t, err)
+	assert.NotContains(t, members, jti, "logout must SREM the revoked jti from the per-FID tracking set")
+	assert.Contains(t, members, otherJTI, "logout must not touch unrelated jtis in the set")
+}
+
 // ─── Logout tests ──────────────────────────────────────────────────────────────
 
 func issueTestJWT(t *testing.T, srv *Server, fid, name string) string {
 	t.Helper()
-	tok, _, err := srv.commanderJWTIssuer.Issue(fid, name)
+	tok, _, err := srv.commanderJWTIssuer.Issue(fid, name, nil)
 	require.NoError(t, err)
 	return tok
 }

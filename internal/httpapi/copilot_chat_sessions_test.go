@@ -80,7 +80,7 @@ func TestCopilotChatSessions_ReturnsUsersSessions(t *testing.T) {
 	}
 	srv := newCopilotSessionsTestServer(t, store)
 
-	token, _, err := srv.commanderJWTIssuer.Issue("F2504", "Pattern State")
+	token, _, err := srv.commanderJWTIssuer.Issue("F2504", "Pattern State", nil)
 	require.NoError(t, err)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/commander/chat/sessions", nil)
@@ -112,7 +112,7 @@ func TestCopilotChatSessions_OnlyReturnsCallersSessions(t *testing.T) {
 	}
 	srv := newCopilotSessionsTestServer(t, store)
 
-	token, _, err := srv.commanderJWTIssuer.Issue("F2504", "Pattern State")
+	token, _, err := srv.commanderJWTIssuer.Issue("F2504", "Pattern State", nil)
 	require.NoError(t, err)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/commander/chat/sessions", nil)
@@ -139,7 +139,7 @@ func TestCopilotChatSessions_MissingAuth_Returns401(t *testing.T) {
 
 func TestCopilotChatSessions_WrongMethod_Returns405(t *testing.T) {
 	srv := newCopilotSessionsTestServer(t, &fakeMultiSessionStore{})
-	token, _, err := srv.commanderJWTIssuer.Issue("F2504", "Pattern State")
+	token, _, err := srv.commanderJWTIssuer.Issue("F2504", "Pattern State", nil)
 	require.NoError(t, err)
 
 	req := httptest.NewRequest(http.MethodPost, "/api/commander/chat/sessions", nil)
@@ -155,7 +155,7 @@ func TestCopilotChatSessions_NonMultiSessionStore_ReturnsEmpty(t *testing.T) {
 	// valid "no conversations yet" state.
 	srv := newCopilotSessionsTestServer(t, llm.NewInMemoryStore(5*time.Minute))
 
-	token, _, err := srv.commanderJWTIssuer.Issue("F2504", "Pattern State")
+	token, _, err := srv.commanderJWTIssuer.Issue("F2504", "Pattern State", nil)
 	require.NoError(t, err)
 	req := httptest.NewRequest(http.MethodGet, "/api/commander/chat/sessions", nil)
 	req.Header.Set("Authorization", "Bearer "+token)
@@ -172,7 +172,7 @@ func TestCopilotChatSessions_StoreError_Returns500(t *testing.T) {
 	store := &fakeMultiSessionStore{listErr: errors.New("boom")}
 	srv := newCopilotSessionsTestServer(t, store)
 
-	token, _, err := srv.commanderJWTIssuer.Issue("F2504", "Pattern State")
+	token, _, err := srv.commanderJWTIssuer.Issue("F2504", "Pattern State", nil)
 	require.NoError(t, err)
 	req := httptest.NewRequest(http.MethodGet, "/api/commander/chat/sessions", nil)
 	req.Header.Set("Authorization", "Bearer "+token)
@@ -188,7 +188,7 @@ func TestCopilotActivateSession_SuccessRecordsFIDAndSessionID(t *testing.T) {
 	store := &fakeMultiSessionStore{}
 	srv := newCopilotSessionsTestServer(t, store)
 
-	token, _, err := srv.commanderJWTIssuer.Issue("F2504", "Pattern State")
+	token, _, err := srv.commanderJWTIssuer.Issue("F2504", "Pattern State", nil)
 	require.NoError(t, err)
 
 	req := httptest.NewRequest(http.MethodPost, "/api/commander/chat/sessions/abc-123/activate", nil)
@@ -212,7 +212,7 @@ func TestCopilotActivateSession_MissingAuth_Returns401(t *testing.T) {
 
 func TestCopilotActivateSession_WrongMethod_Returns405(t *testing.T) {
 	srv := newCopilotSessionsTestServer(t, &fakeMultiSessionStore{})
-	token, _, err := srv.commanderJWTIssuer.Issue("F2504", "Pattern State")
+	token, _, err := srv.commanderJWTIssuer.Issue("F2504", "Pattern State", nil)
 	require.NoError(t, err)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/commander/chat/sessions/abc/activate", nil)
@@ -224,7 +224,7 @@ func TestCopilotActivateSession_WrongMethod_Returns405(t *testing.T) {
 
 func TestCopilotActivateSession_EmptyID_Returns400(t *testing.T) {
 	srv := newCopilotSessionsTestServer(t, &fakeMultiSessionStore{})
-	token, _, err := srv.commanderJWTIssuer.Issue("F2504", "Pattern State")
+	token, _, err := srv.commanderJWTIssuer.Issue("F2504", "Pattern State", nil)
 	require.NoError(t, err)
 
 	// URL shape /api/commander/chat/sessions//activate → empty ID segment.
@@ -241,7 +241,7 @@ func TestCopilotActivateSession_PathInjection_Returns400(t *testing.T) {
 	// We explicitly reject any session ID containing "/" so the trim logic
 	// cannot be abused to pass arbitrary path segments to the store.
 	srv := newCopilotSessionsTestServer(t, &fakeMultiSessionStore{})
-	token, _, err := srv.commanderJWTIssuer.Issue("F2504", "Pattern State")
+	token, _, err := srv.commanderJWTIssuer.Issue("F2504", "Pattern State", nil)
 	require.NoError(t, err)
 
 	req := httptest.NewRequest(http.MethodPost, "/api/commander/chat/sessions/foo/bar/activate", nil)
@@ -255,7 +255,7 @@ func TestCopilotActivateSession_StoreError_Returns500(t *testing.T) {
 	store := &fakeMultiSessionStore{activateErr: errors.New("cross-user denial")}
 	srv := newCopilotSessionsTestServer(t, store)
 
-	token, _, err := srv.commanderJWTIssuer.Issue("F2504", "Pattern State")
+	token, _, err := srv.commanderJWTIssuer.Issue("F2504", "Pattern State", nil)
 	require.NoError(t, err)
 	req := httptest.NewRequest(http.MethodPost, "/api/commander/chat/sessions/abc/activate", nil)
 	req.Header.Set("Authorization", "Bearer "+token)

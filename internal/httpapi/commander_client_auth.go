@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/edin-space/edin-backend/internal/authz"
 	"github.com/edin-space/edin-backend/internal/frontier"
 	"github.com/redis/go-redis/v9"
 )
@@ -322,11 +323,29 @@ func (s *Server) handleClientAuthDesktopCallback(w http.ResponseWriter, r *http.
 		s.writeError(w, http.StatusServiceUnavailable, "commander auth not configured")
 		return
 	}
-	tokenString, jti, err := s.commanderJWTIssuer.Issue(fid, name)
+	// Default commander scope set — Task 6 will replace this literal with a
+	// dynamic resolution via resolveCommanderAccess. Do not extract into a
+	// constant; the literal goes away when the refactor lands.
+	tokenString, jti, err := s.commanderJWTIssuer.Issue(fid, name, []authz.Scope{
+		authz.ScopeCopilotChat,
+		authz.ScopeGalaxyRead,
+		authz.ScopeCommanderData,
+	})
 	if err != nil {
 		slog.Error("client_auth_callback: JWT issue failed", "error", err)
 		s.writeError(w, http.StatusInternalServerError, "failed to issue session token")
 		return
+	}
+
+	// Track the jti under the per-FID set so Task 8 admin actions (Deny/Unlink)
+	// can enumerate and revoke every live JWT for this commander. Best-effort:
+	// a failure here means we lose instant-revoke for this jti, but the JWT
+	// still expires naturally at its normal TTL.
+	if s.redisClient != nil {
+		if err := s.redisClient.SAdd(ctx, "commander:jtis:"+fid, jti).Err(); err != nil {
+			slog.Warn("commander_jti_track_failed", "fid", fid, "err", err)
+		}
+		_ = s.redisClient.Expire(ctx, "commander:jtis:"+fid, 24*time.Hour).Err()
 	}
 
 	// Store Frontier tokens in Redis.

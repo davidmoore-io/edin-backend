@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/edin-space/edin-backend/internal/authz"
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
@@ -23,8 +24,9 @@ var ErrNoFIDInContext = errors.New("auth: no FID in context")
 
 // CommanderClaims are the JWT claims embedded in EDIN commander session tokens.
 type CommanderClaims struct {
-	FID  string `json:"fid"`  // Frontier ID e.g. "F2504"
-	Name string `json:"name"` // Commander name e.g. "Pattern State"
+	FID    string   `json:"fid"`              // Frontier ID e.g. "F2504"
+	Name   string   `json:"name"`             // Commander name e.g. "Pattern State"
+	Scopes []string `json:"scopes,omitempty"` // authz scopes granted to this commander
 	jwt.RegisteredClaims
 }
 
@@ -44,15 +46,26 @@ func NewCommanderJWTIssuer(privateKey *rsa.PrivateKey, issuer string, expiry tim
 	}
 }
 
-// Issue signs a new JWT for the given FID and commander name.
+// Issue signs a new JWT for the given FID, commander name, and scopes.
 // The jti claim is a random UUID. Returns the signed token string and the jti.
-func (i *CommanderJWTIssuer) Issue(fid, name string) (tokenString string, jti string, err error) {
+// Scopes are flattened into a []string for JSON round-tripping — authz.Scope
+// is a string alias so the conversion is a simple per-element cast.
+func (i *CommanderJWTIssuer) Issue(fid, name string, scopes []authz.Scope) (tokenString string, jti string, err error) {
 	jti = uuid.NewString()
 	now := time.Now()
 
+	var scopeStrings []string
+	if len(scopes) > 0 {
+		scopeStrings = make([]string, 0, len(scopes))
+		for _, scope := range scopes {
+			scopeStrings = append(scopeStrings, string(scope))
+		}
+	}
+
 	claims := CommanderClaims{
-		FID:  fid,
-		Name: name,
+		FID:    fid,
+		Name:   name,
+		Scopes: scopeStrings,
 		RegisteredClaims: jwt.RegisteredClaims{
 			Issuer:    i.issuer,
 			IssuedAt:  jwt.NewNumericDate(now),

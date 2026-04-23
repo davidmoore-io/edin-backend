@@ -98,7 +98,7 @@ func TestAuthRefresh_FrontierTokenExpiredNoRefreshToken_Returns401(t *testing.T)
 	rdb, mr := newRefreshMiniredis(t)
 	srv := newCommanderAuthTestServer(t, "http://frontier.invalid", rdb, 5*time.Second)
 
-	tokenStr, jti, err := srv.commanderJWTIssuer.Issue("F1234", "Test Commander")
+	tokenStr, jti, err := srv.commanderJWTIssuer.Issue("F1234", "Test Commander", nil)
 	require.NoError(t, err)
 
 	// Token is expired, no refresh token.
@@ -119,7 +119,7 @@ func TestAuthRefresh_ValidToken_IssuesNewJWT(t *testing.T) {
 	// Frontier server not actually called (token not expired).
 	srv := newCommanderAuthTestServer(t, "http://frontier.invalid", rdb, 5*time.Second)
 
-	tokenStr, jti, err := srv.commanderJWTIssuer.Issue("F2504", "Pattern State")
+	tokenStr, jti, err := srv.commanderJWTIssuer.Issue("F2504", "Pattern State", nil)
 	require.NoError(t, err)
 
 	// Frontier token still valid (expires in 1 hour).
@@ -158,7 +158,7 @@ func TestAuthRefresh_OldJTIRevoked(t *testing.T) {
 	rdb, mr := newRefreshMiniredis(t)
 	srv := newCommanderAuthTestServer(t, "http://frontier.invalid", rdb, 5*time.Second)
 
-	tokenStr, jti, err := srv.commanderJWTIssuer.Issue("F2504", "Pattern State")
+	tokenStr, jti, err := srv.commanderJWTIssuer.Issue("F2504", "Pattern State", nil)
 	require.NoError(t, err)
 
 	seedFrontierToken(t, mr, jti, 1*time.Hour, "ref-token", false)
@@ -196,7 +196,7 @@ func TestAuthRefresh_NewJTIIssuedForNewFrontierTokens(t *testing.T) {
 	rdb, mr := newRefreshMiniredis(t)
 	srv := newCommanderAuthTestServer(t, frontierSrv.URL, rdb, 5*time.Second)
 
-	tokenStr, jti, err := srv.commanderJWTIssuer.Issue("F2504", "Pattern State")
+	tokenStr, jti, err := srv.commanderJWTIssuer.Issue("F2504", "Pattern State", nil)
 	require.NoError(t, err)
 
 	// Frontier access token is expired → will trigger refresh.
@@ -252,7 +252,7 @@ func TestAuthRefresh_FrontierTokenExpired_UsesRefreshToken(t *testing.T) {
 	rdb, mr := newRefreshMiniredis(t)
 	srv := newCommanderAuthTestServer(t, frontierSrv.URL, rdb, 5*time.Second)
 
-	tokenStr, jti, err := srv.commanderJWTIssuer.Issue("F2504", "Pattern State")
+	tokenStr, jti, err := srv.commanderJWTIssuer.Issue("F2504", "Pattern State", nil)
 	require.NoError(t, err)
 
 	// Frontier token is expired, but refresh token is available.
@@ -294,7 +294,7 @@ func TestAuthRefresh_CAPIPending_RetrySucceeds_UpdatesName(t *testing.T) {
 	srv := newCommanderAuthTestServer(t, frontierSrv.URL, rdb, 5*time.Second)
 
 	// Issue token with placeholder name (capi_pending).
-	tokenStr, jti, err := srv.commanderJWTIssuer.Issue("F9999", "Unknown Commander")
+	tokenStr, jti, err := srv.commanderJWTIssuer.Issue("F9999", "Unknown Commander", nil)
 	require.NoError(t, err)
 
 	// Frontier token expired, capi_pending=true.

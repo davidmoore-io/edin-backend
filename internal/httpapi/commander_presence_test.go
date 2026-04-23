@@ -28,7 +28,7 @@ func newPresenceTestServer(t *testing.T) *Server {
 // bearerReqPost constructs an authenticated POST request for the given fid.
 func bearerReqPost(t *testing.T, srv *Server, fid, name, path string, body []byte) *http.Request {
 	t.Helper()
-	token, _, err := srv.commanderJWTIssuer.Issue(fid, name)
+	token, _, err := srv.commanderJWTIssuer.Issue(fid, name, nil)
 	require.NoError(t, err)
 
 	var reader *bytes.Reader
@@ -48,7 +48,7 @@ func bearerReqPost(t *testing.T, srv *Server, fid, name, path string, body []byt
 // bearerReqGet constructs an authenticated GET request for the given fid.
 func bearerReqGet(t *testing.T, srv *Server, fid, name, path string) *http.Request {
 	t.Helper()
-	token, _, err := srv.commanderJWTIssuer.Issue(fid, name)
+	token, _, err := srv.commanderJWTIssuer.Issue(fid, name, nil)
 	require.NoError(t, err)
 	req := httptest.NewRequest(http.MethodGet, path, nil)
 	req.Header.Set("Authorization", "Bearer "+token)
