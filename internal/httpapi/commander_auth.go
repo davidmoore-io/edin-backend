@@ -686,14 +686,20 @@ func (s *Server) handleCommanderAuthRefresh(w http.ResponseWriter, r *http.Reque
 	}
 
 	// Refresh rotates the jti — the old jti has already been revoked
-	// via RevokeJTI above; remove it from the per-FID tracking set and
-	// add the new jti. Preserves the invariant that every active jti
-	// for a FID is enumerable via SMEMBERS commander:jtis:{fid} —
-	// Task 8's revokeAllSessions depends on this.
+	// via RevokeJTI above; update the per-FID tracking set so the
+	// invariant (every active jti enumerable via SMEMBERS
+	// commander:jtis:{fid}) holds. Order matters: SAdd the new jti
+	// first so that a partial failure (SAdd succeeds, SRem fails)
+	// leaves the new jti tracked — a stale old member is harmless
+	// (revokeAllSessions would re-revoke an already-revoked token),
+	// but an untracked active jti is NOT (revokeAllSessions would
+	// miss it). Task 8's revokeAllSessions depends on this.
 	if s.redisClient != nil {
-		_ = s.redisClient.SRem(ctx, "commander:jtis:"+fid, oldJTI).Err()
 		if err := s.redisClient.SAdd(ctx, "commander:jtis:"+fid, newJTI).Err(); err != nil {
-			slog.Warn("commander_jti_track_failed", "fid", fid, "err", err)
+			slog.Error("commander_jti_track_failed", "fid", fid, "new_jti", newJTI, "err", err)
+		}
+		if err := s.redisClient.SRem(ctx, "commander:jtis:"+fid, oldJTI).Err(); err != nil {
+			slog.Warn("commander_jti_untrack_failed", "fid", fid, "old_jti", oldJTI, "err", err)
 		}
 		_ = s.redisClient.Expire(ctx, "commander:jtis:"+fid, 24*time.Hour).Err()
 	}
