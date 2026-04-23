@@ -169,16 +169,33 @@ func MCPToolDefinitions() []mcp.Tool {
 	}
 }
 
+// allRegisteredToolScopes is the union of every scope declared in toolScopes.
+// It is the explicit scope set a caller needs to see every registered tool
+// after Task 2 made toolVisible strictly fail-closed (no admin/ops bypass).
+//
+// Kept in one place so the three "every tool" helpers below stay in sync; if a
+// new scope is added to toolScopes, append it here or the helpers will start
+// silently dropping tools.
+var allRegisteredToolScopes = []authz.Scope{
+	authz.ScopeAdmin,
+	authz.ScopeLlmOperator,
+	authz.ScopeKaineChat,
+	authz.ScopeCopilotChat,
+	authz.ScopeGalaxyRead,
+	authz.ScopeKaineMining,
+	authz.ScopeCommanderData,
+}
+
 // AnthropicsToolDefinitions returns tool definitions for Anthropic Messages API.
 // Generated from MCPToolDefinitions() via the converter, plus the WebSearch tool.
 // Returns every registered tool — intended for callers that have already
 // authorised the subject out-of-band (admin CLI, MCP client). Use
 // AnthropicsToolDefinitionsForScopes when a scope-filtered view is required.
 func AnthropicsToolDefinitions() []sdk.ToolUnionParam {
-	// Pass the admin/ops scope set so the filter's admin bypass kicks in and
+	// Pass the full union of tool-declared scopes so the fail-closed filter
 	// returns every registered tool without us having to expand the registry
 	// inline here.
-	defs := MCPToAnthropicAll(MCPToolDefinitions(), []authz.Scope{authz.ScopeAdmin})
+	defs := MCPToAnthropicAll(MCPToolDefinitions(), allRegisteredToolScopes)
 	defs = append(defs, sdk.ToolUnionParam{
 		OfWebSearchTool20250305: &sdk.WebSearchTool20250305Param{
 			Name: constant.ValueOf[constant.WebSearch](),
@@ -190,9 +207,8 @@ func AnthropicsToolDefinitions() []sdk.ToolUnionParam {
 
 // AnthropicsToolDefinitionsForScopes returns tool definitions filtered against
 // the caller's scope set via toolScopes. A tool is included when the caller
-// holds its required scope, when the required scope is empty, or when the
-// caller holds ScopeAdmin / ScopeLlmOperator. Tools not registered in
-// toolScopes are refused (fail-closed).
+// holds its required scope or when the required scope is empty. Tools not
+// registered in toolScopes are refused (fail-closed).
 //
 // WebSearch is always appended because it is an SDK-provided server-side tool
 // rather than an EDIN-dispatched tool and therefore falls outside the
@@ -243,13 +259,13 @@ var slimDescriptions = map[ToolName]string{
 // Returns every registered tool — intended for admin/ops contexts. Use
 // SlimBetaToolDefinitionsForScopes to filter by caller scope.
 func SlimBetaToolDefinitions() []sdk.BetaToolUnionParam {
-	return SlimBetaToolDefinitionsForScopes([]authz.Scope{authz.ScopeAdmin})
+	return SlimBetaToolDefinitionsForScopes(allRegisteredToolScopes)
 }
 
 // SlimBetaToolDefinitionsForScopes returns slim beta tool definitions filtered
 // against the caller's scope set via toolScopes. Filter semantics match
-// MCPToAnthropicAll: admin/ops bypass per-tool scopes; empty required scope is
-// public to any authenticated caller; unregistered tools are refused.
+// MCPToAnthropicAll: empty required scope is public to any authenticated
+// caller; unregistered tools are refused (fail-closed).
 func SlimBetaToolDefinitionsForScopes(callerScopes []authz.Scope) []sdk.BetaToolUnionParam {
 	fullDefs := MCPToolDefinitions()
 	result := make([]sdk.BetaToolUnionParam, 0, len(fullDefs)+1)
@@ -289,7 +305,7 @@ func SlimBetaToolDefinitionsForScopes(callerScopes []authz.Scope) []sdk.BetaTool
 // BetaToolDefinitions returns tool definitions for the Anthropic Beta Messages
 // API — every registered tool plus WebSearch. Intended for admin/ops contexts.
 func BetaToolDefinitions() []sdk.BetaToolUnionParam {
-	return BetaToolDefinitionsForScopes([]authz.Scope{authz.ScopeAdmin})
+	return BetaToolDefinitionsForScopes(allRegisteredToolScopes)
 }
 
 // BetaToolDefinitionsForScopes returns beta tool definitions filtered against

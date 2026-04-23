@@ -72,10 +72,10 @@ func TestMCPToAnthropic_AllToolsConvertWithoutError(t *testing.T) {
 		t.Fatal("expected MCP tools to be non-empty")
 	}
 
-	// Pass admin scope so every tool is included regardless of per-tool
-	// scope — we're asserting the converter produces matching SDK structs
-	// here, not the filter behaviour.
-	results := MCPToAnthropicAll(mcpTools, []authz.Scope{authz.ScopeAdmin})
+	// Pass the full union of tool-declared scopes so every tool passes the
+	// fail-closed per-tool scope check — we're asserting the converter
+	// produces matching SDK structs here, not the filter behaviour.
+	results := MCPToAnthropicAll(mcpTools, allRegisteredToolScopes)
 	if len(results) != len(mcpTools) {
 		t.Fatalf("expected %d results, got %d", len(mcpTools), len(results))
 	}
@@ -123,7 +123,7 @@ func TestMCPToAnthropic_RoundTrip(t *testing.T) {
 
 func TestMCPToBeta_AllToolsConvertWithoutError(t *testing.T) {
 	mcpTools := MCPToolDefinitions()
-	results := MCPToBetaAll(mcpTools, []authz.Scope{authz.ScopeAdmin})
+	results := MCPToBetaAll(mcpTools, allRegisteredToolScopes)
 	if len(results) != len(mcpTools) {
 		t.Fatalf("expected %d beta results, got %d", len(mcpTools), len(results))
 	}
@@ -184,11 +184,15 @@ func TestAnthropicsToolDefinitionsForScopes_KaineFiltersCorrectly(t *testing.T) 
 	}
 }
 
-func TestAnthropicsToolDefinitionsForScopes_AdminGetsAll(t *testing.T) {
-	adminTools := AnthropicsToolDefinitionsForScopes([]authz.Scope{authz.ScopeAdmin})
+func TestAnthropicsToolDefinitionsForScopes_FullScopeUnionGetsAll(t *testing.T) {
+	// Pass the union of every scope declared in toolScopes. With the
+	// fail-closed filter (no admin/ops bypass), this is the minimal scope
+	// set that must yield the full tool list. Holding only ScopeAdmin (the
+	// Discord-admin identity marker) is not sufficient and must not be.
+	fullScopeTools := AnthropicsToolDefinitionsForScopes(allRegisteredToolScopes)
 	allTools := AnthropicsToolDefinitions()
-	if len(adminTools) != len(allTools) {
-		t.Fatalf("expected admin to get all %d tools, got %d", len(allTools), len(adminTools))
+	if len(fullScopeTools) != len(allTools) {
+		t.Fatalf("expected full scope union to yield all %d tools, got %d", len(allTools), len(fullScopeTools))
 	}
 }
 

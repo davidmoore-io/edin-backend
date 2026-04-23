@@ -174,29 +174,18 @@ func (e *Executor) Invoke(ctx context.Context, name string, args map[string]any)
 	}
 
 	// Scope-driven authorisation. Consults the single source of truth —
-	// toolScopes — against the caller's scope context. Admin/ops callers
-	// (ScopeAdmin / ScopeLlmOperator) bypass this fine-grained filter.
+	// toolScopes — against the caller's scope context.
 	//
 	// Fail-closed on missing registry entries: a tool without a toolScopes
 	// entry is a coding mistake, not an implicit-public tool. Task 1's
 	// guardrail test catches this at build time; this runtime check is
 	// defense-in-depth against a merge that ignored the test.
-	callerScopes := authz.ScopesFromContext(ctx)
-	hasSuperuser := false
-	for _, s := range callerScopes {
-		if s == authz.ScopeAdmin || s == authz.ScopeLlmOperator {
-			hasSuperuser = true
-			break
-		}
+	required, registered := toolScopes[toolName]
+	if !registered {
+		return nil, fmt.Errorf("tool %q has no declared scope — refusing to invoke", name)
 	}
-	if !hasSuperuser {
-		required, registered := toolScopes[toolName]
-		if !registered {
-			return nil, fmt.Errorf("tool %q has no declared scope — refusing to invoke", name)
-		}
-		if required != "" && !authz.Allow(callerScopes, required) {
-			return nil, fmt.Errorf("tool %q not available in this context", name)
-		}
+	if required != "" && !authz.Allow(authz.ScopesFromContext(ctx), required) {
+		return nil, fmt.Errorf("tool %q not available in this context", name)
 	}
 
 	switch toolName {

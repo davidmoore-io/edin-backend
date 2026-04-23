@@ -93,7 +93,21 @@ func TestRunnerToolDefsForScope_UsesSlimForKaine(t *testing.T) {
 
 func TestRunnerToolDefsForScope_UsesFullForOps(t *testing.T) {
 	runner := NewRunner(nil, nil, "", 5)
-	ctx := authz.ContextWithScopes(context.Background(), authz.ScopeLlmOperator)
+	// An ops caller ("kaine-god") holds ScopeLlmOperator plus the
+	// fine-grained scopes galaxy tools require. With scope-driven
+	// fail-closed filtering, ScopeLlmOperator alone is deliberately
+	// insufficient to see galaxy_market — the test here pins the UX
+	// decision (ops path returns the FULL, non-slim definitions), not
+	// an authz bypass.
+	ctx := authz.ContextWithScopes(
+		context.Background(),
+		authz.ScopeAdmin,
+		authz.ScopeLlmOperator,
+		authz.ScopeKaineChat,
+		authz.ScopeGalaxyRead,
+		authz.ScopeKaineMining,
+		authz.ScopeCommanderData,
+	)
 
 	betaDefs := runner.betaToolDefsForContext(ctx)
 	if len(betaDefs) == 0 {
