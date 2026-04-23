@@ -1,6 +1,7 @@
 package tools
 
 import (
+	"sort"
 	"testing"
 
 	"github.com/edin-space/edin-backend/internal/authz"
@@ -71,7 +72,10 @@ func TestMCPToAnthropic_AllToolsConvertWithoutError(t *testing.T) {
 		t.Fatal("expected MCP tools to be non-empty")
 	}
 
-	results := MCPToAnthropicAll(mcpTools)
+	// Pass admin scope so every tool is included regardless of per-tool
+	// scope — we're asserting the converter produces matching SDK structs
+	// here, not the filter behaviour.
+	results := MCPToAnthropicAll(mcpTools, []authz.Scope{authz.ScopeAdmin})
 	if len(results) != len(mcpTools) {
 		t.Fatalf("expected %d results, got %d", len(mcpTools), len(results))
 	}
@@ -119,7 +123,7 @@ func TestMCPToAnthropic_RoundTrip(t *testing.T) {
 
 func TestMCPToBeta_AllToolsConvertWithoutError(t *testing.T) {
 	mcpTools := MCPToolDefinitions()
-	results := MCPToBetaAll(mcpTools)
+	results := MCPToBetaAll(mcpTools, []authz.Scope{authz.ScopeAdmin})
 	if len(results) != len(mcpTools) {
 		t.Fatalf("expected %d beta results, got %d", len(mcpTools), len(results))
 	}
@@ -145,33 +149,43 @@ func TestAnthropicsToolDefinitions_MatchesMCPCount(t *testing.T) {
 	}
 }
 
-func TestAnthropicsToolDefinitionsForScope_KaineFiltersCorrectly(t *testing.T) {
-	kaineTools := AnthropicsToolDefinitionsForScope(authz.ScopeKaineChat)
+// kaineDefaultScopes is the scope set granted to a "kaine-approved" user: the
+// coarse endpoint gate plus galaxy read and mining intel. Used to pin legacy
+// kaine visibility in the parity tests.
+var kaineDefaultScopes = []authz.Scope{
+	authz.ScopeKaineChat,
+	authz.ScopeGalaxyRead,
+	authz.ScopeKaineMining,
+}
+
+// copilotDefaultScopes is the scope set granted to an "edin-copilot" user: the
+// coarse endpoint gate plus galaxy read and commander data. Used to pin legacy
+// copilot visibility in the parity tests.
+var copilotDefaultScopes = []authz.Scope{
+	authz.ScopeCopilotChat,
+	authz.ScopeGalaxyRead,
+	authz.ScopeCommanderData,
+}
+
+func TestAnthropicsToolDefinitionsForScopes_KaineFiltersCorrectly(t *testing.T) {
+	kaineTools := AnthropicsToolDefinitionsForScopes(kaineDefaultScopes)
 	if len(kaineTools) == 0 {
 		t.Fatal("expected Kaine scope to return some tools")
 	}
 
-	// Verify no ops tools leak through
 	for _, tool := range kaineTools {
-		if tool.OfTool != nil {
-			name := ToolName(tool.OfTool.Name)
-			if opsOnlyTools[name] {
-				t.Fatalf("ops tool %q leaked into Kaine scope", name)
-			}
-			if !kaineAllowedTools[name] {
-				t.Fatalf("tool %q is not in Kaine allowed list", name)
-			}
+		if tool.OfTool == nil {
+			continue
 		}
-	}
-
-	// Verify count matches expected Kaine tools
-	if len(kaineTools) != len(kaineAllowedTools) {
-		t.Fatalf("expected %d Kaine tools, got %d", len(kaineAllowedTools), len(kaineTools))
+		name := ToolName(tool.OfTool.Name)
+		if opsOnlyTools[name] {
+			t.Fatalf("ops tool %q leaked into Kaine scope", name)
+		}
 	}
 }
 
-func TestAnthropicsToolDefinitionsForScope_AdminGetsAll(t *testing.T) {
-	adminTools := AnthropicsToolDefinitionsForScope(authz.ScopeAdmin)
+func TestAnthropicsToolDefinitionsForScopes_AdminGetsAll(t *testing.T) {
+	adminTools := AnthropicsToolDefinitionsForScopes([]authz.Scope{authz.ScopeAdmin})
 	allTools := AnthropicsToolDefinitions()
 	if len(adminTools) != len(allTools) {
 		t.Fatalf("expected admin to get all %d tools, got %d", len(allTools), len(adminTools))
@@ -188,8 +202,8 @@ func TestBetaToolDefinitions_MatchesMCPCount(t *testing.T) {
 	}
 }
 
-func TestBetaToolDefinitionsForScope_KaineFiltersCorrectly(t *testing.T) {
-	kaineTools := BetaToolDefinitionsForScope(authz.ScopeKaineChat)
+func TestBetaToolDefinitionsForScopes_KaineFiltersCorrectly(t *testing.T) {
+	kaineTools := BetaToolDefinitionsForScopes(kaineDefaultScopes)
 	if len(kaineTools) == 0 {
 		t.Fatal("expected Kaine scope to return some beta tools")
 	}
@@ -200,6 +214,130 @@ func TestBetaToolDefinitionsForScope_KaineFiltersCorrectly(t *testing.T) {
 			if opsOnlyTools[name] {
 				t.Fatalf("ops tool %q leaked into Kaine beta scope", name)
 			}
+		}
+	}
+}
+
+// legacyKaineTools pins the exact set of tool names that the deleted
+// kaineAllowedTools map used to allow. The list is captured as the source of
+// truth for the parity test below so that any drift in scope-driven filtering
+// fails the test with a byte-for-byte diff.
+//
+// These 24 strings match the MCP tool Name field (what reaches the model), not
+// Go identifiers. See the "kaine-approved" group in authz/groups.go for the
+// scope set that must reproduce this list.
+var legacyKaineTools = []string{
+	"bgs_guide_search",
+	"describe_tool",
+	"galaxy_bodies",
+	"galaxy_expansion_check",
+	"galaxy_expansion_frontier",
+	"galaxy_expansion_targets",
+	"galaxy_faction",
+	"galaxy_fleet_carrier",
+	"galaxy_history",
+	"galaxy_ltd_buyers",
+	"galaxy_market",
+	"galaxy_nearby_powerplay",
+	"galaxy_plasmium_buyers",
+	"galaxy_power",
+	"galaxy_powerplay_cycle",
+	"galaxy_query",
+	"galaxy_schema",
+	"galaxy_signals",
+	"galaxy_station",
+	"galaxy_stats",
+	"galaxy_system",
+	"retrieve_carrier_route",
+	"spansh_query",
+	"system_profile",
+}
+
+// legacyCopilotTools pins the exact set of tool names that the deleted
+// copilotAllowedTools map used to allow. 23 entries — copilot is kaine minus
+// the mining-intel tools (plasmium, LTD, schema) plus the commander tools.
+var legacyCopilotTools = []string{
+	"bgs_guide_search",
+	"commander_events",
+	"commander_location",
+	"describe_tool",
+	"galaxy_bodies",
+	"galaxy_expansion_check",
+	"galaxy_expansion_frontier",
+	"galaxy_expansion_targets",
+	"galaxy_faction",
+	"galaxy_fleet_carrier",
+	"galaxy_history",
+	"galaxy_market",
+	"galaxy_nearby_powerplay",
+	"galaxy_power",
+	"galaxy_powerplay_cycle",
+	"galaxy_query",
+	"galaxy_signals",
+	"galaxy_station",
+	"galaxy_stats",
+	"galaxy_system",
+	"retrieve_carrier_route",
+	"spansh_query",
+	"system_profile",
+}
+
+// TestConvert_FilterByKaineScopes_MatchesLegacyKaineTools pins the derived
+// Kaine tool set byte-for-byte against the legacy kaineAllowedTools map. This
+// is the safety net for Task 2's scope-driven filter migration — if the
+// toolScopes registry drifts from the legacy two-map model, this test fails
+// with a sorted diff of the two lists.
+//
+// Combined scope set is {kaine_chat, galaxy_read, kaine_mining}, matching the
+// "kaine-approved" Authentik group.
+func TestConvert_FilterByKaineScopes_MatchesLegacyKaineTools(t *testing.T) {
+	defs := MCPToAnthropicAll(MCPToolDefinitions(), kaineDefaultScopes)
+
+	var got []string
+	for _, tool := range defs {
+		if tool.OfTool != nil {
+			got = append(got, tool.OfTool.Name)
+		}
+	}
+	sort.Strings(got)
+
+	want := append([]string{}, legacyKaineTools...)
+	sort.Strings(want)
+
+	if len(got) != len(want) {
+		t.Fatalf("kaine scope filter size mismatch: got %d tools, want %d\ngot:  %v\nwant: %v", len(got), len(want), got, want)
+	}
+	for i := range got {
+		if got[i] != want[i] {
+			t.Fatalf("kaine scope filter drift at index %d: got %q, want %q\ngot:  %v\nwant: %v", i, got[i], want[i], got, want)
+		}
+	}
+}
+
+// TestConvert_FilterByCopilotScopes_MatchesLegacyCopilotTools pins the derived
+// copilot tool set byte-for-byte against the legacy copilotAllowedTools map.
+// Combined scope set is {copilot_chat, galaxy_read, commander_data}, matching
+// the "edin-copilot" Authentik group.
+func TestConvert_FilterByCopilotScopes_MatchesLegacyCopilotTools(t *testing.T) {
+	defs := MCPToAnthropicAll(MCPToolDefinitions(), copilotDefaultScopes)
+
+	var got []string
+	for _, tool := range defs {
+		if tool.OfTool != nil {
+			got = append(got, tool.OfTool.Name)
+		}
+	}
+	sort.Strings(got)
+
+	want := append([]string{}, legacyCopilotTools...)
+	sort.Strings(want)
+
+	if len(got) != len(want) {
+		t.Fatalf("copilot scope filter size mismatch: got %d tools, want %d\ngot:  %v\nwant: %v", len(got), len(want), got, want)
+	}
+	for i := range got {
+		if got[i] != want[i] {
+			t.Fatalf("copilot scope filter drift at index %d: got %q, want %q\ngot:  %v\nwant: %v", i, got[i], want[i], got, want)
 		}
 	}
 }

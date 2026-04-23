@@ -41,7 +41,15 @@ func TestDescribeTool_UnknownToolReturnsError(t *testing.T) {
 }
 
 func TestDescribeTool_AllKaineToolsHaveGuidance(t *testing.T) {
-	for name := range kaineAllowedTools {
+	// Derive the Kaine tool set from the scope-driven filter rather than
+	// the deleted kaineAllowedTools map — this is the same source of truth
+	// the production tool-visibility path uses.
+	defs := MCPToAnthropicAll(MCPToolDefinitions(), kaineDefaultScopes)
+	for _, def := range defs {
+		if def.OfTool == nil {
+			continue
+		}
+		name := ToolName(def.OfTool.Name)
 		// Skip simple/parameterless tools and describe_tool itself
 		if name == ToolDescribeTool {
 			continue

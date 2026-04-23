@@ -9,10 +9,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/gorilla/websocket"
 	"github.com/edin-space/edin-backend/internal/assistant"
 	"github.com/edin-space/edin-backend/internal/authz"
 	"github.com/edin-space/edin-backend/internal/llm"
+	"github.com/gorilla/websocket"
 )
 
 // ChatWSMessageType identifies the type of WebSocket message.
@@ -352,9 +352,16 @@ func (s *Server) handleChatMessage(session *chatSession, content string) {
 		Content: "Processing your question...",
 	})
 
-	// Set up context with authorization - Kaine chat gets limited tool access
+	// Set up context with authorization. Scopes derive from the
+	// authenticated user's Authentik groups (see authz.ScopesForGroups)
+	// plus ScopeKaineChat, which is the coarse endpoint gate for any
+	// request that reaches this handler. The endpoint-level auth
+	// middleware has already asserted chat access, so ScopeKaineChat is
+	// safe to add unconditionally here — it keeps downstream gate checks
+	// uniform regardless of the group mapping.
 	ctx := assistant.WithContext(context.Background(), session.sessionID, session.user.Sub)
-	ctx = authz.ContextWithScopes(ctx, authz.ScopeKaineChat)
+	scopes := append(authz.ScopesForGroups(session.user.Groups), authz.ScopeKaineChat)
+	ctx = authz.ContextWithScopes(ctx, scopes...)
 
 	// Create progress callback that streams to WebSocket
 	onProgress := func(event assistant.ProgressEvent) {

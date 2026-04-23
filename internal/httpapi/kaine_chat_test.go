@@ -5,15 +5,19 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"sort"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/gorilla/websocket"
+
 	"github.com/edin-space/edin-backend/internal/assistant"
+	"github.com/edin-space/edin-backend/internal/authz"
 	"github.com/edin-space/edin-backend/internal/config"
 	"github.com/edin-space/edin-backend/internal/llm"
 	"github.com/edin-space/edin-backend/internal/observability"
+	"github.com/edin-space/edin-backend/internal/tools"
 )
 
 // chatMockValidator provides JWT validation for chat tests.
@@ -464,6 +468,68 @@ func TestTruncate(t *testing.T) {
 				t.Errorf("truncate(%q, %d) = %q, want %q", tt.input, tt.maxLen, result, tt.expected)
 			}
 		})
+	}
+}
+
+// TestKaineChatScopeDerivation_ApprovedUser_SeesLegacyKaineTools mirrors the
+// scope-threading that handleChatMessage performs for an authenticated Kaine
+// chat user: ScopesForGroups(user.Groups) + ScopeKaineChat. It asserts the
+// derived scope set yields exactly the legacy kaine-approved tool surface when
+// run through the scope-driven filter, so any regression in group→scope→tool
+// mapping is caught at the httpapi boundary, not just in tools/.
+func TestKaineChatScopeDerivation_ApprovedUser_SeesLegacyKaineTools(t *testing.T) {
+	user := &KaineUser{Sub: "approved-user", Groups: []string{"kaine-approved"}}
+
+	// Reproduce the exact derivation from kaine_chat.go's handleChatMessage.
+	scopes := append(authz.ScopesForGroups(user.Groups), authz.ScopeKaineChat)
+
+	defs := tools.MCPToAnthropicAll(tools.MCPToolDefinitions(), scopes)
+
+	var got []string
+	for _, def := range defs {
+		if def.OfTool != nil {
+			got = append(got, def.OfTool.Name)
+		}
+	}
+	sort.Strings(got)
+
+	// Legacy kaine-approved tool surface — 24 entries. Kept in sync with
+	// internal/tools/convert_test.go's legacyKaineTools.
+	want := []string{
+		"bgs_guide_search",
+		"describe_tool",
+		"galaxy_bodies",
+		"galaxy_expansion_check",
+		"galaxy_expansion_frontier",
+		"galaxy_expansion_targets",
+		"galaxy_faction",
+		"galaxy_fleet_carrier",
+		"galaxy_history",
+		"galaxy_ltd_buyers",
+		"galaxy_market",
+		"galaxy_nearby_powerplay",
+		"galaxy_plasmium_buyers",
+		"galaxy_power",
+		"galaxy_powerplay_cycle",
+		"galaxy_query",
+		"galaxy_schema",
+		"galaxy_signals",
+		"galaxy_station",
+		"galaxy_stats",
+		"galaxy_system",
+		"retrieve_carrier_route",
+		"spansh_query",
+		"system_profile",
+	}
+	sort.Strings(want)
+
+	if len(got) != len(want) {
+		t.Fatalf("kaine-approved derived tool set size mismatch: got %d, want %d\ngot:  %v\nwant: %v", len(got), len(want), got, want)
+	}
+	for i := range got {
+		if got[i] != want[i] {
+			t.Fatalf("kaine-approved derived tool set drift at %d: got %q, want %q\ngot:  %v\nwant: %v", i, got[i], want[i], got, want)
+		}
 	}
 }
 

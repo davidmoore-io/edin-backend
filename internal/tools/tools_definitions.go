@@ -4,8 +4,8 @@ import (
 	sdk "github.com/anthropics/anthropic-sdk-go"
 	"github.com/anthropics/anthropic-sdk-go/packages/param"
 	"github.com/anthropics/anthropic-sdk-go/shared/constant"
-	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/edin-space/edin-backend/internal/authz"
+	"github.com/mark3labs/mcp-go/mcp"
 )
 
 // MCPToolDefinitions exposes the tool definitions for MCP clients.
@@ -171,8 +171,14 @@ func MCPToolDefinitions() []mcp.Tool {
 
 // AnthropicsToolDefinitions returns tool definitions for Anthropic Messages API.
 // Generated from MCPToolDefinitions() via the converter, plus the WebSearch tool.
+// Returns every registered tool — intended for callers that have already
+// authorised the subject out-of-band (admin CLI, MCP client). Use
+// AnthropicsToolDefinitionsForScopes when a scope-filtered view is required.
 func AnthropicsToolDefinitions() []sdk.ToolUnionParam {
-	defs := MCPToAnthropicAll(MCPToolDefinitions())
+	// Pass the admin/ops scope set so the filter's admin bypass kicks in and
+	// returns every registered tool without us having to expand the registry
+	// inline here.
+	defs := MCPToAnthropicAll(MCPToolDefinitions(), []authz.Scope{authz.ScopeAdmin})
 	defs = append(defs, sdk.ToolUnionParam{
 		OfWebSearchTool20250305: &sdk.WebSearchTool20250305Param{
 			Name: constant.ValueOf[constant.WebSearch](),
@@ -182,27 +188,24 @@ func AnthropicsToolDefinitions() []sdk.ToolUnionParam {
 	return defs
 }
 
-// AnthropicsToolDefinitionsForScope returns tool definitions filtered by authorization scope.
-// ScopeLlmOperator and ScopeAdmin get all tools; ScopeKaineChat gets only Elite Dangerous query tools.
-func AnthropicsToolDefinitionsForScope(scope authz.Scope) []sdk.ToolUnionParam {
-	allTools := AnthropicsToolDefinitions()
-
-	// Full access for ops and admin
-	if scope == authz.ScopeLlmOperator || scope == authz.ScopeAdmin {
-		return allTools
-	}
-
-	// Filter for Kaine context - only include allowed tools
-	var filtered []sdk.ToolUnionParam
-	for _, tool := range allTools {
-		if tool.OfTool != nil {
-			name := ToolName(tool.OfTool.Name)
-			if kaineAllowedTools[name] {
-				filtered = append(filtered, tool)
-			}
-		}
-	}
-	return filtered
+// AnthropicsToolDefinitionsForScopes returns tool definitions filtered against
+// the caller's scope set via toolScopes. A tool is included when the caller
+// holds its required scope, when the required scope is empty, or when the
+// caller holds ScopeAdmin / ScopeLlmOperator. Tools not registered in
+// toolScopes are refused (fail-closed).
+//
+// WebSearch is always appended because it is an SDK-provided server-side tool
+// rather than an EDIN-dispatched tool and therefore falls outside the
+// toolScopes registry.
+func AnthropicsToolDefinitionsForScopes(callerScopes []authz.Scope) []sdk.ToolUnionParam {
+	defs := MCPToAnthropicAll(MCPToolDefinitions(), callerScopes)
+	defs = append(defs, sdk.ToolUnionParam{
+		OfWebSearchTool20250305: &sdk.WebSearchTool20250305Param{
+			Name: constant.ValueOf[constant.WebSearch](),
+			Type: constant.ValueOf[constant.WebSearch20250305](),
+		},
+	})
+	return defs
 }
 
 // complexTools are tools that have detailed usage guidance in ToolGuidance.
@@ -232,17 +235,31 @@ var slimDescriptions = map[ToolName]string{
 	ToolBgsGuideSearch:          "Search the BGS reference guide. Use describe_tool first for landmark keywords, search tips, and strict grounding rules.",
 }
 
-// SlimBetaToolDefinitions returns beta tool definitions with slim descriptions for complex tools.
-// Simple/parameterless tools keep full definitions; complex tools get 1-line descriptions
-// with no parameter schemas (model should use describe_tool first).
+// SlimBetaToolDefinitions returns beta tool definitions with slim descriptions
+// for complex tools. Simple/parameterless tools keep full definitions; complex
+// tools get 1-line descriptions with no parameter schemas (model should use
+// describe_tool first).
+//
+// Returns every registered tool — intended for admin/ops contexts. Use
+// SlimBetaToolDefinitionsForScopes to filter by caller scope.
 func SlimBetaToolDefinitions() []sdk.BetaToolUnionParam {
+	return SlimBetaToolDefinitionsForScopes([]authz.Scope{authz.ScopeAdmin})
+}
+
+// SlimBetaToolDefinitionsForScopes returns slim beta tool definitions filtered
+// against the caller's scope set via toolScopes. Filter semantics match
+// MCPToAnthropicAll: admin/ops bypass per-tool scopes; empty required scope is
+// public to any authenticated caller; unregistered tools are refused.
+func SlimBetaToolDefinitionsForScopes(callerScopes []authz.Scope) []sdk.BetaToolUnionParam {
 	fullDefs := MCPToolDefinitions()
 	result := make([]sdk.BetaToolUnionParam, 0, len(fullDefs)+1)
 
 	for _, tool := range fullDefs {
 		name := ToolName(tool.Name)
+		if !toolVisible(callerScopes, name) {
+			continue
+		}
 		if complexTools[name] {
-			// Slim: short description, no params
 			desc := slimDescriptions[name]
 			result = append(result, sdk.BetaToolUnionParam{
 				OfTool: &sdk.BetaToolParam{
@@ -259,7 +276,6 @@ func SlimBetaToolDefinitions() []sdk.BetaToolUnionParam {
 		}
 	}
 
-	// Append WebSearch
 	result = append(result, sdk.BetaToolUnionParam{
 		OfWebSearchTool20250305: &sdk.BetaWebSearchTool20250305Param{
 			Name: constant.ValueOf[constant.WebSearch](),
@@ -270,43 +286,17 @@ func SlimBetaToolDefinitions() []sdk.BetaToolUnionParam {
 	return result
 }
 
-// SlimBetaToolDefinitionsForScope returns slim beta tool definitions filtered by scope.
-func SlimBetaToolDefinitionsForScope(scope authz.Scope) []sdk.BetaToolUnionParam {
-	allTools := SlimBetaToolDefinitions()
-
-	if scope == authz.ScopeLlmOperator || scope == authz.ScopeAdmin {
-		return allTools
-	}
-
-	if scope == authz.ScopeCopilotChat {
-		var filtered []sdk.BetaToolUnionParam
-		for _, tool := range allTools {
-			if tool.OfTool != nil {
-				name := ToolName(tool.OfTool.Name)
-				if copilotAllowedTools[name] {
-					filtered = append(filtered, tool)
-				}
-			}
-		}
-		return filtered
-	}
-
-	var filtered []sdk.BetaToolUnionParam
-	for _, tool := range allTools {
-		if tool.OfTool != nil {
-			name := ToolName(tool.OfTool.Name)
-			if kaineAllowedTools[name] {
-				filtered = append(filtered, tool)
-			}
-		}
-	}
-	return filtered
+// BetaToolDefinitions returns tool definitions for the Anthropic Beta Messages
+// API — every registered tool plus WebSearch. Intended for admin/ops contexts.
+func BetaToolDefinitions() []sdk.BetaToolUnionParam {
+	return BetaToolDefinitionsForScopes([]authz.Scope{authz.ScopeAdmin})
 }
 
-// BetaToolDefinitions returns tool definitions for the Anthropic Beta Messages API.
-// Generated from MCPToolDefinitions() via the converter, plus the WebSearch tool.
-func BetaToolDefinitions() []sdk.BetaToolUnionParam {
-	defs := MCPToBetaAll(MCPToolDefinitions())
+// BetaToolDefinitionsForScopes returns beta tool definitions filtered against
+// the caller's scope set via toolScopes. See MCPToAnthropicAll for filter
+// semantics.
+func BetaToolDefinitionsForScopes(callerScopes []authz.Scope) []sdk.BetaToolUnionParam {
+	defs := MCPToBetaAll(MCPToolDefinitions(), callerScopes)
 	defs = append(defs, sdk.BetaToolUnionParam{
 		OfWebSearchTool20250305: &sdk.BetaWebSearchTool20250305Param{
 			Name: constant.ValueOf[constant.WebSearch](),
@@ -314,24 +304,4 @@ func BetaToolDefinitions() []sdk.BetaToolUnionParam {
 		},
 	})
 	return defs
-}
-
-// BetaToolDefinitionsForScope returns beta tool definitions filtered by authorization scope.
-func BetaToolDefinitionsForScope(scope authz.Scope) []sdk.BetaToolUnionParam {
-	allTools := BetaToolDefinitions()
-
-	if scope == authz.ScopeLlmOperator || scope == authz.ScopeAdmin {
-		return allTools
-	}
-
-	var filtered []sdk.BetaToolUnionParam
-	for _, tool := range allTools {
-		if tool.OfTool != nil {
-			name := ToolName(tool.OfTool.Name)
-			if kaineAllowedTools[name] {
-				filtered = append(filtered, tool)
-			}
-		}
-	}
-	return filtered
 }

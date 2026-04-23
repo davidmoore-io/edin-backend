@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"sync"
 	"time"
+
+	"github.com/edin-space/edin-backend/internal/authz"
 )
 
 // CommanderChatUser identifies a commander who has completed the Frontier PKCE
@@ -27,6 +29,16 @@ import (
 type CommanderChatUser struct {
 	FID  string // Frontier ID, e.g. "F2504" — trust-root for all commander data access.
 	Name string // Display name, e.g. "Pattern State".
+
+	// Scopes granted to this chat session; populated from the JWT at
+	// token-exchange time and threaded onto the tool-executor context so
+	// per-tool authorisation flows through authz.ScopesFromContext.
+	//
+	// Task 2 populates this with a hardcoded default commander scope set
+	// ({copilot_chat, galaxy_read, commander_data}) at the token-issue
+	// site. Task 6 swaps the hardcode for scopes derived from the JWT's
+	// "scopes" claim.
+	Scopes []authz.Scope
 }
 
 // commanderChatNonceStore is an in-memory single-use nonce store with TTL for

@@ -13,6 +13,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/edin-space/edin-backend/internal/authz"
 	"github.com/edin-space/edin-backend/internal/frontier"
 	"github.com/edin-space/edin-backend/internal/security"
 	"github.com/redis/go-redis/v9"
@@ -452,7 +453,21 @@ func (s *Server) handleCommanderAuthToken(w http.ResponseWriter, r *http.Request
 	// Issue single-use nonce for the copilot WebSocket auth frame. The JWT was
 	// just validated above, so any consumer of this nonce is a fully-authenticated
 	// commander — no secondary role check is performed on the WS side.
-	user := &CommanderChatUser{FID: claims.FID, Name: claims.Name}
+	//
+	// Scopes are the default commander set for now — Task 6 in the
+	// Authentik commander access plan replaces this hardcode with scopes
+	// drawn from the JWT "scopes" claim. Until then every verified
+	// commander receives the same scope set, matching today's behaviour
+	// before this task.
+	user := &CommanderChatUser{
+		FID:  claims.FID,
+		Name: claims.Name,
+		Scopes: []authz.Scope{
+			authz.ScopeCopilotChat,
+			authz.ScopeGalaxyRead,
+			authz.ScopeCommanderData,
+		},
+	}
 	nonce := s.commanderNonceStore.Issue(user, cfg.NonceExpiry)
 
 	s.writeJSON(w, http.StatusOK, map[string]any{

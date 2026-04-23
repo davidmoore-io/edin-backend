@@ -331,11 +331,17 @@ func (s *Server) handleCopilotMessage(session *copilotChatSession, content strin
 		Content: "Processing your question...",
 	})
 
-	// Set up context with copilot authorization scope and commander FID for tools.
-	// FID comes exclusively from the validated JWT (via the nonce → CommanderChatUser
-	// pipeline) — never from request body or LLM tool input.
+	// Set up context with copilot authorization scopes and commander FID for
+	// tools. FID comes exclusively from the validated JWT (via the nonce →
+	// CommanderChatUser pipeline) — never from request body or LLM tool input.
+	//
+	// Scopes come from the CommanderChatUser attached to the consumed nonce.
+	// They were populated at token-issue time in handleCommanderAuthToken;
+	// Task 6 will replace the hardcoded default commander set with scopes
+	// derived from the JWT's "scopes" claim, at which point this call site
+	// stays unchanged.
 	ctx := assistant.WithContext(context.Background(), session.sessionID, session.user.FID)
-	ctx = authz.ContextWithScopes(ctx, authz.ScopeCopilotChat)
+	ctx = authz.ContextWithScopes(ctx, session.user.Scopes...)
 	ctx = tools.WithCommanderFID(ctx, session.user.FID)
 
 	// Create progress callback that streams to WebSocket.

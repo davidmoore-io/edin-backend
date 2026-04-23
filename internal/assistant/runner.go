@@ -19,12 +19,12 @@ import (
 
 // Beta headers required for context management.
 const (
-	betaCompact        = "compact-2026-01-12"
-	betaContextManage  = "context-management-2025-06-27"
-	compactionTrigger  = 100_000 // input tokens
-	clearToolsTrigger  = 50_000  // input tokens
-	clearToolsKeep     = 5       // keep last N tool uses
-	toolExecTimeout    = 60 * time.Second // per-tool execution timeout
+	betaCompact       = "compact-2026-01-12"
+	betaContextManage = "context-management-2025-06-27"
+	compactionTrigger = 100_000          // input tokens
+	clearToolsTrigger = 50_000           // input tokens
+	clearToolsKeep    = 5                // keep last N tool uses
+	toolExecTimeout   = 60 * time.Second // per-tool execution timeout
 )
 
 // CompactionInstructions tells the compaction model what to preserve.
@@ -83,30 +83,28 @@ func (r *Runner) SetSystemPrompt(content string) {
 	r.systemPrompt = strings.TrimSpace(content)
 }
 
-// betaToolDefsForContext returns beta tool definitions filtered by authorization scope.
-// Kaine scope gets slim definitions (forces describe_tool usage); ops/admin gets full.
+// betaToolDefsForContext returns beta tool definitions filtered by the
+// caller's scope set from context. Ops and admin receive full (non-slim)
+// definitions so operators see complete parameter schemas; everyone else gets
+// slim definitions that nudge the model to call describe_tool first.
+//
+// The "slim for chat users, full for ops" split is a UX decision, not an
+// authorisation one — the per-tool authz filter is identical in both branches
+// and flows through toolScopes via tools.SlimBetaToolDefinitionsForScopes /
+// tools.BetaToolDefinitionsForScopes.
 func (r *Runner) betaToolDefsForContext(ctx context.Context) []sdk.BetaToolUnionParam {
 	scopes := authz.ScopesFromContext(ctx)
+	if len(scopes) == 0 {
+		return nil
+	}
 
 	for _, s := range scopes {
 		if s == authz.ScopeLlmOperator || s == authz.ScopeAdmin {
-			return tools.BetaToolDefinitions()
+			return tools.BetaToolDefinitionsForScopes(scopes)
 		}
 	}
 
-	for _, s := range scopes {
-		if s == authz.ScopeKaineChat {
-			return tools.SlimBetaToolDefinitionsForScope(authz.ScopeKaineChat)
-		}
-	}
-
-	for _, s := range scopes {
-		if s == authz.ScopeCopilotChat {
-			return tools.SlimBetaToolDefinitionsForScope(authz.ScopeCopilotChat)
-		}
-	}
-
-	return nil
+	return tools.SlimBetaToolDefinitionsForScopes(scopes)
 }
 
 // Run executes a single conversational turn given prior session history and the new user message.

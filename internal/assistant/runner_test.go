@@ -56,7 +56,15 @@ func TestRunnerContextManagementConstants(t *testing.T) {
 
 func TestRunnerToolDefsForScope_UsesSlimForKaine(t *testing.T) {
 	runner := NewRunner(nil, nil, "", 5)
-	ctx := authz.ContextWithScopes(context.Background(), authz.ScopeKaineChat)
+	// Kaine-approved default scope set: the endpoint gate plus per-tool
+	// scopes. Passing only ScopeKaineChat would fail-closed against the
+	// scope-driven filter since galaxy_market requires ScopeGalaxyRead.
+	ctx := authz.ContextWithScopes(
+		context.Background(),
+		authz.ScopeKaineChat,
+		authz.ScopeGalaxyRead,
+		authz.ScopeKaineMining,
+	)
 
 	betaDefs := runner.betaToolDefsForContext(ctx)
 	if len(betaDefs) == 0 {

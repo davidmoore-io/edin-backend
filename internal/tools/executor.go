@@ -72,69 +72,6 @@ var opsOnlyTools = map[ToolName]bool{
 	ToolListServices:  true,
 }
 
-// kaineAllowedTools are available to Kaine chat users (ScopeKaineChat).
-// These are Elite Dangerous query tools that are safe for public access.
-var kaineAllowedTools = map[ToolName]bool{
-	// Galaxy database tools (EDIN - Elite Dangerous Intel Network)
-	ToolGalaxySystem:            true,
-	ToolGalaxyStation:           true,
-	ToolGalaxyFleetCarrier:      true,
-	ToolGalaxyBodies:            true,
-	ToolGalaxySignals:           true,
-	ToolGalaxyPower:             true,
-	ToolGalaxyFaction:           true,
-	ToolGalaxyStats:             true,
-	ToolGalaxyQuery:             true,
-	ToolGalaxyMarket:            true,
-	ToolGalaxyExpansionCheck:    true,
-	ToolGalaxyNearbyPowerplay:   true,
-	ToolGalaxyExpansionFrontier: true,
-	ToolGalaxyHistory:           true,
-	ToolGalaxyPowerplayCycle:    true,
-	ToolGalaxyPlasmiumBuyers:    true,
-	ToolGalaxyLTDBuyers:         true,
-	ToolGalaxyExpansionTargets:  true,
-	ToolGalaxySchema:            true,
-	// BGS reference material
-	ToolBgsGuideSearch: true,
-	// Elite intelligence tools
-	ToolSystemProfile: true,
-	// Carrier route planning
-	ToolSpanshQuery:   true,
-	ToolRetrieveRoute: true,
-	// Meta-tool
-	ToolDescribeTool: true,
-}
-
-// copilotAllowedTools are available to Copilot chat users (ScopeCopilotChat).
-// Same as Kaine except: plasmium_buyers and ltd_buyers excluded; commander tools included.
-var copilotAllowedTools = map[ToolName]bool{
-	ToolGalaxySystem:            true,
-	ToolGalaxyStation:           true,
-	ToolGalaxyFleetCarrier:      true,
-	ToolGalaxyBodies:            true,
-	ToolGalaxySignals:           true,
-	ToolGalaxyPower:             true,
-	ToolGalaxyFaction:           true,
-	ToolGalaxyStats:             true,
-	ToolGalaxyQuery:             true,
-	ToolGalaxyMarket:            true,
-	ToolGalaxyExpansionCheck:    true,
-	ToolGalaxyNearbyPowerplay:   true,
-	ToolGalaxyExpansionFrontier: true,
-	ToolGalaxyHistory:           true,
-	ToolGalaxyPowerplayCycle:    true,
-	ToolGalaxyExpansionTargets:  true,
-	ToolBgsGuideSearch:          true,
-	ToolSpanshQuery:             true,
-	ToolRetrieveRoute:           true,
-	ToolSystemProfile:           true,
-	ToolDescribeTool:            true,
-	ToolCommanderEvents:         true,
-	ToolCommanderLocation:       true,
-	// Explicitly excluded: ToolGalaxyPlasmiumBuyers, ToolGalaxyLTDBuyers
-}
-
 // UpdateBroadcaster is an interface for broadcasting system updates via WebSocket.
 type UpdateBroadcaster interface {
 	BroadcastSystemUpdate(systemName, source string)
@@ -143,16 +80,16 @@ type UpdateBroadcaster interface {
 
 // Executor wires low-level operations to tool invocations.
 type Executor struct {
-	ops            *ops.Manager
-	spansh         *spansh.Client
-	edsm           *edsm.Client
-	cacheStore     *store.CacheStore
-	memgraph       *memgraph.Client
-	kaineStore     *kaine.Store
-	commanderRepo  store.CommanderRepository
-	historyClient  HistoryQuerier
-	broadcaster    UpdateBroadcaster
-	logger         func(msg string)
+	ops           *ops.Manager
+	spansh        *spansh.Client
+	edsm          *edsm.Client
+	cacheStore    *store.CacheStore
+	memgraph      *memgraph.Client
+	kaineStore    *kaine.Store
+	commanderRepo store.CommanderRepository
+	historyClient HistoryQuerier
+	broadcaster   UpdateBroadcaster
+	logger        func(msg string)
 
 	// Commander event limits (0 means use package defaults: 20 / 100)
 	commanderEventsDefaultLimit int
@@ -233,6 +170,32 @@ func (e *Executor) Invoke(ctx context.Context, name string, args map[string]any)
 		}
 		if !hasOpsScope {
 			return nil, fmt.Errorf("tool %q is not available in this context", name)
+		}
+	}
+
+	// Scope-driven authorisation. Consults the single source of truth —
+	// toolScopes — against the caller's scope context. Admin/ops callers
+	// (ScopeAdmin / ScopeLlmOperator) bypass this fine-grained filter.
+	//
+	// Fail-closed on missing registry entries: a tool without a toolScopes
+	// entry is a coding mistake, not an implicit-public tool. Task 1's
+	// guardrail test catches this at build time; this runtime check is
+	// defense-in-depth against a merge that ignored the test.
+	callerScopes := authz.ScopesFromContext(ctx)
+	hasSuperuser := false
+	for _, s := range callerScopes {
+		if s == authz.ScopeAdmin || s == authz.ScopeLlmOperator {
+			hasSuperuser = true
+			break
+		}
+	}
+	if !hasSuperuser {
+		required, registered := toolScopes[toolName]
+		if !registered {
+			return nil, fmt.Errorf("tool %q has no declared scope — refusing to invoke", name)
+		}
+		if required != "" && !authz.Allow(callerScopes, required) {
+			return nil, fmt.Errorf("tool %q not available in this context", name)
 		}
 	}
 

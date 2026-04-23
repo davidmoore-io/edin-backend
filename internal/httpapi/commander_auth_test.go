@@ -14,6 +14,7 @@ import (
 
 	"github.com/alicebob/miniredis/v2"
 	"github.com/edin-space/edin-backend/internal/auth"
+	"github.com/edin-space/edin-backend/internal/authz"
 	"github.com/edin-space/edin-backend/internal/config"
 	"github.com/edin-space/edin-backend/internal/observability"
 	"github.com/redis/go-redis/v9"
@@ -513,6 +514,46 @@ func TestAuthToken_ValidCookie_WithCsrfHeader_ReturnsNonce(t *testing.T) {
 	require.NoError(t, json.NewDecoder(rr.Body).Decode(&body))
 	assert.NotEmpty(t, body["nonce"])
 	assert.Equal(t, float64(10), body["expires_in"])
+}
+
+// TestAuthToken_IssuesDefaultCommanderScopeSet verifies that the nonce store
+// entry created by handleCommanderAuthToken carries the default commander
+// scope set — {copilot_chat, galaxy_read, commander_data}. This is the Task 2
+// hardcode; Task 6 replaces it with scopes drawn from the JWT "scopes" claim.
+//
+// Failing this test means the copilot WS will either see too few tools (lost
+// scopes) or leak tools beyond the commander baseline.
+func TestAuthToken_IssuesDefaultCommanderScopeSet(t *testing.T) {
+	rdb := newTestMiniredis(t)
+	srv := newCommanderAuthTestServer(t, "http://frontier.invalid", rdb, 5*time.Second)
+
+	tokenStr := issueTestJWT(t, srv, "F9999", "Scope Test Cmdr")
+
+	req := httptest.NewRequest(http.MethodGet, "/api/commander/auth/token", nil)
+	req.Header.Set("X-Edin-Fetch", "1")
+	req.AddCookie(&http.Cookie{Name: "commander_session", Value: tokenStr})
+	rr := httptest.NewRecorder()
+	srv.handleCommanderAuthToken(rr, req)
+
+	require.Equal(t, http.StatusOK, rr.Code)
+
+	var body map[string]any
+	require.NoError(t, json.NewDecoder(rr.Body).Decode(&body))
+	nonce, ok := body["nonce"].(string)
+	require.True(t, ok, "expected nonce in response")
+
+	// Consume the nonce and verify the CommanderChatUser carries the
+	// expected default commander scope set in the exact order declared by
+	// handleCommanderAuthToken.
+	user := srv.commanderNonceStore.Consume(nonce)
+	require.NotNil(t, user, "nonce consume should return a user")
+
+	assert.Equal(t, "F9999", user.FID)
+	assert.Equal(t, []authz.Scope{
+		authz.ScopeCopilotChat,
+		authz.ScopeGalaxyRead,
+		authz.ScopeCommanderData,
+	}, user.Scopes)
 }
 
 func TestAuthToken_ValidCookie_MissingCsrfHeader_Returns403(t *testing.T) {
