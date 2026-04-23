@@ -102,7 +102,11 @@ func TestScopesForGroups_MultipleGroups_ScopesDeduped(t *testing.T) {
 func TestScopesForGroups_TestGroups_TreatedAsProd(t *testing.T) {
 	prod := ScopesForGroups([]string{"kaine-chat"})
 	test := ScopesForGroups([]string{"kaine-chat-test"})
+	debug := ScopesForGroups([]string{"kaine-chat-debug"})
 	if !reflect.DeepEqual(prod, test) {
 		t.Errorf("kaine-chat (%v) and kaine-chat-test (%v) must map to the same scopes", prod, test)
+	}
+	if !reflect.DeepEqual(prod, debug) {
+		t.Errorf("kaine-chat (%v) and kaine-chat-debug (%v) must map to the same scopes", prod, debug)
 	}
 }
