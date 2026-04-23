@@ -158,6 +158,11 @@ func MCPToolDefinitions() []mcp.Tool {
 		mcp.NewTool(string(ToolGalaxySchema),
 			mcp.WithDescription("Return the current Memgraph database schema: node labels with counts, edge types with counts, indexes, and constraints. Use before writing ad-hoc Cypher queries to understand available data structures."),
 		),
+		mcp.NewTool(string(ToolBgsGuideSearch),
+			mcp.WithDescription("Search the Elite Dangerous Background Simulation (BGS) guide for rules/mechanics (states, influence, conflicts, expansions, ticks, etc.). Call describe_tool first for landmark keywords and strict usage rules. Not for live galaxy data."),
+			mcp.WithString("query", mcp.Required(), mcp.Description("Keyword or distinctive phrase (case-insensitive, min 2 chars).")),
+			mcp.WithNumber("max_chunks", mcp.Description("1–5, default 3. Each chunk ~2000 tokens.")),
+		),
 		DescribeToolMCPDefinition(),
 		CommanderEventsToolDefinition(),
 		CommanderLocationToolDefinition(),
@@ -211,6 +216,7 @@ var complexTools = map[ToolName]bool{
 	ToolGalaxyExpansionCheck:    true,
 	ToolGalaxyNearbyPowerplay:   true,
 	ToolGalaxyExpansionFrontier: true,
+	ToolBgsGuideSearch:          true,
 }
 
 // slimDescriptions provides 1-line descriptions for complex tools used in slim definitions.
@@ -223,6 +229,7 @@ var slimDescriptions = map[ToolName]string{
 	ToolGalaxyExpansionCheck:    "Check if system is a valid expansion target. Use describe_tool for parameters.",
 	ToolGalaxyNearbyPowerplay:   "Find powerplay activity near a system. Use describe_tool for parameters.",
 	ToolGalaxyExpansionFrontier: "Find systems on the edge of a power's control bubble. Use describe_tool for parameters.",
+	ToolBgsGuideSearch:          "Search the BGS reference guide. Use describe_tool first for landmark keywords, search tips, and strict grounding rules.",
 }
 
 // SlimBetaToolDefinitions returns beta tool definitions with slim descriptions for complex tools.

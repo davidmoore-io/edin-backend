@@ -54,6 +54,9 @@ const (
 	ToolGalaxyExpansionTargets  ToolName = "galaxy_expansion_targets"
 	ToolGalaxySchema            ToolName = "galaxy_schema"
 
+	// Background Simulation reference material.
+	ToolBgsGuideSearch ToolName = "bgs_guide_search"
+
 	// Commander tools (full implementation in Stories 5.2/5.3)
 	ToolCommanderEvents   ToolName = "commander_events"
 	ToolCommanderLocation ToolName = "commander_location"
@@ -92,6 +95,8 @@ var kaineAllowedTools = map[ToolName]bool{
 	ToolGalaxyLTDBuyers:         true,
 	ToolGalaxyExpansionTargets:  true,
 	ToolGalaxySchema:            true,
+	// BGS reference material
+	ToolBgsGuideSearch: true,
 	// Elite intelligence tools
 	ToolSystemProfile: true,
 	// Carrier route planning
@@ -120,6 +125,7 @@ var copilotAllowedTools = map[ToolName]bool{
 	ToolGalaxyHistory:           true,
 	ToolGalaxyPowerplayCycle:    true,
 	ToolGalaxyExpansionTargets:  true,
+	ToolBgsGuideSearch:          true,
 	ToolSpanshQuery:             true,
 	ToolRetrieveRoute:           true,
 	ToolSystemProfile:           true,
@@ -294,6 +300,10 @@ func (e *Executor) Invoke(ctx context.Context, name string, args map[string]any)
 		return e.galaxyHistory(ctx, args)
 	case ToolGalaxyPowerplayCycle:
 		return e.galaxyPowerplayCycle(ctx, args)
+
+	// Reference material
+	case ToolBgsGuideSearch:
+		return e.bgsGuideSearch(ctx, args)
 
 	// Meta-tools
 	case ToolDescribeTool:
