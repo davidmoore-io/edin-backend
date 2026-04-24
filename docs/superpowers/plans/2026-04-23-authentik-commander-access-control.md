@@ -680,8 +680,16 @@ columns.
   BEGIN
       IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'edin_cmd_writer') THEN
           GRANT edin_cmd_admin TO edin_cmd_writer;
-          -- Column-scoped UPDATE — cmd_writer can set the link/approval but
-          -- never rewrite identity fields (fid / cmdr_name).
+          -- REVOKE the unqualified UPDATE granted in 002_commanders_table.sql
+          -- BEFORE issuing the column-scoped grant. Postgres GRANT is strictly
+          -- additive and cannot narrow an existing privilege — without the
+          -- REVOKE the column-scoped grant is security theatre (the full-table
+          -- UPDATE stays in force). This pair is what actually enforces
+          -- "cmd_writer can set link/approval/last_seen/cmdr_name but never
+          -- rewrite the FID." cmdr_name is in the grant list because
+          -- UpsertCommander's ON CONFLICT (fid) DO UPDATE refreshes it on
+          -- every login — it's not an identity field.
+          REVOKE UPDATE ON commander.commanders FROM edin_cmd_writer;
           GRANT SELECT,
                 UPDATE (authentik_user_id, approved, last_seen_at, cmdr_name)
              ON commander.commanders TO edin_cmd_writer;
