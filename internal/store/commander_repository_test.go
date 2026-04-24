@@ -48,11 +48,11 @@ func setupRepoWithPool(t *testing.T) (store.CommanderRepository, *pgxpool.Pool) 
 func makeEvent(commanderID uuid.UUID, fid, eventType string, ts time.Time) store.JournalEvent {
 	raw, _ := json.Marshal(map[string]string{"event": eventType})
 	return store.JournalEvent{
-		CommanderID: commanderID,
-		FID:         fid,
-		Timestamp:   ts.UTC().Truncate(time.Microsecond), // postgres timestamptz precision
-		EventType:   eventType,
-		EventData:   json.RawMessage(raw),
+		CommanderID:   commanderID,
+		FID:           fid,
+		Timestamp:     ts.UTC().Truncate(time.Microsecond), // postgres timestamptz precision
+		EventType:     eventType,
+		EventData:     json.RawMessage(raw),
 		ClientVersion: "4.0.0.1000",
 	}
 }
@@ -542,6 +542,274 @@ func TestCommanderRepo_DeleteAllEvents_NothingToDelete_Succeeds(t *testing.T) {
 	// No events inserted — deletion should succeed without error.
 	err = repo.DeleteAllEvents(ctx, "F001")
 	require.NoError(t, err)
+}
+
+// ─── Authentik link + approval (admin-tx surface) ────────────────────────────
+
+func TestCommanderRepo_SetAuthentikLink_RoundTrip(t *testing.T) {
+	repo := setupRepo(t)
+	ctx := context.Background()
+
+	_, err := repo.UpsertCommander(ctx, "F001", "CMDR One", "frontier")
+	require.NoError(t, err)
+
+	userID := uuid.New()
+	require.NoError(t, repo.SetAuthentikLink(ctx, "F001", &userID))
+
+	row, err := repo.GetCommanderAsAdmin(ctx, "F001")
+	require.NoError(t, err)
+	require.NotNil(t, row)
+	require.NotNil(t, row.AuthentikUserID)
+	require.Equal(t, userID, *row.AuthentikUserID)
+}
+
+func TestCommanderRepo_SetAuthentikLink_Unset_ClearsColumn(t *testing.T) {
+	repo := setupRepo(t)
+	ctx := context.Background()
+
+	_, err := repo.UpsertCommander(ctx, "F001", "CMDR One", "frontier")
+	require.NoError(t, err)
+
+	userID := uuid.New()
+	require.NoError(t, repo.SetAuthentikLink(ctx, "F001", &userID))
+
+	// Clear the link.
+	require.NoError(t, repo.SetAuthentikLink(ctx, "F001", nil))
+
+	row, err := repo.GetCommanderAsAdmin(ctx, "F001")
+	require.NoError(t, err)
+	require.NotNil(t, row)
+	require.Nil(t, row.AuthentikUserID, "authentik_user_id should be nil after clearing")
+}
+
+func TestCommanderRepo_SetAuthentikLink_DuplicateRejected(t *testing.T) {
+	repo := setupRepo(t)
+	ctx := context.Background()
+
+	_, err := repo.UpsertCommander(ctx, "F001", "CMDR A", "frontier")
+	require.NoError(t, err)
+	_, err = repo.UpsertCommander(ctx, "F002", "CMDR B", "frontier")
+	require.NoError(t, err)
+
+	userID := uuid.New()
+	require.NoError(t, repo.SetAuthentikLink(ctx, "F001", &userID))
+
+	// Linking F002 to the same Authentik user must fail.
+	err = repo.SetAuthentikLink(ctx, "F002", &userID)
+	require.Error(t, err)
+	require.ErrorIs(t, err, store.ErrAuthentikUserAlreadyLinked)
+
+	// F002's row must remain unchanged (authentik_user_id still NULL).
+	row, err := repo.GetCommanderAsAdmin(ctx, "F002")
+	require.NoError(t, err)
+	require.NotNil(t, row)
+	require.Nil(t, row.AuthentikUserID, "F002 must not be linked after rejected attempt")
+
+	// F001 must still be linked.
+	row1, err := repo.GetCommanderAsAdmin(ctx, "F001")
+	require.NoError(t, err)
+	require.NotNil(t, row1.AuthentikUserID)
+	require.Equal(t, userID, *row1.AuthentikUserID)
+}
+
+func TestCommanderRepo_SetAuthentikLink_NotFound_ReturnsErrCommanderNotFound(t *testing.T) {
+	repo := setupRepo(t)
+	ctx := context.Background()
+
+	userID := uuid.New()
+	err := repo.SetAuthentikLink(ctx, "F_DOES_NOT_EXIST", &userID)
+	require.ErrorIs(t, err, store.ErrCommanderNotFound)
+}
+
+func TestCommanderRepo_SetApproved_RoundTrip(t *testing.T) {
+	repo := setupRepo(t)
+	ctx := context.Background()
+
+	_, err := repo.UpsertCommander(ctx, "F001", "CMDR One", "frontier")
+	require.NoError(t, err)
+
+	// Approve.
+	require.NoError(t, repo.SetApproved(ctx, "F001", true))
+	row, err := repo.GetCommanderAsAdmin(ctx, "F001")
+	require.NoError(t, err)
+	require.NotNil(t, row)
+	require.True(t, row.Approved)
+
+	// Un-approve.
+	require.NoError(t, repo.SetApproved(ctx, "F001", false))
+	row, err = repo.GetCommanderAsAdmin(ctx, "F001")
+	require.NoError(t, err)
+	require.False(t, row.Approved)
+}
+
+func TestCommanderRepo_SetApproved_NotFound_ReturnsErrCommanderNotFound(t *testing.T) {
+	repo := setupRepo(t)
+	ctx := context.Background()
+
+	err := repo.SetApproved(ctx, "F_DOES_NOT_EXIST", true)
+	require.ErrorIs(t, err, store.ErrCommanderNotFound)
+}
+
+func TestCommanderRepo_GetCommander_DefaultsToNotApproved(t *testing.T) {
+	repo := setupRepo(t)
+	ctx := context.Background()
+
+	_, err := repo.UpsertCommander(ctx, "F001", "CMDR One", "frontier")
+	require.NoError(t, err)
+
+	row, err := repo.GetCommander(ctx, "F001")
+	require.NoError(t, err)
+	require.NotNil(t, row)
+	require.False(t, row.Approved, "fresh commander should default to approved=false")
+	require.Nil(t, row.AuthentikUserID, "fresh commander should have nil AuthentikUserID")
+}
+
+func TestCommanderRepo_ListAllCommanders_OrderedByLastSeenDesc(t *testing.T) {
+	repo, pool := setupRepoWithPool(t)
+	ctx := context.Background()
+
+	_, err := repo.UpsertCommander(ctx, "F_OLDEST", "CMDR Oldest", "frontier")
+	require.NoError(t, err)
+	_, err = repo.UpsertCommander(ctx, "F_MID", "CMDR Mid", "frontier")
+	require.NoError(t, err)
+	_, err = repo.UpsertCommander(ctx, "F_NEWEST", "CMDR Newest", "frontier")
+	require.NoError(t, err)
+
+	// Stagger last_seen_at via direct UPDATE (superuser bypass in tests).
+	// Use concrete times so ordering is deterministic regardless of insertion
+	// timing within the same millisecond.
+	base := time.Now().UTC()
+	_, err = pool.Exec(ctx,
+		"UPDATE commander.commanders SET last_seen_at = $1 WHERE fid = $2",
+		base.Add(-3*time.Hour), "F_OLDEST")
+	require.NoError(t, err)
+	_, err = pool.Exec(ctx,
+		"UPDATE commander.commanders SET last_seen_at = $1 WHERE fid = $2",
+		base.Add(-1*time.Hour), "F_MID")
+	require.NoError(t, err)
+	_, err = pool.Exec(ctx,
+		"UPDATE commander.commanders SET last_seen_at = $1 WHERE fid = $2",
+		base, "F_NEWEST")
+	require.NoError(t, err)
+
+	all, err := repo.ListAllCommanders(ctx)
+	require.NoError(t, err)
+	require.Len(t, all, 3)
+	require.Equal(t, "F_NEWEST", all[0].FID, "newest last_seen should come first")
+	require.Equal(t, "F_MID", all[1].FID)
+	require.Equal(t, "F_OLDEST", all[2].FID, "oldest last_seen should come last")
+}
+
+func TestCommanderRepo_RLS_WriterCannotReadOtherFIDs(t *testing.T) {
+	// In a bare test environment the PUBLIC branch of commanders_self_rw
+	// applies, so setting app.current_fid without switching role is enough
+	// to exercise the RLS filter — provided the session role is NOT a
+	// superuser (which would bypass RLS implicitly). The testcontainer's
+	// default user ("testuser") is a superuser; we therefore create a
+	// non-superuser login role, grant it SELECT on commander.commanders,
+	// and exercise RLS through it.
+	repo, pool := setupRepoWithPool(t)
+	ctx := context.Background()
+
+	_, err := pool.Exec(ctx, `
+		DO $$
+		BEGIN
+			IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'test_cmd_rls_reader') THEN
+				CREATE ROLE test_cmd_rls_reader LOGIN PASSWORD 'test_cmd_rls_reader_pw';
+			END IF;
+		END $$;
+		GRANT USAGE ON SCHEMA commander TO test_cmd_rls_reader;
+		GRANT SELECT ON commander.commanders TO test_cmd_rls_reader;
+	`)
+	require.NoError(t, err)
+
+	// Seed two commanders.
+	_, err = repo.UpsertCommander(ctx, "F1", "CMDR One", "frontier")
+	require.NoError(t, err)
+	_, err = repo.UpsertCommander(ctx, "F2", "CMDR Two", "frontier")
+	require.NoError(t, err)
+
+	tx, err := pool.Begin(ctx)
+	require.NoError(t, err)
+	defer tx.Rollback(ctx) //nolint:errcheck
+
+	_, err = tx.Exec(ctx, "SET LOCAL ROLE test_cmd_rls_reader")
+	require.NoError(t, err)
+	_, err = tx.Exec(ctx, "SET LOCAL app.current_fid = 'F1'")
+	require.NoError(t, err)
+
+	// SELECT with fid = 'F2' while app.current_fid = 'F1' — RLS should hide F2.
+	var count int
+	err = tx.QueryRow(ctx,
+		"SELECT COUNT(*) FROM commander.commanders WHERE fid = 'F2'",
+	).Scan(&count)
+	require.NoError(t, err)
+	require.Equal(t, 0, count, "RLS must make F2 invisible when app.current_fid = 'F1'")
+
+	// And the visible row count is 1 (only F1).
+	err = tx.QueryRow(ctx, "SELECT COUNT(*) FROM commander.commanders").Scan(&count)
+	require.NoError(t, err)
+	require.Equal(t, 1, count, "RLS must filter commanders to app.current_fid")
+}
+
+func TestCommanderRepo_RLS_AdminTxSeesAllFIDs(t *testing.T) {
+	// ListAllCommanders uses withAdminTx (SET LOCAL ROLE edin_cmd_admin,
+	// BYPASSRLS). It must return rows for every FID regardless of any
+	// app.current_fid value.
+	repo := setupRepo(t)
+	ctx := context.Background()
+
+	_, err := repo.UpsertCommander(ctx, "F1", "CMDR One", "frontier")
+	require.NoError(t, err)
+	_, err = repo.UpsertCommander(ctx, "F2", "CMDR Two", "frontier")
+	require.NoError(t, err)
+
+	all, err := repo.ListAllCommanders(ctx)
+	require.NoError(t, err)
+	require.Len(t, all, 2, "admin tx must see both F1 and F2 regardless of RLS")
+
+	seen := map[string]bool{}
+	for _, c := range all {
+		seen[c.FID] = true
+	}
+	require.True(t, seen["F1"])
+	require.True(t, seen["F2"])
+}
+
+func TestCommanderRepo_SetApproved_ViaAdminTx_Succeeds_ForOtherFID(t *testing.T) {
+	// Admin tx should let us flip approved for a different FID than any
+	// ambient app.current_fid — simulating the admin endpoint updating a
+	// foreign commander's approval state.
+	repo := setupRepo(t)
+	ctx := context.Background()
+
+	_, err := repo.UpsertCommander(ctx, "F1", "CMDR One", "frontier")
+	require.NoError(t, err)
+	_, err = repo.UpsertCommander(ctx, "F2", "CMDR Two", "frontier")
+	require.NoError(t, err)
+
+	// Call SetApproved for F2 without any prior SET LOCAL app.current_fid
+	// (the admin tx doesn't set one). Succeeds via edin_cmd_admin.
+	require.NoError(t, repo.SetApproved(ctx, "F2", true))
+
+	row2, err := repo.GetCommanderAsAdmin(ctx, "F2")
+	require.NoError(t, err)
+	require.NotNil(t, row2)
+	require.True(t, row2.Approved, "F2's approved should be true after admin-tx update")
+
+	// F1 must remain unchanged.
+	row1, err := repo.GetCommanderAsAdmin(ctx, "F1")
+	require.NoError(t, err)
+	require.False(t, row1.Approved, "F1 must not be affected")
+}
+
+func TestCommanderRepo_GetCommanderAsAdmin_NotFound_ReturnsErrCommanderNotFound(t *testing.T) {
+	repo := setupRepo(t)
+	ctx := context.Background()
+
+	row, err := repo.GetCommanderAsAdmin(ctx, "F_DOES_NOT_EXIST")
+	require.Nil(t, row)
+	require.ErrorIs(t, err, store.ErrCommanderNotFound)
 }
 
 // ─── Parallel FID queries ─────────────────────────────────────────────────────

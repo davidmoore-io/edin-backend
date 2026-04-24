@@ -16,12 +16,12 @@ import (
 
 // mockCommanderRepo implements store.CommanderRepository for testing.
 type mockCommanderRepo struct {
-	recentEvents  []store.JournalEvent
-	recentErr     error
-	byTypeEvents  []store.JournalEvent
-	byTypeErr     error
-	location      *store.LocationState
-	locationErr   error
+	recentEvents []store.JournalEvent
+	recentErr    error
+	byTypeEvents []store.JournalEvent
+	byTypeErr    error
+	location     *store.LocationState
+	locationErr  error
 
 	// Captured args from the last EventsByType call — lets tests assert that
 	// the tool wrapper is forwarding sensible time bounds.
@@ -61,6 +61,18 @@ func (m *mockCommanderRepo) GetCommander(ctx context.Context, fid string) (*stor
 	return nil, nil
 }
 func (m *mockCommanderRepo) GetEventStats(ctx context.Context, fid string) (*store.CommanderEventStats, error) {
+	return nil, nil
+}
+func (m *mockCommanderRepo) SetAuthentikLink(ctx context.Context, fid string, userID *uuid.UUID) error {
+	return nil
+}
+func (m *mockCommanderRepo) SetApproved(ctx context.Context, fid string, approved bool) error {
+	return nil
+}
+func (m *mockCommanderRepo) ListAllCommanders(ctx context.Context) ([]store.CommanderRow, error) {
+	return nil, nil
+}
+func (m *mockCommanderRepo) GetCommanderAsAdmin(ctx context.Context, fid string) (*store.CommanderRow, error) {
 	return nil, nil
 }
 

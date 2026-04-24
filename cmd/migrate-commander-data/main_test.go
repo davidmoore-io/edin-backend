@@ -91,6 +91,18 @@ func (m *mockTarget) GetCommander(_ context.Context, _ string) (*store.Commander
 func (m *mockTarget) GetEventStats(_ context.Context, _ string) (*store.CommanderEventStats, error) {
 	return nil, nil
 }
+func (m *mockTarget) SetAuthentikLink(_ context.Context, _ string, _ *uuid.UUID) error {
+	return nil
+}
+func (m *mockTarget) SetApproved(_ context.Context, _ string, _ bool) error {
+	return nil
+}
+func (m *mockTarget) ListAllCommanders(_ context.Context) ([]store.CommanderRow, error) {
+	return nil, nil
+}
+func (m *mockTarget) GetCommanderAsAdmin(_ context.Context, _ string) (*store.CommanderRow, error) {
+	return nil, nil
+}
 
 // ─── helpers ─────────────────────────────────────────────────────────────────
 
@@ -211,8 +223,8 @@ func TestMigrate_ReportsCorrectCounts(t *testing.T) {
 		commanders: []SourceCommander{{FID: "F001", Name: "Cmdr", Platform: "PC"}},
 		events: map[string][]store.JournalEvent{
 			"F001": {
-				duplicate,                          // inserted
-				duplicate,                          // duplicate
+				duplicate, // inserted
+				duplicate, // duplicate
 				makeEvent("F001", now.Add(time.Minute), "Docked"), // inserted
 				// invalid: empty EventType
 				{FID: "F001", Timestamp: now.Add(2 * time.Minute), EventType: "", EventData: json.RawMessage(`{}`)},

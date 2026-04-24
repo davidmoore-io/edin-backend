@@ -66,6 +66,22 @@ func (m *mockCommanderRepo) GetEventStats(_ context.Context, _ string) (*store.C
 	panic("not implemented")
 }
 
+func (m *mockCommanderRepo) SetAuthentikLink(_ context.Context, _ string, _ *uuid.UUID) error {
+	panic("not implemented")
+}
+
+func (m *mockCommanderRepo) SetApproved(_ context.Context, _ string, _ bool) error {
+	panic("not implemented")
+}
+
+func (m *mockCommanderRepo) ListAllCommanders(_ context.Context) ([]store.CommanderRow, error) {
+	panic("not implemented")
+}
+
+func (m *mockCommanderRepo) GetCommanderAsAdmin(_ context.Context, _ string) (*store.CommanderRow, error) {
+	panic("not implemented")
+}
+
 // ─── test server helper ───────────────────────────────────────────────────────
 
 // newIngestTestServer wires a minimal Server with commander auth and ingest dependencies.

@@ -84,6 +84,22 @@ func (m *mockQueryRepo) GetEventStats(_ context.Context, _ string) (*store.Comma
 	panic("not implemented")
 }
 
+func (m *mockQueryRepo) SetAuthentikLink(_ context.Context, _ string, _ *uuid.UUID) error {
+	panic("not implemented")
+}
+
+func (m *mockQueryRepo) SetApproved(_ context.Context, _ string, _ bool) error {
+	panic("not implemented")
+}
+
+func (m *mockQueryRepo) ListAllCommanders(_ context.Context) ([]store.CommanderRow, error) {
+	panic("not implemented")
+}
+
+func (m *mockQueryRepo) GetCommanderAsAdmin(_ context.Context, _ string) (*store.CommanderRow, error) {
+	panic("not implemented")
+}
+
 // ─── test server helper ───────────────────────────────────────────────────────
 
 func newQueryTestServer(t *testing.T, repo store.CommanderRepository) *Server {

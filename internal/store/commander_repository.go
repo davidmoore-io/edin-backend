@@ -10,8 +10,20 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
+
+// ErrCommanderNotFound is returned by admin repository operations that target a
+// FID which has no row in commander.commanders.
+var ErrCommanderNotFound = errors.New("commander not found")
+
+// ErrAuthentikUserAlreadyLinked is returned by SetAuthentikLink when the target
+// Authentik user UUID is already linked to a different commander row. This
+// corresponds to a unique-violation on idx_commanders_authentik_user_id
+// (PostgreSQL SQLSTATE 23505). Task 8's admin link endpoint maps this to
+// HTTP 409 Conflict.
+var ErrAuthentikUserAlreadyLinked = errors.New("authentik user already linked to another commander")
 
 // JournalEvent is a single journal entry stored in commander.journal_events.
 type JournalEvent struct {
@@ -41,12 +53,14 @@ type LocationState struct {
 
 // CommanderRow holds the read model for a commander profile.
 type CommanderRow struct {
-	ID          uuid.UUID
-	FID         string
-	CmdrName    string
-	Platform    string
-	FirstSeenAt time.Time
-	LastSeenAt  time.Time
+	ID              uuid.UUID
+	FID             string
+	CmdrName        string
+	Platform        string
+	FirstSeenAt     time.Time
+	LastSeenAt      time.Time
+	AuthentikUserID *uuid.UUID
+	Approved        bool
 }
 
 // CommanderRepository defines data-access operations for commander journal data.
@@ -61,6 +75,15 @@ type CommanderRepository interface {
 	DeleteAllEvents(ctx context.Context, fid string) error
 	GetCommander(ctx context.Context, fid string) (*CommanderRow, error)
 	GetEventStats(ctx context.Context, fid string) (*CommanderEventStats, error)
+
+	// Admin-only operations. Callers MUST be behind the Kaine admin middleware
+	// (withKaineAdmin). These run under withAdminTx which SET LOCAL ROLE's to
+	// edin_cmd_admin inside the transaction, bypassing the commanders_self_rw
+	// RLS policy so they can read/write across FIDs.
+	SetAuthentikLink(ctx context.Context, fid string, userID *uuid.UUID) error
+	SetApproved(ctx context.Context, fid string, approved bool) error
+	ListAllCommanders(ctx context.Context) ([]CommanderRow, error)
+	GetCommanderAsAdmin(ctx context.Context, fid string) (*CommanderRow, error)
 }
 
 // pgCommanderRepository is the PostgreSQL/TimescaleDB implementation.
@@ -302,16 +325,26 @@ func (r *pgCommanderRepository) CurrentLocation(ctx context.Context, fid string)
 
 // GetCommander reads the commander profile row for fid.
 // Returns nil, nil if no such commander exists.
+//
+// Runs under withFIDContext with app.current_fid = fid. This is the
+// commander-self path used by the OAuth callback and any endpoint that
+// operates on the caller's own row. The commanders_self_rw RLS policy
+// enforces that a commander can only read their own row — a bug that
+// passes the wrong FID will surface as "no rows" rather than leaking
+// another commander's link or approval state. For cross-FID reads (admin
+// endpoints), use GetCommanderAsAdmin instead.
 func (r *pgCommanderRepository) GetCommander(ctx context.Context, fid string) (*CommanderRow, error) {
 	var row *CommanderRow
 	err := r.withFIDContext(ctx, fid, func(tx pgx.Tx) error {
 		var c CommanderRow
 		err := tx.QueryRow(ctx, `
-			SELECT id, fid, cmdr_name, platform, first_seen_at, last_seen_at
+			SELECT id, fid, cmdr_name, platform, first_seen_at, last_seen_at,
+			       authentik_user_id, approved
 			FROM commander.commanders
 			WHERE fid = $1`,
 			fid,
-		).Scan(&c.ID, &c.FID, &c.CmdrName, &c.Platform, &c.FirstSeenAt, &c.LastSeenAt)
+		).Scan(&c.ID, &c.FID, &c.CmdrName, &c.Platform, &c.FirstSeenAt, &c.LastSeenAt,
+			&c.AuthentikUserID, &c.Approved)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil
 		}
@@ -409,4 +442,191 @@ func (r *pgCommanderRepository) GetEventStats(ctx context.Context, fid string) (
 		return nil, fmt.Errorf("get event stats fid=%s: %w", fid, err)
 	}
 	return &stats, nil
+}
+
+// withAdminTx opens a transaction, assumes the edin_cmd_admin role for the
+// duration of the transaction (SET LOCAL ROLE — expires on commit/rollback),
+// calls fn, then commits. Rollback is deferred and any rollback error that
+// occurs after a fn error is logged but not returned.
+//
+// Inside the transaction the session role is edin_cmd_admin (NOLOGIN
+// BYPASSRLS), so the commanders_self_rw RLS policy is bypassed and the caller
+// can read/write rows for any FID. Unlike withFIDContext, this helper does NOT
+// set app.current_fid — admin operations are cross-FID by nature.
+//
+// Callers MUST be behind the Kaine admin middleware (withKaineAdmin). No
+// runtime check here — the migration creates edin_cmd_admin unconditionally
+// and the connecting role (edin_cmd_writer in prod, postgres superuser in
+// tests) has been granted membership so SET LOCAL ROLE succeeds.
+func (r *pgCommanderRepository) withAdminTx(ctx context.Context,
+	fn func(tx pgx.Tx) error) (retErr error) {
+
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin transaction: %w", err)
+	}
+	defer func() {
+		if rbErr := tx.Rollback(ctx); rbErr != nil && !errors.Is(rbErr, pgx.ErrTxClosed) {
+			r.logger.Error("admin transaction rollback failed", "error", rbErr)
+			if retErr == nil {
+				retErr = fmt.Errorf("rollback: %w", rbErr)
+			}
+		}
+	}()
+
+	if _, err := tx.Exec(ctx, "SET LOCAL ROLE edin_cmd_admin"); err != nil {
+		return fmt.Errorf("set admin role: %w", err)
+	}
+
+	if err := fn(tx); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
+// SetAuthentikLink sets (or clears, when userID is nil) the authentik_user_id
+// column on the commander row identified by fid.
+//
+// Admin-only. Callers MUST be behind the Kaine admin middleware
+// (withKaineAdmin). RLS is bypassed via edin_cmd_admin inside the transaction.
+//
+// Returns ErrCommanderNotFound if no row exists for fid.
+// Returns ErrAuthentikUserAlreadyLinked if userID is already linked to a
+// different commander (unique-violation on idx_commanders_authentik_user_id,
+// SQLSTATE 23505). Task 8's link endpoint maps this to HTTP 409 Conflict.
+func (r *pgCommanderRepository) SetAuthentikLink(ctx context.Context, fid string, userID *uuid.UUID) error {
+	err := r.withAdminTx(ctx, func(tx pgx.Tx) error {
+		tag, err := tx.Exec(ctx, `
+			UPDATE commander.commanders
+			SET authentik_user_id = $1
+			WHERE fid = $2`,
+			userID, fid,
+		)
+		if err != nil {
+			var pgErr *pgconn.PgError
+			if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+				return ErrAuthentikUserAlreadyLinked
+			}
+			return fmt.Errorf("update authentik_user_id: %w", err)
+		}
+		if tag.RowsAffected() == 0 {
+			return ErrCommanderNotFound
+		}
+		return nil
+	})
+	if err != nil {
+		if errors.Is(err, ErrCommanderNotFound) || errors.Is(err, ErrAuthentikUserAlreadyLinked) {
+			return err
+		}
+		return fmt.Errorf("set authentik link fid=%s: %w", fid, err)
+	}
+	return nil
+}
+
+// SetApproved sets the approved column on the commander row identified by fid.
+//
+// Admin-only. Callers MUST be behind the Kaine admin middleware
+// (withKaineAdmin). RLS is bypassed via edin_cmd_admin inside the transaction.
+//
+// Returns ErrCommanderNotFound if no row exists for fid.
+func (r *pgCommanderRepository) SetApproved(ctx context.Context, fid string, approved bool) error {
+	err := r.withAdminTx(ctx, func(tx pgx.Tx) error {
+		tag, err := tx.Exec(ctx, `
+			UPDATE commander.commanders
+			SET approved = $1
+			WHERE fid = $2`,
+			approved, fid,
+		)
+		if err != nil {
+			return fmt.Errorf("update approved: %w", err)
+		}
+		if tag.RowsAffected() == 0 {
+			return ErrCommanderNotFound
+		}
+		return nil
+	})
+	if err != nil {
+		if errors.Is(err, ErrCommanderNotFound) {
+			return err
+		}
+		return fmt.Errorf("set approved fid=%s: %w", fid, err)
+	}
+	return nil
+}
+
+// ListAllCommanders returns every commander row in the table, ordered by
+// last_seen_at DESC (NULLS LAST) then first_seen_at DESC. No FID scoping.
+//
+// Admin-only. Callers MUST be behind the Kaine admin middleware
+// (withKaineAdmin). RLS is bypassed via edin_cmd_admin inside the transaction.
+func (r *pgCommanderRepository) ListAllCommanders(ctx context.Context) ([]CommanderRow, error) {
+	var result []CommanderRow
+	err := r.withAdminTx(ctx, func(tx pgx.Tx) error {
+		rows, err := tx.Query(ctx, `
+			SELECT id, fid, cmdr_name, platform, first_seen_at, last_seen_at,
+			       authentik_user_id, approved
+			FROM commander.commanders
+			ORDER BY last_seen_at DESC NULLS LAST, first_seen_at DESC`,
+		)
+		if err != nil {
+			return fmt.Errorf("query all commanders: %w", err)
+		}
+		defer rows.Close()
+
+		for rows.Next() {
+			var c CommanderRow
+			if err := rows.Scan(
+				&c.ID, &c.FID, &c.CmdrName, &c.Platform,
+				&c.FirstSeenAt, &c.LastSeenAt,
+				&c.AuthentikUserID, &c.Approved,
+			); err != nil {
+				return fmt.Errorf("scan commander row: %w", err)
+			}
+			result = append(result, c)
+		}
+		return rows.Err()
+	})
+	if err != nil {
+		return nil, fmt.Errorf("list all commanders: %w", err)
+	}
+	return result, nil
+}
+
+// GetCommanderAsAdmin reads the commander profile row for fid using the admin
+// transaction, bypassing RLS. Functionally identical to GetCommander except it
+// works for any FID regardless of app.current_fid.
+//
+// Admin-only. Callers MUST be behind the Kaine admin middleware
+// (withKaineAdmin). RLS is bypassed via edin_cmd_admin inside the transaction.
+//
+// Returns nil, ErrCommanderNotFound when no row exists for fid.
+func (r *pgCommanderRepository) GetCommanderAsAdmin(ctx context.Context, fid string) (*CommanderRow, error) {
+	var row *CommanderRow
+	err := r.withAdminTx(ctx, func(tx pgx.Tx) error {
+		var c CommanderRow
+		err := tx.QueryRow(ctx, `
+			SELECT id, fid, cmdr_name, platform, first_seen_at, last_seen_at,
+			       authentik_user_id, approved
+			FROM commander.commanders
+			WHERE fid = $1`,
+			fid,
+		).Scan(&c.ID, &c.FID, &c.CmdrName, &c.Platform,
+			&c.FirstSeenAt, &c.LastSeenAt,
+			&c.AuthentikUserID, &c.Approved)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return ErrCommanderNotFound
+		}
+		if err != nil {
+			return fmt.Errorf("query commander as admin: %w", err)
+		}
+		row = &c
+		return nil
+	})
+	if err != nil {
+		if errors.Is(err, ErrCommanderNotFound) {
+			return nil, err
+		}
+		return nil, fmt.Errorf("get commander as admin fid=%s: %w", fid, err)
+	}
+	return row, nil
 }
