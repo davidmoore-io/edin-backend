@@ -86,8 +86,17 @@ BEGIN
         -- ROLE edin_cmd_admin inside a transaction when they need cross-FID
         -- reads/writes. cmd_writer itself remains RLS-scoped.
         GRANT edin_cmd_admin TO edin_cmd_writer;
-        -- Column-scoped UPDATE on commander.commanders — cmd_writer can set
-        -- the link/approval but never rewrite identity fields (fid / cmdr_name).
+
+        -- REVOKE the unqualified UPDATE granted in 002_commanders_table.sql
+        -- before issuing the column-scoped grant. Postgres GRANT is strictly
+        -- additive and cannot narrow an existing privilege — without the
+        -- REVOKE the column-scoped grant is security theatre (the full-table
+        -- UPDATE stays in force). This pair is what actually enforces
+        -- "cmd_writer can refresh link/approval/last_seen/cmdr_name but
+        -- never rewrite the FID." cmdr_name is in the grant list because
+        -- UpsertCommander's ON CONFLICT (fid) DO UPDATE refreshes it on
+        -- every login — it's a mutable profile field, not an identity field.
+        REVOKE UPDATE ON commander.commanders FROM edin_cmd_writer;
         GRANT SELECT,
               UPDATE (authentik_user_id, approved, last_seen_at, cmdr_name)
            ON commander.commanders TO edin_cmd_writer;

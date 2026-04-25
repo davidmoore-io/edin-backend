@@ -752,6 +752,98 @@ func TestCommanderRepo_RLS_WriterCannotReadOtherFIDs(t *testing.T) {
 	require.Equal(t, 1, count, "RLS must filter commanders to app.current_fid")
 }
 
+func TestCommanderRepo_RLS_WriterCannotUpdateOtherFIDs(t *testing.T) {
+	// Companion to TestCommanderRepo_RLS_WriterCannotReadOtherFIDs — that
+	// test proves the USING clause filters reads, this one proves the
+	// WITH CHECK + USING clauses filter cross-FID writes. Same setup
+	// pattern: a synthetic non-superuser login role that exercises RLS
+	// in the bare test environment (no edin_cmd_writer). The role here
+	// needs UPDATE in addition to SELECT so the UPDATE statement parses
+	// — RLS then filters the targeted row out via USING/WITH CHECK
+	// before any write applies.
+	repo, pool := setupRepoWithPool(t)
+	ctx := context.Background()
+
+	_, err := pool.Exec(ctx, `
+		DO $$
+		BEGIN
+			IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'test_cmd_rls_writer') THEN
+				CREATE ROLE test_cmd_rls_writer LOGIN PASSWORD 'test_cmd_rls_writer_pw';
+			END IF;
+		END $$;
+		GRANT USAGE ON SCHEMA commander TO test_cmd_rls_writer;
+		GRANT SELECT, UPDATE ON commander.commanders TO test_cmd_rls_writer;
+	`)
+	require.NoError(t, err)
+
+	// Seed two commanders. Both default to approved = false.
+	_, err = repo.UpsertCommander(ctx, "F1", "CMDR One", "frontier")
+	require.NoError(t, err)
+	_, err = repo.UpsertCommander(ctx, "F2", "CMDR Two", "frontier")
+	require.NoError(t, err)
+
+	tx, err := pool.Begin(ctx)
+	require.NoError(t, err)
+	defer tx.Rollback(ctx) //nolint:errcheck
+
+	_, err = tx.Exec(ctx, "SET LOCAL ROLE test_cmd_rls_writer")
+	require.NoError(t, err)
+	_, err = tx.Exec(ctx, "SET LOCAL app.current_fid = 'F1'")
+	require.NoError(t, err)
+
+	// Attempt to flip F2's approved flag while app.current_fid = 'F1'.
+	// The USING clause filters F2 out of the row set the UPDATE could
+	// touch, so RowsAffected must be 0 and no error is raised.
+	tag, err := tx.Exec(ctx,
+		"UPDATE commander.commanders SET approved = true WHERE fid = 'F2'",
+	)
+	require.NoError(t, err)
+	require.Equal(t, int64(0), tag.RowsAffected(),
+		"RLS WITH CHECK/USING must prevent UPDATE on F2 when app.current_fid='F1'")
+
+	// Commit so the (no-op) UPDATE is durable, then verify F2 is unchanged.
+	require.NoError(t, tx.Commit(ctx))
+
+	row2, err := repo.GetCommanderAsAdmin(ctx, "F2")
+	require.NoError(t, err)
+	require.NotNil(t, row2)
+	require.False(t, row2.Approved,
+		"F2.approved must remain false — the cross-FID UPDATE was filtered by RLS")
+}
+
+func TestCommanderRepo_UpsertCommander_StillWorksAfterColumnScopedGrant(t *testing.T) {
+	// Regression test for the REVOKE+column-scoped GRANT in migration 008.
+	// UpsertCommander's ON CONFLICT (fid) DO UPDATE refreshes cmdr_name
+	// and last_seen_at. Both columns are in the column-scoped grant list
+	// (authentik_user_id, approved, last_seen_at, cmdr_name), so the
+	// upsert must continue to work after the migration narrows
+	// cmd_writer's UPDATE privilege.
+	//
+	// Caveat: in bare test envs the connection role is a superuser
+	// (BYPASSRLS, ignores column-level grants), so this test verifies the
+	// upsert SQL is *syntactically* compatible with the new grant shape
+	// rather than exercising the production grant constraints. Useful
+	// regression coverage; full prod-role validation requires the
+	// Ansible-provisioned roles which aren't present in tests.
+	repo := setupRepo(t)
+	ctx := context.Background()
+
+	id1, err := repo.UpsertCommander(ctx, "F1", "Alpha", "frontier")
+	require.NoError(t, err)
+
+	// Second upsert hits the ON CONFLICT branch: cmdr_name and last_seen_at
+	// get refreshed.
+	id2, err := repo.UpsertCommander(ctx, "F1", "Alpha Renamed", "frontier")
+	require.NoError(t, err)
+	require.Equal(t, id1, id2, "upsert on same FID must return same UUID")
+
+	row, err := repo.GetCommanderAsAdmin(ctx, "F1")
+	require.NoError(t, err)
+	require.NotNil(t, row)
+	require.Equal(t, "Alpha Renamed", row.CmdrName,
+		"ON CONFLICT DO UPDATE must refresh cmdr_name after column-scoped grant")
+}
+
 func TestCommanderRepo_RLS_AdminTxSeesAllFIDs(t *testing.T) {
 	// ListAllCommanders uses withAdminTx (SET LOCAL ROLE edin_cmd_admin,
 	// BYPASSRLS). It must return rows for every FID regardless of any

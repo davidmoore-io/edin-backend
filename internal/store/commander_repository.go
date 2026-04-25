@@ -21,8 +21,11 @@ var ErrCommanderNotFound = errors.New("commander not found")
 // ErrAuthentikUserAlreadyLinked is returned by SetAuthentikLink when the target
 // Authentik user UUID is already linked to a different commander row. This
 // corresponds to a unique-violation on idx_commanders_authentik_user_id
-// (PostgreSQL SQLSTATE 23505). Task 8's admin link endpoint maps this to
-// HTTP 409 Conflict.
+// (PostgreSQL SQLSTATE 23505). The mapping is discriminated by both the
+// SQLSTATE and the constraint name, so a 23505 from a future unrelated
+// unique constraint on this table will surface as a wrapped generic error
+// rather than be silently mis-classified as "already linked." Task 8's
+// admin link endpoint maps this to HTTP 409 Conflict.
 var ErrAuthentikUserAlreadyLinked = errors.New("authentik user already linked to another commander")
 
 // JournalEvent is a single journal entry stored in commander.journal_events.
@@ -504,7 +507,8 @@ func (r *pgCommanderRepository) SetAuthentikLink(ctx context.Context, fid string
 		)
 		if err != nil {
 			var pgErr *pgconn.PgError
-			if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+			if errors.As(err, &pgErr) && pgErr.Code == "23505" &&
+				pgErr.ConstraintName == "idx_commanders_authentik_user_id" {
 				return ErrAuthentikUserAlreadyLinked
 			}
 			return fmt.Errorf("update authentik_user_id: %w", err)
