@@ -30,6 +30,13 @@ type linkTestRepo struct {
 	// SetAuthentikLink
 	setLinkCalls []setLinkCall
 	setLinkErr   error
+
+	// SetApproved (Task 8)
+	setApprovedCalls []setApprovedCall
+	setApprovedErr   error
+
+	// ListAllCommanders (Task 8)
+	listErr error
 }
 
 type upsertCall struct {
@@ -39,6 +46,11 @@ type upsertCall struct {
 type setLinkCall struct {
 	FID    string
 	UserID *uuid.UUID
+}
+
+type setApprovedCall struct {
+	FID      string
+	Approved bool
 }
 
 func newLinkTestRepo() *linkTestRepo {
@@ -164,11 +176,43 @@ func (m *linkTestRepo) GetCommander(_ context.Context, _ string) (*store.Command
 func (m *linkTestRepo) GetEventStats(_ context.Context, _ string) (*store.CommanderEventStats, error) {
 	panic("not implemented")
 }
-func (m *linkTestRepo) SetApproved(_ context.Context, _ string, _ bool) error {
-	panic("not implemented")
+
+// SetApproved was a panic-stub before Task 8; the admin Grant/Revoke
+// flow calls it so it now mutates the seeded row when present. Tracks
+// calls so tests can assert the sequence.
+func (m *linkTestRepo) SetApproved(_ context.Context, fid string, approved bool) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.setApprovedCalls = append(m.setApprovedCalls, setApprovedCall{FID: fid, Approved: approved})
+	if m.setApprovedErr != nil {
+		return m.setApprovedErr
+	}
+	row, ok := m.rowByFID[fid]
+	if !ok {
+		return store.ErrCommanderNotFound
+	}
+	row.Approved = approved
+	return nil
 }
+
+// ListAllCommanders was a panic-stub before Task 8; the admin list
+// endpoint and the Link conflicting-FID lookup call it.
 func (m *linkTestRepo) ListAllCommanders(_ context.Context) ([]store.CommanderRow, error) {
-	panic("not implemented")
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.listErr != nil {
+		return nil, m.listErr
+	}
+	out := make([]store.CommanderRow, 0, len(m.rowByFID))
+	for _, row := range m.rowByFID {
+		rowCopy := *row
+		if row.AuthentikUserID != nil {
+			idCopy := *row.AuthentikUserID
+			rowCopy.AuthentikUserID = &idCopy
+		}
+		out = append(out, rowCopy)
+	}
+	return out, nil
 }
 
 // ─── shadow user fakes ───────────────────────────────────────────────────────

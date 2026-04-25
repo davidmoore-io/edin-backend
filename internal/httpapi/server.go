@@ -345,6 +345,13 @@ type Server struct {
 	// nil on a linked+approved row deny-closes with reason=authentik_unreachable.
 	authentikUserGroups authentikUserGroupResolver
 
+	// adminAuthentikOverride is the test seam for the commander-admin
+	// handlers (kaine_admin_commanders.go). Production never sets this
+	// field; production code path uses s.authentikClient directly. Tests
+	// assign a fake that satisfies commanderAdminAuthentik so the admin
+	// handlers can be exercised without httptest.
+	adminAuthentikOverride commanderAdminAuthentik
+
 	// Commander (Copilot) auth
 	redisClient           *redis.Client
 	commanderJWTIssuer    *auth.CommanderJWTIssuer

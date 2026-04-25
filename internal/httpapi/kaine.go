@@ -328,6 +328,12 @@ func (s *Server) RegisterKaineRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/kaine/admin/system-prompt", s.withKaineAuth(s.withKaineAdmin(s.handleKaineAdminSystemPrompt)))
 	mux.HandleFunc("/api/kaine/admin/system-prompt/default", s.withKaineAuth(s.withKaineAdmin(s.handleKaineAdminSystemPromptDefault)))
 	mux.HandleFunc("/api/kaine/admin/system-prompt/", s.withKaineAuth(s.withKaineAdmin(s.handleKaineAdminSystemPromptByPath)))
+
+	// Commander access control (Task 8 — Authentik commander-access plan).
+	// http.ServeMux treats /foo and /foo/ as distinct routes; both point
+	// at the same dispatcher which inspects r.URL.Path to pick the action.
+	mux.HandleFunc("/api/kaine/admin/commanders", s.withKaineAuth(s.withKaineAdmin(s.handleKaineAdminCommandersSubtree)))
+	mux.HandleFunc("/api/kaine/admin/commanders/", s.withKaineAuth(s.withKaineAdmin(s.handleKaineAdminCommandersSubtree)))
 }
 
 // handleKaineToken handles GET /api/kaine/token.
@@ -339,9 +345,11 @@ func (s *Server) handleKaineToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// CSRF guard: browsers won't set this header for cross-site requests
-	if r.Header.Get("X-Edin-Fetch") != "1" {
-		s.writeError(w, http.StatusForbidden, "missing X-Edin-Fetch header")
+	// CSRF guard: browsers won't set this header for cross-site requests.
+	// Refactored to call the shared requireFetchHeader helper (Task 8) —
+	// note this changes the status from 403 to 400 to match the helper's
+	// behaviour. The helper writes its own response on miss.
+	if !s.requireFetchHeader(w, r) {
 		return
 	}
 
@@ -1833,7 +1841,12 @@ func (s *Server) handleKaineAdminUserByID(w http.ResponseWriter, r *http.Request
 		s.writeJSON(w, http.StatusOK, user)
 
 	case http.MethodPost:
-		// Add user to group
+		// Add user to group — Task 8 added the X-Edin-Fetch CSRF guard +
+		// edin-* group prefix support so the admin UI can manage Copilot
+		// groups via this same endpoint.
+		if !s.requireFetchHeader(w, r) {
+			return
+		}
 		var input struct {
 			Group string `json:"group"`
 		}
@@ -1845,9 +1858,9 @@ func (s *Server) handleKaineAdminUserByID(w http.ResponseWriter, r *http.Request
 			s.writeError(w, http.StatusBadRequest, "group name required")
 			return
 		}
-		// Validate group is a kaine group
-		if !strings.HasPrefix(input.Group, "kaine-") {
-			s.writeError(w, http.StatusBadRequest, "can only manage kaine-* groups")
+		// Validate group is a kaine-* or edin-* group
+		if !strings.HasPrefix(input.Group, "kaine-") && !strings.HasPrefix(input.Group, "edin-") {
+			s.writeError(w, http.StatusBadRequest, "can only manage kaine-* or edin-* groups")
 			return
 		}
 
@@ -1865,7 +1878,11 @@ func (s *Server) handleKaineAdminUserByID(w http.ResponseWriter, r *http.Request
 		})
 
 	case http.MethodDelete:
-		// Remove user from group
+		// Remove user from group — Task 8 added the X-Edin-Fetch CSRF
+		// guard + edin-* group prefix support.
+		if !s.requireFetchHeader(w, r) {
+			return
+		}
 		var input struct {
 			Group string `json:"group"`
 		}
@@ -1877,9 +1894,9 @@ func (s *Server) handleKaineAdminUserByID(w http.ResponseWriter, r *http.Request
 			s.writeError(w, http.StatusBadRequest, "group name required")
 			return
 		}
-		// Validate group is a kaine group
-		if !strings.HasPrefix(input.Group, "kaine-") {
-			s.writeError(w, http.StatusBadRequest, "can only manage kaine-* groups")
+		// Validate group is a kaine-* or edin-* group
+		if !strings.HasPrefix(input.Group, "kaine-") && !strings.HasPrefix(input.Group, "edin-") {
+			s.writeError(w, http.StatusBadRequest, "can only manage kaine-* or edin-* groups")
 			return
 		}
 

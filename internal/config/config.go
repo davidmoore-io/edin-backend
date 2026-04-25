@@ -61,7 +61,7 @@ type CommanderAuthConfig struct {
 	CookieSecure         bool          // true in prod (Caddy adds Secure)
 	CookieMaxAge         int           // 86400 (24h)
 	// Nonce settings
-	NonceExpiry       time.Duration // 10s — single-use nonce TTL for WebSocket auth frame
+	NonceExpiry time.Duration // 10s — single-use nonce TTL for WebSocket auth frame
 	// Per-IP rate limit for the /initiate endpoint
 	InitiateRateLimit  int           // 5 — requests per window per IP
 	InitiateRateWindow time.Duration // 1m — window duration
@@ -85,6 +85,10 @@ type CommanderAuthConfig struct {
 	// LoginAttemptLogPath — file to append rejected-login JSON lines to.
 	// Empty disables file logging; rejections still go to the server logger.
 	LoginAttemptLogPath string
+	// AdminActionsLogPath — file to append admin-action JSON lines to
+	// (Task 8 Grant/Revoke/Link/Unlink/Approve/Deny). Empty disables file
+	// logging; admin actions still go to the server logger.
+	AdminActionsLogPath string
 }
 
 // CopilotConfig holds WebSocket tuning and AI call parameters for the Copilot chat feature.
@@ -650,6 +654,7 @@ func loadCommanderAuthConfig() CommanderAuthConfig {
 		DesktopRedirectURI:   getenvDefault("DESKTOP_REDIRECT_URI", "https://edin.space/api/commander/auth/callback"),
 		AllowedFIDs:          parseFIDAllowlist(os.Getenv("COMMANDER_FID_ALLOWLIST")),
 		LoginAttemptLogPath:  os.Getenv("COMMANDER_LOGIN_ATTEMPT_LOG"),
+		AdminActionsLogPath:  os.Getenv("COMMANDER_ADMIN_ACTIONS_LOG"),
 	}
 }
 

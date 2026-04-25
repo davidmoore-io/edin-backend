@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/edin-space/edin-backend/internal/authentik"
 	"github.com/edin-space/edin-backend/internal/config"
 	"github.com/edin-space/edin-backend/internal/observability"
 )
@@ -688,8 +689,12 @@ func TestKaineToken_ValidCookie_WithCsrfHeader_ReturnsSingleUseNonce(t *testing.
 	}
 }
 
-// TestKaineToken_ValidCookie_MissingCsrfHeader_Returns403 verifies CSRF guard works.
-func TestKaineToken_ValidCookie_MissingCsrfHeader_Returns403(t *testing.T) {
+// TestKaineToken_ValidCookie_MissingCsrfHeader_Returns400 verifies CSRF
+// guard works. Task 8 refactored handleKaineToken to use the shared
+// requireFetchHeader helper which returns 400 (was 403); the request
+// is well-formed but missing required metadata, so 400 is the right
+// signal to the client.
+func TestKaineToken_ValidCookie_MissingCsrfHeader_Returns400(t *testing.T) {
 	mock := newMockJWTValidator()
 	mock.addUser("valid-jwt", &KaineUser{Sub: "user123"})
 
@@ -702,8 +707,8 @@ func TestKaineToken_ValidCookie_MissingCsrfHeader_Returns403(t *testing.T) {
 
 	s.handleKaineToken(rr, req)
 
-	if rr.Code != http.StatusForbidden {
-		t.Errorf("status = %d, want 403", rr.Code)
+	if rr.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400", rr.Code)
 	}
 }
 
@@ -911,5 +916,121 @@ func TestKaineAuthMe_NoCookie_Returns401(t *testing.T) {
 
 	if rr.Code != http.StatusUnauthorized {
 		t.Errorf("status = %d, want 401", rr.Code)
+	}
+}
+
+// ─── Task 8: regression guards on existing /admin/users/{id} endpoint ────────
+
+// stubAuthentikServerForUserGroups returns an httptest.Server that
+// satisfies the minimal API surface AddUserToGroup / RemoveUserFromGroup
+// exercise (GetGroupByName, GetUser by PK, PATCH user). It returns
+// canned responses so the handler can reach the prefix-validation path
+// AND, when a valid prefix is supplied, complete without 5xx.
+func stubAuthentikServerForUserGroups(t *testing.T) *httptest.Server {
+	t.Helper()
+	groupPK := "00000000-0000-0000-0000-000000000001"
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/api/v3/core/groups/"):
+			// GetGroupByName — return one group.
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"results":[{"pk":"` + groupPK + `","name":"x","is_superuser":false}]}`))
+		case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/api/v3/core/users/"):
+			// GetUser by PK — return a user with no current groups.
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"pk":7,"uuid":"` + groupPK + `","username":"u","name":"U","email":"u@example.com","is_active":true,"type":"external","groups_obj":[]}`))
+		case r.Method == http.MethodPatch && strings.HasPrefix(r.URL.Path, "/api/v3/core/users/"):
+			// Patch user groups — return 200.
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{}`))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+}
+
+func newAdminUsersTestServer(t *testing.T, fakeAuthentik *httptest.Server) *Server {
+	t.Helper()
+	srv := newTestServerForHandlers(newMockJWTValidator())
+	srv.authentikClient = authentik.NewClient(fakeAuthentik.URL, "test-token")
+	return srv
+}
+
+// TestKaineAdminUserByID_AddEdinGroup_Allowed exercises the Task 8
+// extension: the user-group endpoint accepts edin-* groups in addition
+// to kaine-*.
+func TestKaineAdminUserByID_AddEdinGroup_Allowed(t *testing.T) {
+	az := stubAuthentikServerForUserGroups(t)
+	defer az.Close()
+	srv := newAdminUsersTestServer(t, az)
+
+	body := strings.NewReader(`{"group":"edin-copilot"}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/kaine/admin/users/7", body)
+	req.Header.Set("X-Edin-Fetch", "1")
+	rr := httptest.NewRecorder()
+	srv.handleKaineAdminUserByID(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Errorf("expected 200, got %d body=%s", rr.Code, rr.Body.String())
+	}
+}
+
+// TestKaineAdminUserByID_RemoveEdinGroup_Allowed exercises the same
+// extension for DELETE.
+func TestKaineAdminUserByID_RemoveEdinGroup_Allowed(t *testing.T) {
+	az := stubAuthentikServerForUserGroups(t)
+	defer az.Close()
+	srv := newAdminUsersTestServer(t, az)
+
+	body := strings.NewReader(`{"group":"edin-copilot"}`)
+	req := httptest.NewRequest(http.MethodDelete, "/api/kaine/admin/users/7", body)
+	req.Header.Set("X-Edin-Fetch", "1")
+	rr := httptest.NewRecorder()
+	srv.handleKaineAdminUserByID(rr, req)
+
+	// 200 on success, or 200 on no-op (user not in group). Either is
+	// acceptable for this prefix-acceptance check.
+	if rr.Code != http.StatusOK {
+		t.Errorf("expected 200, got %d body=%s", rr.Code, rr.Body.String())
+	}
+}
+
+// TestKaineAdminUserByID_AddArbitraryGroup_StillRejected is the
+// regression guard: only kaine-* / edin-* groups are accepted. A
+// "wheel" or "admin" group must still be rejected with 400.
+func TestKaineAdminUserByID_AddArbitraryGroup_StillRejected(t *testing.T) {
+	az := stubAuthentikServerForUserGroups(t)
+	defer az.Close()
+	srv := newAdminUsersTestServer(t, az)
+
+	body := strings.NewReader(`{"group":"wheel"}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/kaine/admin/users/7", body)
+	req.Header.Set("X-Edin-Fetch", "1")
+	rr := httptest.NewRecorder()
+	srv.handleKaineAdminUserByID(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Errorf("expected 400, got %d body=%s", rr.Code, rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), "kaine-") {
+		t.Errorf("expected error to mention valid prefixes, got: %s", rr.Body.String())
+	}
+}
+
+// TestKaineAdminUserByID_AddGroup_MissingFetchHeader_400 verifies the
+// X-Edin-Fetch CSRF guard added in Task 8.
+func TestKaineAdminUserByID_AddGroup_MissingFetchHeader_400(t *testing.T) {
+	az := stubAuthentikServerForUserGroups(t)
+	defer az.Close()
+	srv := newAdminUsersTestServer(t, az)
+
+	body := strings.NewReader(`{"group":"kaine-chat"}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/kaine/admin/users/7", body)
+	// No X-Edin-Fetch header.
+	rr := httptest.NewRecorder()
+	srv.handleKaineAdminUserByID(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Errorf("expected 400, got %d body=%s", rr.Code, rr.Body.String())
 	}
 }
