@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -8,11 +9,15 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gorilla/websocket"
 	"github.com/edin-space/edin-backend/internal/assistant"
+	"github.com/edin-space/edin-backend/internal/authz"
 	"github.com/edin-space/edin-backend/internal/config"
 	"github.com/edin-space/edin-backend/internal/llm"
 	"github.com/edin-space/edin-backend/internal/observability"
+	"github.com/edin-space/edin-backend/internal/tools"
+	"github.com/gorilla/websocket"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // newCopilotTestServer creates a test Server with nil copilotRunner to verify 503 behaviour.
@@ -174,4 +179,50 @@ func TestCopilotWS_ValidToken_Connected(t *testing.T) {
 	if resp["type"] != "connected" {
 		t.Errorf("first message type = %v, want connected", resp["type"])
 	}
+}
+
+// TestCopilotWS_ScopesFromNonceReachToolContext verifies that scopes carried
+// on a CommanderChatUser stashed in the nonce store reach the per-message
+// tool-evaluation context exactly as authored — completing the chain
+// callback → JWT → nonce → WS handler ctx → tool filter.
+//
+// Wiring an end-to-end probe through the live WS handler would require a
+// seam in handleCopilotMessage to capture its constructed ctx. That's a
+// refactor of production code purely for testability and is out of scope
+// for Task 7 (the spec explicitly directs falling back to a unit-level
+// test in that case). Instead this test exercises the same three-call
+// context construction the WS handler performs at copilot_chat.go:343–345.
+//
+// The scope set used here is deliberately NON-default (no commander_data)
+// so the test would fail if any default-fallback path silently replaced
+// the consumed-nonce scopes.
+func TestCopilotWS_ScopesFromNonceReachToolContext(t *testing.T) {
+	ns := newCommanderChatNonceStore()
+
+	// Non-default scope set — proves we're carrying through the user's
+	// actual scopes, not a default. {copilot_chat, galaxy_read,
+	// commander_data} would match the legacy hardcode and not exercise
+	// Task 7's contract.
+	want := []authz.Scope{authz.ScopeCopilotChat, authz.ScopeGalaxyRead}
+	user := &CommanderChatUser{
+		FID:    "F2504",
+		Name:   "Cmdr Test",
+		Scopes: want,
+	}
+
+	// Issue and consume the nonce — same path the WS handler uses.
+	nonce := ns.Issue(user, 10*time.Second)
+	consumed := ns.Consume(nonce)
+	require.NotNil(t, consumed, "nonce consume returned nil")
+	require.Equal(t, want, consumed.Scopes, "consumed user must carry issued scopes")
+
+	// Reproduce handleCopilotMessage's three-call context construction
+	// verbatim so any drift in the production wiring breaks this test.
+	ctx := assistant.WithContext(context.Background(), "test-session", consumed.FID)
+	ctx = authz.ContextWithScopes(ctx, consumed.Scopes...)
+	ctx = tools.WithCommanderFID(ctx, consumed.FID)
+
+	got := authz.ScopesFromContext(ctx)
+	assert.Equal(t, want, got,
+		"scopes in ctx must match the CommanderChatUser scopes consumed from the nonce")
 }

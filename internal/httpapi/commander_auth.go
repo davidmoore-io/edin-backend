@@ -522,20 +522,18 @@ func (s *Server) handleCommanderAuthToken(w http.ResponseWriter, r *http.Request
 	// just validated above, so any consumer of this nonce is a fully-authenticated
 	// commander — no secondary role check is performed on the WS side.
 	//
-	// Scopes are the default commander set for now — Task 7 in the
-	// Authentik commander access plan replaces this hardcode with scopes
-	// drawn from the JWT "scopes" claim (which Task 6 made meaningful by
-	// deriving them from the commander's Authentik groups at callback
-	// time). Until Task 7 ships every verified WS-nonce consumer
-	// receives the literal default, matching pre-Task-6 behaviour.
+	// Scopes carried into the nonce mirror the JWT's scopes claim (which Task 6
+	// derives from the commander's Authentik groups at callback time). Empty
+	// scopes are honoured as fail-closed — a commander with no group-derived
+	// scopes cannot invoke any tool through the WS path.
+	scopes := make([]authz.Scope, 0, len(claims.Scopes))
+	for _, s := range claims.Scopes {
+		scopes = append(scopes, authz.Scope(s))
+	}
 	user := &CommanderChatUser{
-		FID:  claims.FID,
-		Name: claims.Name,
-		Scopes: []authz.Scope{
-			authz.ScopeCopilotChat,
-			authz.ScopeGalaxyRead,
-			authz.ScopeCommanderData,
-		},
+		FID:    claims.FID,
+		Name:   claims.Name,
+		Scopes: scopes,
 	}
 	nonce := s.commanderNonceStore.Issue(user, cfg.NonceExpiry)
 

@@ -656,18 +656,25 @@ func TestAuthToken_ValidCookie_WithCsrfHeader_ReturnsNonce(t *testing.T) {
 	assert.Equal(t, float64(10), body["expires_in"])
 }
 
-// TestAuthToken_IssuesDefaultCommanderScopeSet verifies that the nonce store
-// entry created by handleCommanderAuthToken carries the default commander
-// scope set — {copilot_chat, galaxy_read, commander_data}. This is the Task 2
-// hardcode; Task 6 replaces it with scopes drawn from the JWT "scopes" claim.
+// TestCommanderAuthToken_NoncePayloadMirrorsJWTScopes verifies that the
+// CommanderChatUser stashed in the nonce store by handleCommanderAuthToken
+// carries exactly the scopes from the JWT's "scopes" claim — not a hardcoded
+// default. The JWT issued here deliberately omits commander_data so the test
+// would fail if any default-fallback path were re-introduced.
 //
-// Failing this test means the copilot WS will either see too few tools (lost
-// scopes) or leak tools beyond the commander baseline.
-func TestAuthToken_IssuesDefaultCommanderScopeSet(t *testing.T) {
+// This completes the scope chain for the WS path: the same scopes derived
+// from Authentik groups at callback time (Task 6) reach the copilot WS ctx
+// via the nonce.
+func TestCommanderAuthToken_NoncePayloadMirrorsJWTScopes(t *testing.T) {
 	rdb := newTestMiniredis(t)
 	srv := newCommanderAuthTestServer(t, "http://frontier.invalid", rdb, 5*time.Second)
 
-	tokenStr := issueTestJWT(t, srv, "F9999", "Scope Test Cmdr")
+	// Deliberately partial scope set — NOT the default {copilot_chat,
+	// galaxy_read, commander_data}. If the handler falls back to a literal
+	// default this test fails because the third scope appears.
+	jwtScopes := []authz.Scope{authz.ScopeCopilotChat, authz.ScopeGalaxyRead}
+	tokenStr, _, err := srv.commanderJWTIssuer.Issue("F9999", "Scope Test Cmdr", jwtScopes)
+	require.NoError(t, err)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/commander/auth/token", nil)
 	req.Header.Set("X-Edin-Fetch", "1")
@@ -675,25 +682,51 @@ func TestAuthToken_IssuesDefaultCommanderScopeSet(t *testing.T) {
 	rr := httptest.NewRecorder()
 	srv.handleCommanderAuthToken(rr, req)
 
-	require.Equal(t, http.StatusOK, rr.Code)
+	require.Equal(t, http.StatusOK, rr.Code, "body: %s", rr.Body.String())
 
 	var body map[string]any
 	require.NoError(t, json.NewDecoder(rr.Body).Decode(&body))
 	nonce, ok := body["nonce"].(string)
 	require.True(t, ok, "expected nonce in response")
 
-	// Consume the nonce and verify the CommanderChatUser carries the
-	// expected default commander scope set in the exact order declared by
-	// handleCommanderAuthToken.
 	user := srv.commanderNonceStore.Consume(nonce)
 	require.NotNil(t, user, "nonce consume should return a user")
 
 	assert.Equal(t, "F9999", user.FID)
-	assert.Equal(t, []authz.Scope{
-		authz.ScopeCopilotChat,
-		authz.ScopeGalaxyRead,
-		authz.ScopeCommanderData,
-	}, user.Scopes)
+	assert.Equal(t, jwtScopes, user.Scopes,
+		"nonce payload scopes must mirror JWT claims.Scopes exactly")
+}
+
+// TestCommanderAuthToken_EmptyJWTScopes_NoncePayloadAlsoEmpty verifies the
+// fail-closed contract: a JWT with empty scopes (legacy or deny-closed)
+// produces a nonce payload with empty scopes. NO default fallback applies —
+// such a session reaching the copilot WS will see no tools.
+func TestCommanderAuthToken_EmptyJWTScopes_NoncePayloadAlsoEmpty(t *testing.T) {
+	rdb := newTestMiniredis(t)
+	srv := newCommanderAuthTestServer(t, "http://frontier.invalid", rdb, 5*time.Second)
+
+	// Issue a JWT with no scopes (issueTestJWT calls Issue(fid, name, nil)).
+	tokenStr := issueTestJWT(t, srv, "F0000", "No Scope Cmdr")
+
+	req := httptest.NewRequest(http.MethodGet, "/api/commander/auth/token", nil)
+	req.Header.Set("X-Edin-Fetch", "1")
+	req.AddCookie(&http.Cookie{Name: "commander_session", Value: tokenStr})
+	rr := httptest.NewRecorder()
+	srv.handleCommanderAuthToken(rr, req)
+
+	require.Equal(t, http.StatusOK, rr.Code, "body: %s", rr.Body.String())
+
+	var body map[string]any
+	require.NoError(t, json.NewDecoder(rr.Body).Decode(&body))
+	nonce, ok := body["nonce"].(string)
+	require.True(t, ok, "expected nonce in response")
+
+	user := srv.commanderNonceStore.Consume(nonce)
+	require.NotNil(t, user, "nonce consume should return a user")
+
+	assert.Equal(t, "F0000", user.FID)
+	assert.Empty(t, user.Scopes,
+		"empty JWT scopes must produce empty nonce-payload scopes (fail-closed)")
 }
 
 func TestAuthToken_ValidCookie_MissingCsrfHeader_Returns403(t *testing.T) {
