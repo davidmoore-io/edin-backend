@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
 	"github.com/redis/go-redis/v9"
 	"github.com/edin-space/edin-backend/internal/anthropic"
@@ -144,6 +145,16 @@ func Run(ctx context.Context, cfg *config.Config, opsManager *ops.Manager, llmSt
 	if cfg.Authentik.Enabled && cfg.Authentik.Token != "" {
 		server.authentikClient = authentik.NewClient(cfg.Authentik.URL, cfg.Authentik.Token)
 		server.logger.Info("Authentik API client initialized")
+
+		// Wire the shadow-user creator used by ensureCommanderLink. The
+		// closure captures the authentikClient so commander_linking.go
+		// stays decoupled from the *authentik.Client type and tests can
+		// override the field to fake a deterministic UUID without
+		// httptest. See commander_linking.go for the contract.
+		client := server.authentikClient
+		server.createShadowUser = func(ctx context.Context, fid, cmdrName string) (uuid.UUID, error) {
+			return authentik.CreateShadowUser(ctx, client, fid, cmdrName)
+		}
 	}
 
 	// Commander auth initialization (if enabled)
@@ -313,6 +324,14 @@ type Server struct {
 	nonceStore      *kaineNonceStore        // Single-use nonce store for WebSocket auth frames
 	eddnIntelStore  *store.SystemIntelStore // EDDN raw feed queries for system intel
 	authentikClient *authentik.Client       // Authentik API client for user management
+
+	// createShadowUser is the seam used by ensureCommanderLink (commander_linking.go)
+	// to provision an Authentik shadow user on first Frontier callback. Function-typed
+	// rather than method-on-Client so tests can override deterministically without
+	// spinning an httptest fake; production wiring (NewServer below) sets this to a
+	// closure over s.authentikClient. nil means auto-link cannot proceed and the
+	// callback denies the login.
+	createShadowUser func(ctx context.Context, fid, cmdrName string) (uuid.UUID, error)
 
 	// Commander (Copilot) auth
 	redisClient              *redis.Client

@@ -3,6 +3,7 @@ package httpapi
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -310,6 +311,45 @@ func (s *Server) handleClientAuthDesktopCallback(w http.ResponseWriter, r *http.
 		name = profileResp.Commander.Name
 	} else {
 		capiPending = true
+	}
+
+	// Record (or refresh) the commander row before any link / allowlist
+	// resolution. Mirrors the web callback — see commander_auth.go for the
+	// full rationale on the "frontier" platform sentinel.
+	if s.commanderRepo != nil {
+		if _, err := s.commanderRepo.UpsertCommander(ctx, fid, name, "frontier"); err != nil {
+			slog.Error("client_auth_callback_upsert_failed", "fid", fid, "err", err)
+			s.writeError(w, http.StatusInternalServerError, "failed to record commander")
+			return
+		}
+
+		// Auto-link to a shadow Authentik user on first login. Same
+		// deny-closed contract as the web callback. Audit lines carry
+		// flow="desktop" so the operator can distinguish the two paths.
+		if _, err := s.ensureCommanderLink(ctx, fid, name); err != nil {
+			reason := "authentik_unreachable"
+			if errors.Is(err, errLinkPersistFailed) {
+				reason = "link_persist_failed"
+			}
+			slog.Error("client_auth_link_failed",
+				"fid", fid,
+				"flow", string(loginFlowDesktop),
+				"reason", reason,
+				"err", err,
+			)
+			s.recordDeniedLogin(deniedLoginAttempt{
+				Time:          time.Now().UTC(),
+				FID:           fid,
+				CommanderName: name,
+				Flow:          loginFlowDesktop,
+				IP:            clientIP(r),
+				UserAgent:     r.UserAgent(),
+				Reason:        reason,
+			})
+			s.writeError(w, http.StatusForbidden,
+				"this commander is not currently permitted to use EDIN. Contact the administrator to request access.")
+			return
+		}
 	}
 
 	// Allowlist gate — same policy as the browser callback. Denied attempts

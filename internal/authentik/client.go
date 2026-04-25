@@ -2,14 +2,28 @@
 package authentik
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/google/uuid"
 )
+
+// ErrDuplicateUsername is returned by CreateUser when Authentik rejects the
+// request because the username is already taken. Callers handling shadow-user
+// idempotency should fall back to GetUserByUsername to recover the existing
+// user's UUID.
+var ErrDuplicateUsername = errors.New("authentik: username already exists")
+
+// ErrUserNotFound is returned by GetUserByUsername (and the user-by-PK lookup
+// helpers) when the requested user does not exist.
+var ErrUserNotFound = errors.New("authentik: user not found")
 
 // Client is an Authentik API client.
 type Client struct {
@@ -19,16 +33,42 @@ type Client struct {
 }
 
 // User represents an Authentik user.
+//
+// UUID is the stable identifier ("uuid" in the API response) used by EDIN as
+// the foreign key in commander.commanders.authentik_user_id. PK is the
+// numeric ID and is fine for short-lived API path lookups, but must NOT be
+// persisted as the link key — Authentik rebuilds PKs on data reload.
 type User struct {
-	PK       int      `json:"pk"`
+	PK       int       `json:"pk"`
+	UUID     uuid.UUID `json:"uuid"`
+	Username string    `json:"username"`
+	Name     string    `json:"name"`
+	Email    string    `json:"email"`
+	IsActive bool      `json:"is_active"`
+	Type     string    `json:"type"`
+	Groups   []Group   `json:"groups_obj,omitempty"`
+	UID      string    `json:"uid"`
+	Avatar   string    `json:"avatar,omitempty"`
+	Path     string    `json:"path,omitempty"`
+}
+
+// CreateUserRequest is the payload accepted by CreateUser. Only fields that
+// EDIN actually sets are exposed — the Authentik API accepts more, but we
+// don't use them. Add fields here as they're needed.
+//
+// Path defaults to "users" on the Authentik side when empty; shadow users go
+// under "users/edin-commanders".
+//
+// IsActive is a pointer so the zero value (false) is distinguishable from
+// "not set" — Authentik defaults new users to active when the field is absent.
+type CreateUserRequest struct {
 	Username string   `json:"username"`
 	Name     string   `json:"name"`
-	Email    string   `json:"email"`
-	IsActive bool     `json:"is_active"`
-	Type     string   `json:"type"`
-	Groups   []Group  `json:"groups_obj,omitempty"`
-	UID      string   `json:"uid"`
-	Avatar   string   `json:"avatar,omitempty"`
+	Email    string   `json:"email,omitempty"`
+	Path     string   `json:"path,omitempty"`
+	IsActive *bool    `json:"is_active,omitempty"`
+	Type     string   `json:"type,omitempty"`
+	Groups   []string `json:"groups,omitempty"` // Group PKs (UUIDs)
 }
 
 // Group represents an Authentik group.
@@ -353,4 +393,103 @@ func wrapQuotes(strs []string) []string {
 		result[i] = `"` + s + `"`
 	}
 	return result
+}
+
+// CreateUser creates a new Authentik user via POST /api/v3/core/users/.
+//
+// Returns ErrDuplicateUsername if Authentik responds 400 with a duplicate-
+// username validation error (Authentik surfaces the conflict in the response
+// body's "username" field). Other 4xx/5xx responses are returned verbatim
+// in the error string for diagnostic purposes.
+//
+// On success, the returned User has the canonical PK and UUID assigned by
+// Authentik; persist UUID, never PK.
+func (c *Client) CreateUser(ctx context.Context, req CreateUserRequest) (*User, error) {
+	body, err := json.Marshal(req)
+	if err != nil {
+		return nil, fmt.Errorf("marshal create user request: %w", err)
+	}
+
+	resp, err := c.doRequest(ctx, http.MethodPost, "/core/users/", bytes.NewReader(body))
+	if err != nil {
+		return nil, fmt.Errorf("create user request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	respBody, _ := io.ReadAll(resp.Body)
+
+	switch resp.StatusCode {
+	case http.StatusOK, http.StatusCreated:
+		var user User
+		if err := json.Unmarshal(respBody, &user); err != nil {
+			return nil, fmt.Errorf("decode created user: %w", err)
+		}
+		return &user, nil
+	case http.StatusBadRequest:
+		// Authentik returns validation errors with shape:
+		//   {"username": ["A user with this username already exists."]}
+		// Detect the duplicate-username case explicitly so callers (shadow-
+		// user idempotency) can recover via GetUserByUsername.
+		var errs map[string]json.RawMessage
+		if jerr := json.Unmarshal(respBody, &errs); jerr == nil {
+			if _, isUsernameErr := errs["username"]; isUsernameErr {
+				return nil, ErrDuplicateUsername
+			}
+		}
+		return nil, fmt.Errorf("create user failed: %s - %s", resp.Status, string(respBody))
+	default:
+		return nil, fmt.Errorf("create user failed: %s - %s", resp.Status, string(respBody))
+	}
+}
+
+// GetUserByUsername returns the user whose username exactly matches the
+// argument. Returns ErrUserNotFound if no such user exists.
+//
+// Authentik's list endpoint accepts ?username=... and returns a paginated
+// result; we take the first match (Authentik enforces username uniqueness).
+func (c *Client) GetUserByUsername(ctx context.Context, username string) (*User, error) {
+	endpoint := "/core/users/?username=" + encodeQueryComponent(username)
+	resp, err := c.doRequest(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return nil, fmt.Errorf("get user by username request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("get user by username failed: %s - %s", resp.Status, string(body))
+	}
+
+	var result PaginatedResponse[User]
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, fmt.Errorf("decode user by username: %w", err)
+	}
+
+	for _, u := range result.Results {
+		if u.Username == username {
+			user := u
+			return &user, nil
+		}
+	}
+	return nil, ErrUserNotFound
+}
+
+// encodeQueryComponent percent-encodes a URL query value. Kept package-local
+// to avoid pulling net/url just for this one helper; Authentik usernames are
+// ASCII-safe, but the generated shadow-user usernames could in principle
+// contain commander-name characters that require encoding.
+func encodeQueryComponent(s string) string {
+	const upperhex = "0123456789ABCDEF"
+	var b []byte
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		switch {
+		case c >= 'A' && c <= 'Z', c >= 'a' && c <= 'z', c >= '0' && c <= '9',
+			c == '-', c == '_', c == '.', c == '~':
+			b = append(b, c)
+		default:
+			b = append(b, '%', upperhex[c>>4], upperhex[c&0xf])
+		}
+	}
+	return string(b)
 }

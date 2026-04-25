@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -314,6 +315,52 @@ func (s *Server) handleCommanderAuthCallback(w http.ResponseWriter, r *http.Requ
 		} else {
 			// Profile returned but no name — treat as pending.
 			capiPending = true
+		}
+	}
+
+	// Record (or refresh) the commander row before any link / allowlist
+	// resolution. Required: ensureCommanderLink reads the row via
+	// GetCommanderAsAdmin and expects it to exist. The platform sentinel
+	// "frontier" means "Frontier-OAuth-confirmed, in-game platform unknown
+	// until the next journal ingest"; ingest's UpsertCommander will
+	// overwrite once a real platform string arrives.
+	if s.commanderRepo != nil {
+		if _, err := s.commanderRepo.UpsertCommander(r.Context(), fid, name, "frontier"); err != nil {
+			slog.Error("commander_callback_upsert_failed", "fid", fid, "err", err)
+			am.commanderAuthAttemptsTotal.WithLabelValues("failure").Inc()
+			s.writeError(w, http.StatusInternalServerError, "failed to record commander")
+			return
+		}
+
+		// Auto-link to a shadow Authentik user on first login. Best-effort
+		// idempotent on duplicate-username (handled inside CreateShadowUser).
+		// Any other Authentik error is deny-closed: audit + 403, do not
+		// fall through to JWT issuance. Behaviour is symmetric across the
+		// web and desktop callbacks.
+		if _, err := s.ensureCommanderLink(r.Context(), fid, name); err != nil {
+			reason := "authentik_unreachable"
+			if errors.Is(err, errLinkPersistFailed) {
+				reason = "link_persist_failed"
+			}
+			slog.Error("commander_link_failed",
+				"fid", fid,
+				"flow", string(loginFlowWeb),
+				"reason", reason,
+				"err", err,
+			)
+			s.recordDeniedLogin(deniedLoginAttempt{
+				Time:          time.Now().UTC(),
+				FID:           fid,
+				CommanderName: name,
+				Flow:          loginFlowWeb,
+				IP:            clientIP(r),
+				UserAgent:     r.UserAgent(),
+				Reason:        reason,
+			})
+			am.commanderAuthAttemptsTotal.WithLabelValues("denied").Inc()
+			s.writeError(w, http.StatusForbidden,
+				"this commander is not currently permitted to use EDIN. Contact the administrator to request access.")
+			return
 		}
 	}
 

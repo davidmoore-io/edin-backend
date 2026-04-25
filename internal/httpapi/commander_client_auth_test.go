@@ -11,6 +11,7 @@ import (
 	"github.com/alicebob/miniredis/v2"
 	"github.com/edin-space/edin-backend/internal/auth"
 	"github.com/golang-jwt/jwt/v5"
+	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -424,4 +425,91 @@ func TestCommanderClientAuth_CallbackTracksJTIUnderPerFIDSet(t *testing.T) {
 	ttl := mr.TTL("commander:jtis:F7777")
 	assert.True(t, ttl > 23*time.Hour && ttl <= 24*time.Hour,
 		"per-FID tracking set TTL must be roughly 24h; got %s", ttl)
+}
+
+// ─── Desktop auto-link tests (Task 5) ────────────────────────────────────────
+
+// TestClientAuthCallback_FirstLogin_CreatesShadowUserAndLinksFID asserts the
+// desktop callback for an unlinked commander row invokes the shadow-user
+// creator and persists the returned UUID. The session is marked complete
+// for the desktop client to poll.
+func TestClientAuthCallback_FirstLogin_CreatesShadowUserAndLinksFID(t *testing.T) {
+	frontierSrv := frontierTestServer(t, frontierTokenPayload(), "7777", "Desktop Commander", 0, false)
+	defer frontierSrv.Close()
+
+	rdb, mr := newClientAuthMiniredis(t)
+	srv := newCommanderAuthTestServer(t, frontierSrv.URL, rdb, 5*time.Second)
+
+	repo := newLinkTestRepo()
+	srv.commanderRepo = repo
+
+	wantUUID := uuid.MustParse("12345678-1234-1234-1234-123456789abc")
+	creator := &fakeShadowCreator{wantUUID: wantUUID}
+	srv.createShadowUser = creator.fn()
+
+	sessionID, state := seedPendingSession(t, mr, rdb, "desktop-verifier-link")
+
+	req := httptest.NewRequest(http.MethodGet,
+		fmt.Sprintf("/api/commander/auth/callback?code=desktop-code&state=%s", state), nil)
+	rr := httptest.NewRecorder()
+	srv.handleCommanderAuthCallback(rr, req)
+
+	require.Equal(t, http.StatusOK, rr.Code, "body: %s", rr.Body.String())
+	assert.Equal(t, 1, creator.Calls(), "shadow creator must be invoked exactly once")
+	assert.Equal(t, 1, repo.upsertCallCount(), "UpsertCommander must run before link")
+	assert.Equal(t, 1, repo.setLinkCallCount(), "SetAuthentikLink must run after shadow create")
+	assert.Equal(t, wantUUID, repo.linkedUUID("F7777"))
+
+	// Session must have been completed with a token for the desktop poll.
+	raw, err := mr.Get(clientAuthSessionKey(sessionID))
+	require.NoError(t, err)
+	var session clientAuthSession
+	require.NoError(t, json.Unmarshal([]byte(raw), &session))
+	assert.Equal(t, "complete", session.Status)
+	assert.NotEmpty(t, session.Token)
+}
+
+// TestClientAuthCallback_AuthentikCreateFails_Returns403 mirrors the web
+// callback's deny-closed contract: a transient Authentik failure on the
+// desktop path returns 403, leaves the row unlinked, and does NOT mark the
+// pending session complete (so the desktop client's next poll sees pending
+// → eventually expired, not a complete-with-bogus-token).
+func TestClientAuthCallback_AuthentikCreateFails_Returns403(t *testing.T) {
+	frontierSrv := frontierTestServer(t, frontierTokenPayload(), "7777", "Desktop Commander", 0, false)
+	defer frontierSrv.Close()
+
+	rdb, mr := newClientAuthMiniredis(t)
+	srv := newCommanderAuthTestServer(t, frontierSrv.URL, rdb, 5*time.Second)
+
+	repo := newLinkTestRepo()
+	srv.commanderRepo = repo
+
+	creator := &fakeShadowCreator{wantErr: errAuthentikDown}
+	srv.createShadowUser = creator.fn()
+
+	sessionID, state := seedPendingSession(t, mr, rdb, "desktop-verifier-deny")
+
+	req := httptest.NewRequest(http.MethodGet,
+		fmt.Sprintf("/api/commander/auth/callback?code=desktop-code&state=%s", state), nil)
+	rr := httptest.NewRecorder()
+	srv.handleCommanderAuthCallback(rr, req)
+
+	assert.Equal(t, http.StatusForbidden, rr.Code,
+		"Authentik failure must deny-close the desktop auth flow")
+	assert.Equal(t, 1, creator.Calls())
+	assert.Equal(t, 0, repo.setLinkCallCount(),
+		"SetAuthentikLink must NOT be invoked when shadow create failed")
+	assert.Equal(t, uuid.Nil, repo.linkedUUID("F7777"))
+
+	// The pending session must still be pending (NOT marked complete) — the
+	// desktop client will poll, eventually expire, and surface that to the
+	// user instead of presenting a complete-but-invalid token.
+	raw, err := mr.Get(clientAuthSessionKey(sessionID))
+	require.NoError(t, err)
+	var session clientAuthSession
+	require.NoError(t, json.Unmarshal([]byte(raw), &session))
+	assert.Equal(t, "pending", session.Status,
+		"session must remain pending when desktop callback is denied")
+	assert.Empty(t, session.Token,
+		"no JWT must be stored when desktop callback is denied")
 }

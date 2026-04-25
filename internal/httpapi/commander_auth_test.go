@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"crypto/rsa"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -18,6 +19,7 @@ import (
 	"github.com/edin-space/edin-backend/internal/config"
 	"github.com/edin-space/edin-backend/internal/observability"
 	"github.com/golang-jwt/jwt/v5"
+	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -701,4 +703,164 @@ func TestAuthToken_NoCookie_Returns401(t *testing.T) {
 	srv.handleCommanderAuthToken(rr, req)
 
 	assert.Equal(t, http.StatusUnauthorized, rr.Code)
+}
+
+// ─── Auto-link tests (Task 5) ─────────────────────────────────────────────────
+
+// frontierTokenPayload returns a stock Frontier token payload for tests.
+func frontierTokenPayload() map[string]any {
+	return map[string]any{
+		"access_token":  "acc",
+		"token_type":    "Bearer",
+		"expires_in":    3600,
+		"refresh_token": "ref",
+	}
+}
+
+// TestCallback_FirstLogin_CreatesShadowUserAndLinksFID asserts that the
+// browser callback for a commander whose row has authentik_user_id IS NULL
+// invokes the shadow-user creator and persists the returned UUID via
+// SetAuthentikLink. The login then proceeds (200 OK + JWT cookie).
+func TestCallback_FirstLogin_CreatesShadowUserAndLinksFID(t *testing.T) {
+	frontierSrv := frontierTestServer(t, frontierTokenPayload(), "2504", "Pattern State", 0, false)
+	defer frontierSrv.Close()
+
+	rdb := newTestMiniredis(t)
+	srv := newCommanderAuthTestServer(t, frontierSrv.URL, rdb, 5*time.Second)
+
+	repo := newLinkTestRepo()
+	srv.commanderRepo = repo
+
+	wantUUID := uuid.MustParse("aaaa1111-bbbb-2222-cccc-333344445555")
+	creator := &fakeShadowCreator{wantUUID: wantUUID}
+	srv.createShadowUser = creator.fn()
+
+	state := "state-first-login"
+	srv.commanderPKCEStore.store(state, "verifier", "http://localhost/copilot/callback", 10*time.Minute)
+
+	req := httptest.NewRequest(http.MethodGet,
+		"/api/commander/auth/callback?code=code&state="+state, nil)
+	rr := httptest.NewRecorder()
+	srv.handleCommanderAuthCallback(rr, req)
+
+	require.Equal(t, http.StatusOK, rr.Code, "body: %s", rr.Body.String())
+	assert.Equal(t, 1, creator.Calls(), "shadow creator must be invoked exactly once")
+	assert.Equal(t, 1, repo.upsertCallCount(), "UpsertCommander must run before link")
+	assert.Equal(t, 1, repo.setLinkCallCount(), "SetAuthentikLink must run after shadow create")
+	assert.Equal(t, wantUUID, repo.linkedUUID("F2504"))
+}
+
+// TestCallback_ReturningCommander_DoesNotReCreateShadow asserts that when
+// the row already has an authentik_user_id, the shadow creator is NOT
+// invoked — preserves the previously-linked UUID.
+func TestCallback_ReturningCommander_DoesNotReCreateShadow(t *testing.T) {
+	frontierSrv := frontierTestServer(t, frontierTokenPayload(), "2504", "Pattern State", 0, false)
+	defer frontierSrv.Close()
+
+	rdb := newTestMiniredis(t)
+	srv := newCommanderAuthTestServer(t, frontierSrv.URL, rdb, 5*time.Second)
+
+	existingUUID := uuid.MustParse("ffff1111-eeee-2222-dddd-333344445555")
+	repo := newLinkTestRepo()
+	repo.seedRow("F2504", &existingUUID)
+	srv.commanderRepo = repo
+
+	creator := &fakeShadowCreator{wantUUID: uuid.New()} // Should never be called.
+	srv.createShadowUser = creator.fn()
+
+	state := "state-returning"
+	srv.commanderPKCEStore.store(state, "verifier", "http://localhost/copilot/callback", 10*time.Minute)
+
+	req := httptest.NewRequest(http.MethodGet,
+		"/api/commander/auth/callback?code=code&state="+state, nil)
+	rr := httptest.NewRecorder()
+	srv.handleCommanderAuthCallback(rr, req)
+
+	require.Equal(t, http.StatusOK, rr.Code, "body: %s", rr.Body.String())
+	assert.Equal(t, 0, creator.Calls(),
+		"shadow creator must NOT be invoked when commander row is already linked")
+	assert.Equal(t, 0, repo.setLinkCallCount(),
+		"SetAuthentikLink must NOT be invoked when commander row is already linked")
+	assert.Equal(t, existingUUID, repo.linkedUUID("F2504"),
+		"existing link must be preserved")
+}
+
+// TestCallback_AuthentikCreateFails_Returns403AndAuditsDenial asserts that
+// a transient Authentik failure deny-closes the auth flow with a denial
+// audit (reason="authentik_unreachable") and a 403 to the caller. No JWT
+// cookie is issued.
+func TestCallback_AuthentikCreateFails_Returns403AndAuditsDenial(t *testing.T) {
+	frontierSrv := frontierTestServer(t, frontierTokenPayload(), "2504", "Pattern State", 0, false)
+	defer frontierSrv.Close()
+
+	rdb := newTestMiniredis(t)
+	srv := newCommanderAuthTestServer(t, frontierSrv.URL, rdb, 5*time.Second)
+
+	repo := newLinkTestRepo()
+	srv.commanderRepo = repo
+
+	creator := &fakeShadowCreator{wantErr: errAuthentikDown}
+	srv.createShadowUser = creator.fn()
+
+	state := "state-authentik-down"
+	srv.commanderPKCEStore.store(state, "verifier", "http://localhost/copilot/callback", 10*time.Minute)
+
+	req := httptest.NewRequest(http.MethodGet,
+		"/api/commander/auth/callback?code=code&state="+state, nil)
+	rr := httptest.NewRecorder()
+	srv.handleCommanderAuthCallback(rr, req)
+
+	assert.Equal(t, http.StatusForbidden, rr.Code, "Authentik failure must deny-close the auth flow")
+	assert.Equal(t, 1, creator.Calls(), "creator must have been attempted")
+	assert.Equal(t, 0, repo.setLinkCallCount(),
+		"SetAuthentikLink must NOT be invoked when shadow create failed")
+	assert.Equal(t, uuid.Nil, repo.linkedUUID("F2504"),
+		"row must remain unlinked when shadow create failed")
+
+	// No JWT cookie on a denied login.
+	for _, c := range rr.Result().Cookies() {
+		assert.NotEqual(t, "commander_session", c.Name,
+			"commander_session cookie must NOT be set on denial")
+	}
+}
+
+// TestCallback_ShadowCreatedButLinkPersistFails_AuditsAndReturns403 covers
+// the seam where Authentik state has gotten ahead of our DB. The next
+// retry recovers via duplicate-username; this test verifies the first-
+// attempt denial logs reason="link_persist_failed" and returns 403.
+func TestCallback_ShadowCreatedButLinkPersistFails_AuditsAndReturns403(t *testing.T) {
+	frontierSrv := frontierTestServer(t, frontierTokenPayload(), "2504", "Pattern State", 0, false)
+	defer frontierSrv.Close()
+
+	rdb := newTestMiniredis(t)
+	srv := newCommanderAuthTestServer(t, frontierSrv.URL, rdb, 5*time.Second)
+
+	repo := newLinkTestRepo()
+	repo.setLinkErr = errors.New("simulated link persist failure")
+	srv.commanderRepo = repo
+
+	wantUUID := uuid.MustParse("11112222-3333-4444-5555-666677778888")
+	creator := &fakeShadowCreator{wantUUID: wantUUID}
+	srv.createShadowUser = creator.fn()
+
+	state := "state-link-persist-fail"
+	srv.commanderPKCEStore.store(state, "verifier", "http://localhost/copilot/callback", 10*time.Minute)
+
+	req := httptest.NewRequest(http.MethodGet,
+		"/api/commander/auth/callback?code=code&state="+state, nil)
+	rr := httptest.NewRecorder()
+	srv.handleCommanderAuthCallback(rr, req)
+
+	assert.Equal(t, http.StatusForbidden, rr.Code,
+		"link persist failure must deny-close the auth flow")
+	assert.Equal(t, 1, creator.Calls(),
+		"shadow creator must have run once even though persist failed")
+	assert.Equal(t, 1, repo.setLinkCallCount(),
+		"SetAuthentikLink must have been attempted")
+
+	// No cookie on denial.
+	for _, c := range rr.Result().Cookies() {
+		assert.NotEqual(t, "commander_session", c.Name,
+			"commander_session cookie must NOT be set on denial")
+	}
 }
