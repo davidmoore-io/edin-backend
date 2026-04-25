@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/google/uuid"
 )
@@ -18,9 +19,9 @@ const shadowUserPath = "users/edin-commanders"
 // .invalid TLD is reserved by RFC 2606 and guaranteed never to receive
 // mail, so a typo or misconfiguration cannot leak to a real recipient.
 //
-// The local-part is the FID, e.g. "F2504@edin-shadow.invalid". This is
+// The local-part is the FID, e.g. "F2504@edin.commanders.invalid". This is
 // stable per commander and unique by construction (FIDs are unique).
-const shadowUserEmailDomain = "edin-shadow.invalid"
+const shadowUserEmailDomain = "edin.commanders.invalid"
 
 // CreateShadowUser creates (or finds, on duplicate-username) a shadow
 // Authentik user for the given Frontier commander and returns its UUID.
@@ -61,7 +62,7 @@ func CreateShadowUser(ctx context.Context, c *Client, fid, cmdrName string) (uui
 	req := CreateUserRequest{
 		Username: fid,
 		Name:     displayName,
-		Email:    fid + "@" + shadowUserEmailDomain,
+		Email:    strings.ToLower(fid) + "@" + shadowUserEmailDomain,
 		Path:     shadowUserPath,
 		IsActive: &isActive,
 	}

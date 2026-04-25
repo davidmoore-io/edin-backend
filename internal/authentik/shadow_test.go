@@ -34,7 +34,7 @@ func TestCreateShadowUser_HappyPath_ReturnsUUID(t *testing.T) {
 		assert.Equal(t, "F2504", got["username"])
 		assert.Equal(t, "Pattern State", got["name"])
 		assert.Equal(t, "users/edin-commanders", got["path"])
-		assert.Equal(t, "F2504@edin-shadow.invalid", got["email"])
+		assert.Equal(t, "f2504@edin.commanders.invalid", got["email"])
 		assert.Equal(t, true, got["is_active"])
 		_, hasPwd := got["password"]
 		assert.False(t, hasPwd, "shadow users must not be created with a password")

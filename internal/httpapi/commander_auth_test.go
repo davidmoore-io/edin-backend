@@ -9,6 +9,8 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -122,6 +124,22 @@ func newCommanderAuthTestServer(t *testing.T, frontierURL string, rdb *redis.Cli
 		commanderPKCEStore:    newCommanderPKCEStore(1000),
 		commanderNonceStore:   newCommanderChatNonceStore(),
 	}
+}
+
+// readLastDeniedLoginAttempt reads the JSON-lines audit file at logPath and
+// returns the last (most recent) record. The audit infra writes one JSON
+// object per line via recordDeniedLogin (see commander_allowlist.go). Tests
+// use this to pin the Reason field for failure-path callbacks.
+func readLastDeniedLoginAttempt(t *testing.T, logPath string) deniedLoginAttempt {
+	t.Helper()
+	data, err := os.ReadFile(logPath)
+	require.NoError(t, err, "audit log file must exist after a denied login")
+	lines := strings.Split(strings.TrimRight(string(data), "\n"), "\n")
+	require.NotEmpty(t, lines, "audit log must contain at least one line")
+	var last deniedLoginAttempt
+	require.NoError(t, json.Unmarshal([]byte(lines[len(lines)-1]), &last),
+		"last audit line must be valid JSON")
+	return last
 }
 
 // ─── Initiate tests ────────────────────────────────────────────────────────────
@@ -796,6 +814,9 @@ func TestCallback_AuthentikCreateFails_Returns403AndAuditsDenial(t *testing.T) {
 	rdb := newTestMiniredis(t)
 	srv := newCommanderAuthTestServer(t, frontierSrv.URL, rdb, 5*time.Second)
 
+	logPath := filepath.Join(t.TempDir(), "attempts.log")
+	srv.cfg.CommanderAuth.LoginAttemptLogPath = logPath
+
 	repo := newLinkTestRepo()
 	srv.commanderRepo = repo
 
@@ -822,6 +843,14 @@ func TestCallback_AuthentikCreateFails_Returns403AndAuditsDenial(t *testing.T) {
 		assert.NotEqual(t, "commander_session", c.Name,
 			"commander_session cookie must NOT be set on denial")
 	}
+
+	// The audit record must discriminate Authentik failure from link-persist
+	// failure so production diagnostics can tell them apart.
+	logged := readLastDeniedLoginAttempt(t, logPath)
+	assert.Equal(t, "F2504", logged.FID)
+	assert.Equal(t, loginFlowWeb, logged.Flow)
+	assert.Equal(t, "authentik_unreachable", logged.Reason,
+		"Authentik failure must audit reason=authentik_unreachable")
 }
 
 // TestCallback_ShadowCreatedButLinkPersistFails_AuditsAndReturns403 covers
@@ -834,6 +863,9 @@ func TestCallback_ShadowCreatedButLinkPersistFails_AuditsAndReturns403(t *testin
 
 	rdb := newTestMiniredis(t)
 	srv := newCommanderAuthTestServer(t, frontierSrv.URL, rdb, 5*time.Second)
+
+	logPath := filepath.Join(t.TempDir(), "attempts.log")
+	srv.cfg.CommanderAuth.LoginAttemptLogPath = logPath
 
 	repo := newLinkTestRepo()
 	repo.setLinkErr = errors.New("simulated link persist failure")
@@ -863,4 +895,12 @@ func TestCallback_ShadowCreatedButLinkPersistFails_AuditsAndReturns403(t *testin
 		assert.NotEqual(t, "commander_session", c.Name,
 			"commander_session cookie must NOT be set on denial")
 	}
+
+	// The audit record must distinguish link-persist failure from a generic
+	// Authentik outage — production diagnostics depend on this seam.
+	logged := readLastDeniedLoginAttempt(t, logPath)
+	assert.Equal(t, "F2504", logged.FID)
+	assert.Equal(t, loginFlowWeb, logged.Flow)
+	assert.Equal(t, "link_persist_failed", logged.Reason,
+		"link-persist failure must audit reason=link_persist_failed")
 }

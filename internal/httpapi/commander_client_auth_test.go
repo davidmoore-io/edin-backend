@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -481,6 +482,9 @@ func TestClientAuthCallback_AuthentikCreateFails_Returns403(t *testing.T) {
 	rdb, mr := newClientAuthMiniredis(t)
 	srv := newCommanderAuthTestServer(t, frontierSrv.URL, rdb, 5*time.Second)
 
+	logPath := filepath.Join(t.TempDir(), "attempts.log")
+	srv.cfg.CommanderAuth.LoginAttemptLogPath = logPath
+
 	repo := newLinkTestRepo()
 	srv.commanderRepo = repo
 
@@ -512,4 +516,12 @@ func TestClientAuthCallback_AuthentikCreateFails_Returns403(t *testing.T) {
 		"session must remain pending when desktop callback is denied")
 	assert.Empty(t, session.Token,
 		"no JWT must be stored when desktop callback is denied")
+
+	// Audit record must label the failure as Authentik-side so the desktop
+	// flow's diagnostics match the web flow's discrimination.
+	logged := readLastDeniedLoginAttempt(t, logPath)
+	assert.Equal(t, "F7777", logged.FID)
+	assert.Equal(t, loginFlowDesktop, logged.Flow)
+	assert.Equal(t, "authentik_unreachable", logged.Reason,
+		"desktop Authentik failure must audit reason=authentik_unreachable")
 }
