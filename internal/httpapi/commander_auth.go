@@ -522,11 +522,12 @@ func (s *Server) handleCommanderAuthToken(w http.ResponseWriter, r *http.Request
 	// just validated above, so any consumer of this nonce is a fully-authenticated
 	// commander — no secondary role check is performed on the WS side.
 	//
-	// Scopes are the default commander set for now — Task 6 in the
+	// Scopes are the default commander set for now — Task 7 in the
 	// Authentik commander access plan replaces this hardcode with scopes
-	// drawn from the JWT "scopes" claim. Until then every verified
-	// commander receives the same scope set, matching today's behaviour
-	// before this task.
+	// drawn from the JWT "scopes" claim (which Task 6 made meaningful by
+	// deriving them from the commander's Authentik groups at callback
+	// time). Until Task 7 ships every verified WS-nonce consumer
+	// receives the literal default, matching pre-Task-6 behaviour.
 	user := &CommanderChatUser{
 		FID:  claims.FID,
 		Name: claims.Name,
@@ -716,8 +717,11 @@ func (s *Server) handleCommanderAuthRefresh(w http.ResponseWriter, r *http.Reque
 		s.writeError(w, http.StatusServiceUnavailable, "commander auth not configured")
 		return
 	}
-	// Default commander scope set — same literal as the web and desktop
-	// callbacks. Task 6 replaces this with resolveCommanderAccess.
+	// Default commander scope set. Task 6 migrated the web/desktop
+	// callbacks to derive scopes via resolveCommanderAccess; refresh
+	// stays on the literal default until a follow-up carries forward
+	// claims.Scopes from the old JWT (out of Task 6's scope per the
+	// plan; revisit when refresh-side scope drift becomes user-visible).
 	newTokenString, newJTI, err := s.commanderJWTIssuer.Issue(fid, name, []authz.Scope{
 		authz.ScopeCopilotChat,
 		authz.ScopeGalaxyRead,
