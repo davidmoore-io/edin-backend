@@ -20,29 +20,6 @@ import (
 	"github.com/edin-space/edin-backend/internal/store"
 )
 
-// ─── fidAllowed helper retained ───────────────────────────────────────────────
-
-func TestFIDAllowed_EmptyAllowlist_AllowsEveryone(t *testing.T) {
-	// An empty allowlist is the "disabled" state. Any caller proceeds.
-	assert.True(t, fidAllowed(nil, "F2504"))
-	assert.True(t, fidAllowed([]string{}, "F9999"))
-}
-
-func TestFIDAllowed_Membership(t *testing.T) {
-	list := []string{"F2504", "F123"}
-	assert.True(t, fidAllowed(list, "F2504"))
-	assert.True(t, fidAllowed(list, "F123"))
-	assert.False(t, fidAllowed(list, "F9999"))
-}
-
-func TestFIDAllowed_CaseSensitive(t *testing.T) {
-	// FIDs from Frontier are always uppercase "F" + digits. Treat case
-	// mismatches as "not on list" so a deployment that accidentally writes
-	// "f2504" in config doesn't quietly grant access to both forms.
-	list := []string{"F2504"}
-	assert.False(t, fidAllowed(list, "f2504"))
-}
-
 // ─── resolveCommanderAccess decision-matrix tests ─────────────────────────────
 
 // TestResolveCommanderAccess_LinkedApproved_UsesAuthentikGroups covers the
@@ -63,7 +40,7 @@ func TestResolveCommanderAccess_LinkedApproved_UsesAuthentikGroups(t *testing.T)
 		},
 	}
 
-	srv := newAccessTestServer(t, nil, "")
+	srv := newAccessTestServer(t, "")
 	srv.commanderRepo = repo
 	srv.authentikUserGroups = groups
 
@@ -82,8 +59,7 @@ func TestResolveCommanderAccess_LinkedApproved_UsesAuthentikGroups(t *testing.T)
 
 // TestResolveCommanderAccess_LinkedApproved_NoGroupsMapped_Denied covers the
 // case where Authentik returns groups but none of them map to a scope set.
-// Plan: deny with reason=no_scopes_granted. Must NOT fall through to the
-// allowlist branch.
+// Plan: deny with reason=no_scopes_granted.
 func TestResolveCommanderAccess_LinkedApproved_NoGroupsMapped_Denied(t *testing.T) {
 	fid := "F2504"
 	authentikUUID := uuid.MustParse("aaaaaaaa-1111-2222-3333-444455556666")
@@ -99,9 +75,7 @@ func TestResolveCommanderAccess_LinkedApproved_NoGroupsMapped_Denied(t *testing.
 		},
 	}
 
-	// Allowlist contains the FID; the linked+approved branch must NOT fall
-	// through to allowlist_fallback. This is a critical safety property.
-	srv := newAccessTestServer(t, []string{fid}, "")
+	srv := newAccessTestServer(t, "")
 	srv.commanderRepo = repo
 	srv.authentikUserGroups = groups
 
@@ -132,7 +106,7 @@ func TestResolveCommanderAccess_LinkedApproved_AuthentikUserDeleted_DeniesWithMi
 		errByUUID: map[uuid.UUID]error{authentikUUID: authentik.ErrUserNotFound},
 	}
 
-	srv := newAccessTestServer(t, nil, "")
+	srv := newAccessTestServer(t, "")
 	srv.commanderRepo = repo
 	srv.authentikUserGroups = groups
 
@@ -161,7 +135,7 @@ func TestResolveCommanderAccess_LinkedApproved_AuthentikTransientError_DeniesClo
 		errByUUID: map[uuid.UUID]error{authentikUUID: errors.New("authentik 502 bad gateway")},
 	}
 
-	srv := newAccessTestServer(t, nil, "")
+	srv := newAccessTestServer(t, "")
 	srv.commanderRepo = repo
 	srv.authentikUserGroups = groups
 
@@ -189,7 +163,7 @@ func TestResolveCommanderAccess_LinkedApproved_AuthentikTimeout_DeniesUnreachabl
 	// fake honours ctx so we don't actually wait 2 seconds in the test.
 	groups := &fakeAuthentikUserGroups{blockUntilCancelled: true}
 
-	srv := newAccessTestServer(t, nil, "")
+	srv := newAccessTestServer(t, "")
 	srv.commanderRepo = repo
 	srv.authentikUserGroups = groups
 
@@ -205,11 +179,10 @@ func TestResolveCommanderAccess_LinkedApproved_AuthentikTimeout_DeniesUnreachabl
 	assert.Equal(t, "authentik_unreachable", dec.Reason)
 }
 
-// TestResolveCommanderAccess_LinkedNotApproved_OnAllowlist_UsesFallback covers
-// the migration window: a linked-but-not-yet-approved commander whose FID is
-// on the env-var allowlist gets the default commander scope set. The
-// Authentik client is NOT consulted — approved=false short-circuits.
-func TestResolveCommanderAccess_LinkedNotApproved_OnAllowlist_UsesFallback(t *testing.T) {
+// TestResolveCommanderAccess_LinkedNotApproved_DeniesAwaiting covers the
+// post-cutover shape: linked but awaiting admin approval → always denied.
+// The Authentik client is NOT consulted — approved=false short-circuits.
+func TestResolveCommanderAccess_LinkedNotApproved_DeniesAwaiting(t *testing.T) {
 	fid := "F2504"
 	authentikUUID := uuid.MustParse("aaaaaaaa-1111-2222-3333-444455556666")
 
@@ -218,36 +191,9 @@ func TestResolveCommanderAccess_LinkedNotApproved_OnAllowlist_UsesFallback(t *te
 
 	groups := &fakeAuthentikUserGroups{} // Should NOT be consulted.
 
-	srv := newAccessTestServer(t, []string{fid}, "")
+	srv := newAccessTestServer(t, "")
 	srv.commanderRepo = repo
 	srv.authentikUserGroups = groups
-
-	r := httptest.NewRequest(http.MethodGet, "/anything", nil)
-	dec := srv.resolveCommanderAccess(context.Background(), r, loginFlowWeb, fid, "Pattern State")
-
-	assert.True(t, dec.Allowed)
-	assert.Equal(t, "allowlist_fallback", dec.Reason)
-	assert.Equal(t, []authz.Scope{
-		authz.ScopeCopilotChat,
-		authz.ScopeGalaxyRead,
-		authz.ScopeCommanderData,
-	}, dec.Scopes, "default commander scope set")
-	assert.Equal(t, 0, groups.calls, "Authentik must NOT be consulted for not-approved rows")
-}
-
-// TestResolveCommanderAccess_LinkedNotApproved_OffAllowlist_DeniesAwaiting
-// covers the post-rollout shape: linked but awaiting admin approval, with
-// no env-var fallback.
-func TestResolveCommanderAccess_LinkedNotApproved_OffAllowlist_DeniesAwaiting(t *testing.T) {
-	fid := "F2504"
-	authentikUUID := uuid.MustParse("aaaaaaaa-1111-2222-3333-444455556666")
-
-	repo := newLinkTestRepo()
-	repo.seedRow(fid, &authentikUUID)
-
-	srv := newAccessTestServer(t, []string{"F-other"}, "")
-	srv.commanderRepo = repo
-	srv.authentikUserGroups = &fakeAuthentikUserGroups{}
 
 	r := httptest.NewRequest(http.MethodGet, "/anything", nil)
 	dec := srv.resolveCommanderAccess(context.Background(), r, loginFlowWeb, fid, "Pattern State")
@@ -256,39 +202,19 @@ func TestResolveCommanderAccess_LinkedNotApproved_OffAllowlist_DeniesAwaiting(t 
 	assert.Equal(t, "awaiting_approval", dec.Reason)
 	require.NotNil(t, dec.Denial)
 	assert.Equal(t, "awaiting_approval", dec.Denial.Reason)
+	assert.Equal(t, 0, groups.calls, "Authentik must NOT be consulted for not-approved rows")
 }
 
-// TestResolveCommanderAccess_RowAbsent_OnAllowlist_UsesFallback covers the
-// transitional path (a row should always exist post-Task-5, but the legacy
-// allowlist branch is kept until Task 12).
-func TestResolveCommanderAccess_RowAbsent_OnAllowlist_UsesFallback(t *testing.T) {
-	fid := "F2504"
+// TestResolveCommanderAccess_RowAbsent_Denied covers the post-cutover reject
+// path for an unlinked commander. Post-Task-5, every callback invokes
+// ensureCommanderLink, so reaching this branch means auto-link failed —
+// deny-closed with reason=not_on_allowlist (label retained for log
+// continuity; semantics narrowed to "no Authentik link exists").
+func TestResolveCommanderAccess_RowAbsent_Denied(t *testing.T) {
+	fid := "F9999"
 	repo := newLinkTestRepo() // No seedRow — GetCommanderAsAdmin returns ErrCommanderNotFound.
 
-	srv := newAccessTestServer(t, []string{fid}, "")
-	srv.commanderRepo = repo
-	srv.authentikUserGroups = &fakeAuthentikUserGroups{}
-
-	r := httptest.NewRequest(http.MethodGet, "/anything", nil)
-	dec := srv.resolveCommanderAccess(context.Background(), r, loginFlowWeb, fid, "Pattern State")
-
-	assert.True(t, dec.Allowed)
-	assert.Equal(t, "allowlist", dec.Reason,
-		"row absent + on allowlist must surface reason=allowlist (distinct from allowlist_fallback)")
-	assert.Equal(t, []authz.Scope{
-		authz.ScopeCopilotChat,
-		authz.ScopeGalaxyRead,
-		authz.ScopeCommanderData,
-	}, dec.Scopes)
-}
-
-// TestResolveCommanderAccess_RowAbsent_OffAllowlist_Denied covers the
-// transitional reject path.
-func TestResolveCommanderAccess_RowAbsent_OffAllowlist_Denied(t *testing.T) {
-	fid := "F9999"
-	repo := newLinkTestRepo()
-
-	srv := newAccessTestServer(t, []string{"F2504"}, "")
+	srv := newAccessTestServer(t, "")
 	srv.commanderRepo = repo
 	srv.authentikUserGroups = &fakeAuthentikUserGroups{}
 
@@ -302,17 +228,54 @@ func TestResolveCommanderAccess_RowAbsent_OffAllowlist_Denied(t *testing.T) {
 	assert.Equal(t, fid, dec.Denial.FID)
 }
 
+// TestResolveCommanderAccess_UnlinkedCommander_AlwaysDenied covers both
+// post-cutover unlinked paths together: row absent AND row-present-but-
+// unapproved both deny regardless of any prior allowlist.
+func TestResolveCommanderAccess_UnlinkedCommander_AlwaysDenied(t *testing.T) {
+	t.Run("row absent denies with not_on_allowlist", func(t *testing.T) {
+		fid := "F2504"
+		repo := newLinkTestRepo() // No seedRow.
+
+		srv := newAccessTestServer(t, "")
+		srv.commanderRepo = repo
+		srv.authentikUserGroups = &fakeAuthentikUserGroups{}
+
+		r := httptest.NewRequest(http.MethodGet, "/anything", nil)
+		dec := srv.resolveCommanderAccess(context.Background(), r, loginFlowWeb, fid, "Pattern State")
+
+		assert.False(t, dec.Allowed)
+		assert.Equal(t, "not_on_allowlist", dec.Reason)
+	})
+
+	t.Run("row present but unapproved denies with awaiting_approval", func(t *testing.T) {
+		fid := "F2504"
+		authentikUUID := uuid.MustParse("aaaaaaaa-1111-2222-3333-444455556666")
+
+		repo := newLinkTestRepo()
+		repo.seedRow(fid, &authentikUUID) // Approved defaults to false.
+
+		srv := newAccessTestServer(t, "")
+		srv.commanderRepo = repo
+		srv.authentikUserGroups = &fakeAuthentikUserGroups{}
+
+		r := httptest.NewRequest(http.MethodGet, "/anything", nil)
+		dec := srv.resolveCommanderAccess(context.Background(), r, loginFlowWeb, fid, "Pattern State")
+
+		assert.False(t, dec.Allowed)
+		assert.Equal(t, "awaiting_approval", dec.Reason)
+	})
+}
+
 // ─── helpers ──────────────────────────────────────────────────────────────────
 
 // newAccessTestServer produces a Server stub with the fields
 // resolveCommanderAccess reads, plus a logger.
-func newAccessTestServer(t *testing.T, allowlist []string, logPath string) *Server {
+func newAccessTestServer(t *testing.T, logPath string) *Server {
 	t.Helper()
 	return &Server{
 		logger: observability.NewLogger("test"),
 		cfg: &config.Config{
 			CommanderAuth: config.CommanderAuthConfig{
-				AllowedFIDs:         allowlist,
 				LoginAttemptLogPath: logPath,
 			},
 		},
@@ -325,6 +288,9 @@ func newAccessTestServer(t *testing.T, allowlist []string, logPath string) *Serv
 //
 // userByUUID returns the configured user; errByUUID overrides with an
 // error (e.g. authentik.ErrUserNotFound or a generic transient error).
+// defaultGroups is used as the catch-all "happy path" group set for any
+// UUID not explicitly mapped — populated by newPermissiveAuthentikGroups
+// to keep post-Task-12 callback tests succeeding without per-test wiring.
 // blockUntilCancelled exercises the 2-second timeout: the fake blocks on
 // ctx.Done() and returns context.DeadlineExceeded.
 type fakeAuthentikUserGroups struct {
@@ -332,6 +298,7 @@ type fakeAuthentikUserGroups struct {
 
 	userByUUID          map[uuid.UUID]*authentik.UserWithConnection
 	errByUUID           map[uuid.UUID]error
+	defaultGroups       []string
 	blockUntilCancelled bool
 
 	calls int
@@ -351,6 +318,9 @@ func (f *fakeAuthentikUserGroups) GetUserByUUID(ctx context.Context, userUUID uu
 	}
 	if u, ok := f.userByUUID[userUUID]; ok {
 		return u, nil
+	}
+	if len(f.defaultGroups) > 0 {
+		return &authentik.UserWithConnection{GroupNames: f.defaultGroups}, nil
 	}
 	return nil, authentik.ErrUserNotFound
 }

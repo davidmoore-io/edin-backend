@@ -1,17 +1,8 @@
 ---
-# access_list role — first-cut commander allowlist for the copilot / ingest /
-# query endpoints. The backend refuses to mint an EDIN JWT for any Frontier
-# customer whose FID is not in this list, logs the attempt to
-# commander_login_attempt_log, and returns a 403 to the caller.
-#
-# FIDs are non-secret (they're visible in any commander's journal and in any
-# EDIN JWT this backend issues), so they live in plain group vars rather than
-# in ansible-vault.
-#
-# Empty list = allow everyone. Useful for dev; a meaningful deployment should
-# always have at least one FID here.
-commander_fid_allowlist:
-  - F2504   # Pattern State (David)
+# access_list role owns the on-host log directories under /var/log/edin/.
+# Authorization is now managed via the Kaine AdminPage Commanders tab and
+# Authentik group membership; this role no longer carries an FID allowlist.
+# The role retains a small operational task surface for the log directory.
 
 # Where the backend writes rejected login attempts as one JSON object per
 # line. Lives under /var/log/ — the conventional Linux location for system

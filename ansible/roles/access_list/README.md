@@ -1,11 +1,7 @@
 # access_list role
 
-Owns the on-host directory where the control-api container writes its denial
-audit and admin-action logs (mounted into the container via the docker-compose
-template). Also still carries the legacy `commander_fid_allowlist` env-var
-fallback consumed by control-api during the Authentik migration window —
-that fallback retires in plan Task 12 once every commander is linked + Granted
-through the Authentik path.
+access_list owns the on-host directories under `/var/log/edin/` where the
+control-api container writes its denial-audit and admin-action logs.
 
 ## Adding a new commander
 

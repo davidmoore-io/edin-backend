@@ -347,10 +347,12 @@ func TestClientAuthCallback_BrowserFlow_StillWorksWithPKCEStore(t *testing.T) {
 }
 
 // TestCommanderClientAuth_IssuedJWTContainsDefaultScopes asserts the JWT minted
-// by the desktop /callback path carries the default commander scope set —
+// by the desktop /callback path carries the base commander scope set —
 // {copilot_chat, galaxy_read, commander_data}. The desktop flow must receive
 // the same scopes as the browser flow so the desktop client sees the same
-// tool set in its copilot chat.
+// tool set in its copilot chat. Post-Task-6 the scopes come from Authentik
+// group membership; the test harness pre-seeds the edin-copilot group
+// which maps to this exact set.
 func TestCommanderClientAuth_IssuedJWTContainsDefaultScopes(t *testing.T) {
 	tokenPayload := map[string]any{
 		"access_token":  "acc-desktop",
@@ -383,7 +385,10 @@ func TestCommanderClientAuth_IssuedJWTContainsDefaultScopes(t *testing.T) {
 	claims := &auth.CommanderClaims{}
 	_, _, err = new(jwt.Parser).ParseUnverified(session.Token, claims)
 	require.NoError(t, err)
-	assert.Equal(t, []string{"copilot_chat", "galaxy_read", "commander_data"}, claims.Scopes)
+	assert.ElementsMatch(t,
+		[]string{"copilot_chat", "galaxy_read", "commander_data"},
+		claims.Scopes,
+		"JWT must carry the edin-copilot scope set")
 }
 
 // TestCommanderClientAuth_CallbackTracksJTIUnderPerFIDSet asserts that the
@@ -435,6 +440,10 @@ func TestCommanderClientAuth_CallbackTracksJTIUnderPerFIDSet(t *testing.T) {
 // desktop callback for an unlinked commander row invokes the shadow-user
 // creator and persists the returned UUID. The session is marked complete
 // for the desktop client to poll.
+//
+// Post-Task-12 the test pre-approves the row so the access decision
+// succeeds after auto-link runs — this test focuses on auto-link, not
+// the awaiting-approval gate.
 func TestClientAuthCallback_FirstLogin_CreatesShadowUserAndLinksFID(t *testing.T) {
 	frontierSrv := frontierTestServer(t, frontierTokenPayload(), "7777", "Desktop Commander", 0, false)
 	defer frontierSrv.Close()
@@ -443,6 +452,8 @@ func TestClientAuthCallback_FirstLogin_CreatesShadowUserAndLinksFID(t *testing.T
 	srv := newCommanderAuthTestServer(t, frontierSrv.URL, rdb, 5*time.Second)
 
 	repo := newLinkTestRepo()
+	repo.seedRow("F7777", nil) // unlinked, but pre-approved so access succeeds.
+	repo.rowByFID["F7777"].Approved = true
 	srv.commanderRepo = repo
 
 	wantUUID := uuid.MustParse("12345678-1234-1234-1234-123456789abc")

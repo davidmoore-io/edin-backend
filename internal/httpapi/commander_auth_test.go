@@ -79,6 +79,12 @@ func frontierTestServer(t *testing.T, tokenResp map[string]any, meCustomerID str
 // newCommanderAuthTestServer wires up a minimal *Server with commander auth configured.
 // frontierURL is used for both auth and CAPI endpoints.
 // rdb may be nil (Redis-less mode).
+//
+// Post-Task-12 (env-var allowlist retired): the helper installs a default
+// commanderRepo and authentikUserGroups stub that resolve the access decision
+// to "approved + linked + Authentik group=edin-copilot" for any FID. Tests
+// that exercise the access-decision matrix override these fields with their
+// own fakes (see e.g. TestCallback_LinkedNotApprovedOffAllowlist_*).
 func newCommanderAuthTestServer(t *testing.T, frontierURL string, rdb *redis.Client, capiTimeout time.Duration) *Server {
 	t.Helper()
 
@@ -124,6 +130,28 @@ func newCommanderAuthTestServer(t *testing.T, frontierURL string, rdb *redis.Cli
 		commanderJWTValidator: validator,
 		commanderPKCEStore:    newCommanderPKCEStore(1000),
 		commanderNonceStore:   newCommanderChatNonceStore(),
+		commanderRepo:         newPermissiveLinkTestRepo(),
+		authentikUserGroups:   newPermissiveAuthentikGroups(),
+	}
+}
+
+// newPermissiveLinkTestRepo returns a *linkTestRepo whose GetCommanderAsAdmin
+// returns an approved + linked row for any FID — the post-Task-12 happy path.
+// Tests that need the default-deny shape (no row, unapproved row, etc.)
+// override srv.commanderRepo with their own newLinkTestRepo() instance.
+func newPermissiveLinkTestRepo() *linkTestRepo {
+	repo := newLinkTestRepo()
+	repo.defaultApproved = true
+	return repo
+}
+
+// newPermissiveAuthentikGroups returns a fakeAuthentikUserGroups whose
+// GetUserByUUID returns a user in the edin-copilot group for any UUID — the
+// post-Task-12 happy path. Tests that need a different shape (group missing,
+// transient errors, etc.) override srv.authentikUserGroups directly.
+func newPermissiveAuthentikGroups() *fakeAuthentikUserGroups {
+	return &fakeAuthentikUserGroups{
+		defaultGroups: []string{"edin-copilot"},
 	}
 }
 
@@ -419,10 +447,10 @@ func parseIssuedSessionJWT(t *testing.T, rr *httptest.ResponseRecorder) *auth.Co
 }
 
 // TestCommanderAuth_IssuedJWTContainsDefaultScopes asserts the JWT minted by
-// the browser /callback endpoint carries the default commander scope set —
-// {copilot_chat, galaxy_read, commander_data}. Task 6 replaces the literal
-// with a dynamic resolution; until then every authenticated commander gets
-// exactly this set.
+// the browser /callback endpoint carries the base commander scope set —
+// {copilot_chat, galaxy_read, commander_data}. Post-Task-6 the scopes are
+// derived from Authentik group membership; the test harness pre-seeds an
+// approved row + edin-copilot group, which maps to this exact set.
 func TestCommanderAuth_IssuedJWTContainsDefaultScopes(t *testing.T) {
 	tokenPayload := map[string]any{
 		"access_token": "acc123",
@@ -445,7 +473,10 @@ func TestCommanderAuth_IssuedJWTContainsDefaultScopes(t *testing.T) {
 	require.Equal(t, http.StatusOK, rr.Code, "body: %s", rr.Body.String())
 
 	claims := parseIssuedSessionJWT(t, rr)
-	assert.Equal(t, []string{"copilot_chat", "galaxy_read", "commander_data"}, claims.Scopes)
+	assert.ElementsMatch(t,
+		[]string{"copilot_chat", "galaxy_read", "commander_data"},
+		claims.Scopes,
+		"JWT must carry the edin-copilot scope set")
 }
 
 // TestCommanderAuth_CallbackTracksJTIUnderPerFIDSet verifies that a successful
@@ -773,6 +804,10 @@ func frontierTokenPayload() map[string]any {
 // browser callback for a commander whose row has authentik_user_id IS NULL
 // invokes the shadow-user creator and persists the returned UUID via
 // SetAuthentikLink. The login then proceeds (200 OK + JWT cookie).
+//
+// Post-Task-12 the test pre-approves the row so the access decision
+// succeeds after auto-link runs — the auto-link path is what's under
+// test here, not the awaiting-approval gate.
 func TestCallback_FirstLogin_CreatesShadowUserAndLinksFID(t *testing.T) {
 	frontierSrv := frontierTestServer(t, frontierTokenPayload(), "2504", "Pattern State", 0, false)
 	defer frontierSrv.Close()
@@ -781,6 +816,8 @@ func TestCallback_FirstLogin_CreatesShadowUserAndLinksFID(t *testing.T) {
 	srv := newCommanderAuthTestServer(t, frontierSrv.URL, rdb, 5*time.Second)
 
 	repo := newLinkTestRepo()
+	repo.seedRow("F2504", nil) // unlinked, but pre-approved so access succeeds.
+	repo.rowByFID["F2504"].Approved = true
 	srv.commanderRepo = repo
 
 	wantUUID := uuid.MustParse("aaaa1111-bbbb-2222-cccc-333344445555")
@@ -805,6 +842,9 @@ func TestCallback_FirstLogin_CreatesShadowUserAndLinksFID(t *testing.T) {
 // TestCallback_ReturningCommander_DoesNotReCreateShadow asserts that when
 // the row already has an authentik_user_id, the shadow creator is NOT
 // invoked — preserves the previously-linked UUID.
+//
+// Post-Task-12 the test pre-approves the row so the access decision
+// succeeds; the focus here is the no-op auto-link branch.
 func TestCallback_ReturningCommander_DoesNotReCreateShadow(t *testing.T) {
 	frontierSrv := frontierTestServer(t, frontierTokenPayload(), "2504", "Pattern State", 0, false)
 	defer frontierSrv.Close()
@@ -815,6 +855,7 @@ func TestCallback_ReturningCommander_DoesNotReCreateShadow(t *testing.T) {
 	existingUUID := uuid.MustParse("ffff1111-eeee-2222-dddd-333344445555")
 	repo := newLinkTestRepo()
 	repo.seedRow("F2504", &existingUUID)
+	repo.rowByFID["F2504"].Approved = true
 	srv.commanderRepo = repo
 
 	creator := &fakeShadowCreator{wantUUID: uuid.New()} // Should never be called.
@@ -1001,8 +1042,8 @@ func TestCallback_LinkedApprovedCommander_IssuesJWTWithAuthentikScopes(t *testin
 
 // TestCallback_LinkedNotApprovedOffAllowlist_AuditsAwaitingApproval covers a
 // representative denial path through resolveCommanderAccess. The commander
-// is linked (Task 5 ran) but not yet approved, and the FID is not on the
-// env-var allowlist → 403 + audit reason=awaiting_approval.
+// is linked (Task 5 ran) but not yet approved → 403 + audit
+// reason=awaiting_approval.
 func TestCallback_LinkedNotApprovedOffAllowlist_AuditsAwaitingApproval(t *testing.T) {
 	frontierSrv := frontierTestServer(t, frontierTokenPayload(), "2504", "Pattern State", 0, false)
 	defer frontierSrv.Close()
@@ -1012,7 +1053,6 @@ func TestCallback_LinkedNotApprovedOffAllowlist_AuditsAwaitingApproval(t *testin
 
 	logPath := filepath.Join(t.TempDir(), "attempts.log")
 	srv.cfg.CommanderAuth.LoginAttemptLogPath = logPath
-	srv.cfg.CommanderAuth.AllowedFIDs = []string{"F-other"} // FID not on list.
 
 	authentikUUID := uuid.MustParse("aaaaaaaa-1111-2222-3333-444455556666")
 	repo := newLinkTestRepo()

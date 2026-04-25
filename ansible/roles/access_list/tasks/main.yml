@@ -1,8 +1,10 @@
 ---
 # access_list's main task surface is the login-attempt log directory. The
-# role's other job is to provide commander_fid_allowlist and
-# commander_login_attempt_log as Ansible variables for the control_api
-# role; those are set in defaults/main.yml and don't need tasks.
+# role's other job is to provide commander_login_attempt_log as an Ansible
+# variable for the control_api role; that's set in defaults/main.yml and
+# doesn't need tasks. The legacy FID allowlist was retired in plan Task 12 —
+# Authentik group membership is now the sole source of truth for commander
+# access.
 
 - name: Ensure login-attempt log directory exists on the host
   # Lives on the host (under /var/log/edin by default) and is bind-mounted
@@ -22,7 +24,6 @@
 - name: access_list role summary
   ansible.builtin.debug:
     msg: >-
-      access_list provides commander_fid_allowlist
-      ({{ commander_fid_allowlist | length }} FID(s))
-      and commander_login_attempt_log={{ commander_login_attempt_log }}
+      access_list provides
+      commander_login_attempt_log={{ commander_login_attempt_log }}
   tags: [access_list]

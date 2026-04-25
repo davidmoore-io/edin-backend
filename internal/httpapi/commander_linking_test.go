@@ -27,6 +27,14 @@ type linkTestRepo struct {
 	rowByFID map[string]*store.CommanderRow
 	getErr   error
 
+	// defaultApproved — when true, GetCommanderAsAdmin synthesises an
+	// approved + linked row for any FID not explicitly seeded. Used by
+	// newPermissiveLinkTestRepo to install a "happy path" access state in
+	// the post-Task-12 callback tests where the env-var allowlist is gone
+	// and the default decision must be "allow" rather than the previous
+	// "empty allowlist = open" semantics.
+	defaultApproved bool
+
 	// SetAuthentikLink
 	setLinkCalls []setLinkCall
 	setLinkErr   error
@@ -80,7 +88,7 @@ func (m *linkTestRepo) UpsertCommander(_ context.Context, fid, name, platform st
 		return uuid.Nil, m.upsertErr
 	}
 	if _, ok := m.rowByFID[fid]; !ok {
-		m.rowByFID[fid] = &store.CommanderRow{
+		row := &store.CommanderRow{
 			ID:          uuid.New(),
 			FID:         fid,
 			CmdrName:    name,
@@ -88,6 +96,15 @@ func (m *linkTestRepo) UpsertCommander(_ context.Context, fid, name, platform st
 			FirstSeenAt: time.Now(),
 			LastSeenAt:  time.Now(),
 		}
+		// In the post-Task-12 happy-path mode (used by
+		// newPermissiveLinkTestRepo), the row is born approved + linked so
+		// the access decision succeeds without the test having to seed one.
+		if m.defaultApproved {
+			id := uuid.New()
+			row.Approved = true
+			row.AuthentikUserID = &id
+		}
+		m.rowByFID[fid] = row
 	} else {
 		m.rowByFID[fid].CmdrName = name
 		m.rowByFID[fid].LastSeenAt = time.Now()
@@ -103,6 +120,18 @@ func (m *linkTestRepo) GetCommanderAsAdmin(_ context.Context, fid string) (*stor
 	}
 	row, ok := m.rowByFID[fid]
 	if !ok {
+		if m.defaultApproved {
+			defaultID := uuid.New()
+			return &store.CommanderRow{
+				ID:              uuid.New(),
+				FID:             fid,
+				Platform:        "frontier",
+				FirstSeenAt:     time.Now(),
+				LastSeenAt:      time.Now(),
+				Approved:        true,
+				AuthentikUserID: &defaultID,
+			}, nil
+		}
 		return nil, store.ErrCommanderNotFound
 	}
 	// Return a copy so the caller can't mutate our seeded state by accident.

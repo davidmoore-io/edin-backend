@@ -49,7 +49,7 @@ func initEdinMetrics() *edinMetrics {
 
 		commanderAccessDecisionsTotal := prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "edin_commander_access_decisions_total",
-			Help: "Total number of commander access-resolution decisions, labelled by reason (e.g. authentik_groups, no_scopes_granted, allowlist_fallback, awaiting_approval).",
+			Help: "Total number of commander access-resolution decisions, labelled by reason (e.g. authentik_groups, no_scopes_granted, awaiting_approval).",
 		}, []string{"reason"})
 
 		commanderAccessResolutionLatencySeconds := prometheus.NewHistogramVec(prometheus.HistogramOpts{

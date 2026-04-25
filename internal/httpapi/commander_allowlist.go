@@ -16,22 +16,11 @@ import (
 	"github.com/google/uuid"
 )
 
-// Commander allowlist — first-cut access control for the copilot / ingest /
-// query endpoints. A deployment that specifies cfg.CommanderAuth.AllowedFIDs
-// refuses to mint an EDIN JWT for any Frontier commander whose FID is not on
-// the list, and appends a JSON-lines record of the rejection to the
-// configured log file.
-//
-// An empty AllowedFIDs slice means the allowlist is disabled — any
-// Frontier-authenticated commander is accepted. This is the same open
-// posture the backend had before the allowlist was introduced; deployments
-// that want access control populate the list via the access_list Ansible
-// role.
-//
-// This is deliberately a bare-bones implementation: file-backed, no admin
-// UI, no per-role scopes. A later iteration will replace it with a DB-backed
-// commander table + admin-managed roles; until then this file is the single
-// choke point to reason about.
+// Commander access — single decision point for "should this Frontier-
+// authenticated commander get an EDIN JWT, and with what scopes?". Authority
+// flows from the commander row + Authentik group membership; there is no
+// env-var allowlist any more (retired in plan Task 12). Rejected logins
+// append a JSON-lines record to the configured log file for audit.
 
 // loginAttemptAuthFlow labels which of the two Frontier OAuth entry points
 // the attempt came through (see commander_auth.go / commander_client_auth.go).
@@ -61,20 +50,6 @@ type deniedLoginAttempt struct {
 // external log-rotation tools rotate the file without the server keeping an
 // inode reference to the old file.
 var loginAttemptLogMu sync.Mutex
-
-// fidAllowed reports whether fid may proceed past the callback. An empty
-// allowlist disables the check entirely.
-func fidAllowed(allowlist []string, fid string) bool {
-	if len(allowlist) == 0 {
-		return true
-	}
-	for _, a := range allowlist {
-		if a == fid {
-			return true
-		}
-	}
-	return false
-}
 
 // recordDeniedLogin appends a JSON line to the login-attempt log file (if
 // configured) and emits a structured server log entry. A failure to write
@@ -140,34 +115,29 @@ type commanderAccessDecision struct {
 // resolveCommanderAccess is the single decision-point for "should this
 // Frontier-authenticated commander get a JWT, and with what scopes?"
 //
-// Decision matrix (per the Authentik commander-access plan, Task 6):
+// Decision matrix (post-Task 12 — env-var allowlist retired):
 //
-//	| commander row     | Authentik state                       | allowlist | result                                  |
-//	|-------------------|---------------------------------------|-----------|-----------------------------------------|
-//	| linked + approved | groups → ScopesForGroups non-empty    | —         | allowed, scopes=mapped, authentik_groups |
-//	| linked + approved | groups → ScopesForGroups EMPTY        | —         | denied, no_scopes_granted               |
-//	| linked + approved | Authentik 404 (user deleted)          | —         | denied, authentik_user_missing          |
-//	| linked + approved | Authentik transient error             | —         | denied, authentik_unreachable           |
-//	| linked + !approved| —                                     | on        | allowed, scopes=default, allowlist_fallback |
-//	| linked + !approved| —                                     | off       | denied, awaiting_approval               |
-//	| row absent        | —                                     | on        | allowed, scopes=default, allowlist      |
-//	| row absent        | —                                     | off       | denied, not_on_allowlist                |
+//	| commander row     | Authentik state                       | result                                  |
+//	|-------------------|---------------------------------------|-----------------------------------------|
+//	| linked + approved | groups → ScopesForGroups non-empty    | allowed, scopes=mapped, authentik_groups|
+//	| linked + approved | groups → ScopesForGroups EMPTY        | denied, no_scopes_granted               |
+//	| linked + approved | Authentik 404 (user deleted)          | denied, authentik_user_missing          |
+//	| linked + approved | Authentik transient error             | denied, authentik_unreachable           |
+//	| linked + !approved| —                                     | denied, awaiting_approval               |
+//	| row absent        | —                                     | denied, not_on_allowlist                |
 //
 // Notes:
 //   - Post-Task 5, every callback invokes ensureCommanderLink before this,
-//     so the "row absent" branch is transitional only (allowlist /
-//     not_on_allowlist reasons retired in Task 12).
-//   - The default commander scope set is a literal at the call sites below,
-//     not a helper or constant — a deliberate choice; the literal goes away
-//     entirely when Task 12 retires the env-var allowlist.
+//     so the "row absent" branch should not occur in normal operation.
+//     If it does (commanderRepo unwired or unexpected state), deny-closed
+//     with reason=not_on_allowlist (retained log label; semantics narrowed
+//     to "no Authentik link exists").
 //   - s.authentikClient == nil (Authentik disabled in config) on a
 //     linked+approved row is treated as authentik_unreachable: deny-closed
 //     until the deployment is reconfigured.
 //   - s.commanderRepo == nil mirrors the "row absent" branch (the callbacks
-//     already guard their Upsert/link block on this same nil-check). The
-//     allowlist gate runs and Authentik is not consulted — preserves the
-//     pre-Task-6 callback contract for deployments running without the
-//     commander repository wired.
+//     already guard their Upsert/link block on this same nil-check) and
+//     denies-closed.
 //   - All return paths increment edin_commander_access_decisions_total{reason}.
 func (s *Server) resolveCommanderAccess(
 	ctx context.Context,
@@ -204,31 +174,18 @@ func (s *Server) resolveCommanderAccess(
 
 	// commanderRepo nil mirrors the "row absent" branch — the callbacks guard
 	// the Upsert/link block on this same nil-check, so a deployment without
-	// the repo wired never had a row to consult. Behaviour preserves the
-	// pre-Task-6 contract: allowlist gate runs, no Authentik consultation.
+	// the repo wired never had a row to consult. Post-Task-12 there is no
+	// allowlist fallback; deny-closed.
 	if s.commanderRepo == nil {
-		if fidAllowed(s.cfg.CommanderAuth.AllowedFIDs, fid) {
-			return allowWith("allowlist", []authz.Scope{
-				authz.ScopeCopilotChat,
-				authz.ScopeGalaxyRead,
-				authz.ScopeCommanderData,
-			})
-		}
 		return denyWith("not_on_allowlist")
 	}
 
 	row, err := s.commanderRepo.GetCommanderAsAdmin(ctx, fid)
 	switch {
 	case errors.Is(err, store.ErrCommanderNotFound):
-		// Transitional path — Task 5 guarantees a row, but the legacy
-		// allowlist branches stay until Task 12 retires them.
-		if fidAllowed(s.cfg.CommanderAuth.AllowedFIDs, fid) {
-			return allowWith("allowlist", []authz.Scope{
-				authz.ScopeCopilotChat,
-				authz.ScopeGalaxyRead,
-				authz.ScopeCommanderData,
-			})
-		}
+		// Task 5 guarantees a row at this point; reaching this branch means
+		// auto-link failed silently. Deny-closed — there is no Authentik
+		// link to consult.
 		return denyWith("not_on_allowlist")
 	case err != nil:
 		// Repo failure that isn't ErrCommanderNotFound — treat as transient
@@ -275,13 +232,7 @@ func (s *Server) resolveCommanderAccess(
 	}
 
 	// Row exists but is NOT approved (or not linked yet).
-	// Allowlist fallback covers the migration window.
-	if fidAllowed(s.cfg.CommanderAuth.AllowedFIDs, fid) {
-		return allowWith("allowlist_fallback", []authz.Scope{
-			authz.ScopeCopilotChat,
-			authz.ScopeGalaxyRead,
-			authz.ScopeCommanderData,
-		})
-	}
+	// Post-Task-12: no allowlist fallback — admin must Grant via the
+	// Kaine AdminPage Commanders tab.
 	return denyWith("awaiting_approval")
 }
