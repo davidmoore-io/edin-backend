@@ -249,12 +249,23 @@ func (s *Server) resolveCommanderAccess(
 		// or fail loudly rather than block the user behind an Authentik hang.
 		authentikCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
 		defer cancel()
+		authentikStart := time.Now()
 		user, err := s.authentikUserGroups.GetUserByUUID(authentikCtx, *row.AuthentikUserID)
+		authentikLatency := time.Since(authentikStart).Seconds()
 		switch {
 		case errors.Is(err, authentik.ErrUserNotFound):
+			if am.commanderAccessResolutionLatencySeconds != nil {
+				am.commanderAccessResolutionLatencySeconds.WithLabelValues("not_found").Observe(authentikLatency)
+			}
 			return denyWith("authentik_user_missing")
 		case err != nil:
+			if am.commanderAccessResolutionLatencySeconds != nil {
+				am.commanderAccessResolutionLatencySeconds.WithLabelValues("error").Observe(authentikLatency)
+			}
 			return denyWith("authentik_unreachable")
+		}
+		if am.commanderAccessResolutionLatencySeconds != nil {
+			am.commanderAccessResolutionLatencySeconds.WithLabelValues("ok").Observe(authentikLatency)
 		}
 		scopes := authz.ScopesForGroups(user.GroupNames)
 		if len(scopes) == 0 {

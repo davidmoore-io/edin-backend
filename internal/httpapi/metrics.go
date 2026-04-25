@@ -14,8 +14,9 @@ type edinMetrics struct {
 	ingestEventsTotal    *prometheus.CounterVec
 	ingestLatencySeconds *prometheus.HistogramVec
 
-	commanderAuthAttemptsTotal    *prometheus.CounterVec
-	commanderAccessDecisionsTotal *prometheus.CounterVec
+	commanderAuthAttemptsTotal              *prometheus.CounterVec
+	commanderAccessDecisionsTotal           *prometheus.CounterVec
+	commanderAccessResolutionLatencySeconds *prometheus.HistogramVec
 
 	copilotChatSessionsActive prometheus.Gauge
 	copilotToolCallsTotal     *prometheus.CounterVec
@@ -51,6 +52,12 @@ func initEdinMetrics() *edinMetrics {
 			Help: "Total number of commander access-resolution decisions, labelled by reason (e.g. authentik_groups, no_scopes_granted, allowlist_fallback, awaiting_approval).",
 		}, []string{"reason"})
 
+		commanderAccessResolutionLatencySeconds := prometheus.NewHistogramVec(prometheus.HistogramOpts{
+			Name:    "edin_commander_access_resolution_latency_seconds",
+			Help:    "Latency of the Authentik group lookup inside resolveCommanderAccess. SLO target: p95 < 250ms; p99 < 1s.",
+			Buckets: []float64{0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2, 5},
+		}, []string{"outcome"}) // outcome: "ok" | "not_found" | "error"
+
 		copilotChatSessionsActive := prometheus.NewGauge(prometheus.GaugeOpts{
 			Name: "edin_copilot_chat_sessions_active",
 			Help: "Number of currently active Copilot WebSocket sessions.",
@@ -66,17 +73,19 @@ func initEdinMetrics() *edinMetrics {
 			ingestLatencySeconds,
 			commanderAuthAttemptsTotal,
 			commanderAccessDecisionsTotal,
+			commanderAccessResolutionLatencySeconds,
 			copilotChatSessionsActive,
 			copilotToolCallsTotal,
 		)
 
 		emet = &edinMetrics{
-			ingestEventsTotal:             ingestEventsTotal,
-			ingestLatencySeconds:          ingestLatencySeconds,
-			commanderAuthAttemptsTotal:    commanderAuthAttemptsTotal,
-			commanderAccessDecisionsTotal: commanderAccessDecisionsTotal,
-			copilotChatSessionsActive:     copilotChatSessionsActive,
-			copilotToolCallsTotal:         copilotToolCallsTotal,
+			ingestEventsTotal:                       ingestEventsTotal,
+			ingestLatencySeconds:                    ingestLatencySeconds,
+			commanderAuthAttemptsTotal:              commanderAuthAttemptsTotal,
+			commanderAccessDecisionsTotal:           commanderAccessDecisionsTotal,
+			commanderAccessResolutionLatencySeconds: commanderAccessResolutionLatencySeconds,
+			copilotChatSessionsActive:               copilotChatSessionsActive,
+			copilotToolCallsTotal:                   copilotToolCallsTotal,
 		}
 	})
 	return emet
