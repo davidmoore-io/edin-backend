@@ -427,13 +427,21 @@ func (c *Client) CreateUser(ctx context.Context, req CreateUserRequest) (*User, 
 		return &user, nil
 	case http.StatusBadRequest:
 		// Authentik returns validation errors with shape:
-		//   {"username": ["A user with this username already exists."]}
-		// Detect the duplicate-username case explicitly so callers (shadow-
-		// user idempotency) can recover via GetUserByUsername.
-		var errs map[string]json.RawMessage
+		//   {"username": ["User with this username already exists."]}
+		// Discriminate the duplicate-username case from other "username"-keyed
+		// validation errors (e.g. "may not be blank", "too short") by requiring
+		// the message to contain "already exists". A broader match — any 400
+		// with a "username" key — would misclassify those generic validation
+		// failures as duplicates, a footgun for future callers even though
+		// today's shadow helper always sends a non-empty FID.
+		var errs map[string][]string
 		if jerr := json.Unmarshal(respBody, &errs); jerr == nil {
-			if _, isUsernameErr := errs["username"]; isUsernameErr {
-				return nil, ErrDuplicateUsername
+			if msgs, ok := errs["username"]; ok {
+				for _, m := range msgs {
+					if strings.Contains(m, "already exists") {
+						return nil, ErrDuplicateUsername
+					}
+				}
 			}
 		}
 		return nil, fmt.Errorf("create user failed: %s - %s", resp.Status, string(respBody))

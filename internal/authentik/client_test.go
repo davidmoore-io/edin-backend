@@ -79,14 +79,15 @@ func TestAuthentikClient_CreateUser_Success(t *testing.T) {
 }
 
 // TestAuthentikClient_CreateUser_Duplicate_ReturnsErrDuplicate exercises the
-// idempotency seam: when Authentik rejects the create with a duplicate-
-// username error, the client surfaces ErrDuplicateUsername so callers can
-// fall back to GetUserByUsername.
+// idempotency seam: when Authentik rejects the create with the canonical
+// duplicate-username validation error ("User with this username already
+// exists."), the client surfaces ErrDuplicateUsername so callers can fall
+// back to GetUserByUsername.
 func TestAuthentikClient_CreateUser_Duplicate_ReturnsErrDuplicate(t *testing.T) {
 	_, c := newFakeAuthentikServer(t, func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusBadRequest)
-		_, _ = w.Write([]byte(`{"username":["A user with this username already exists."]}`))
+		_, _ = w.Write([]byte(`{"username":["User with this username already exists."]}`))
 	})
 
 	user, err := c.CreateUser(context.Background(), CreateUserRequest{
@@ -96,6 +97,31 @@ func TestAuthentikClient_CreateUser_Duplicate_ReturnsErrDuplicate(t *testing.T) 
 	assert.Nil(t, user)
 	assert.True(t, errors.Is(err, ErrDuplicateUsername),
 		"expected ErrDuplicateUsername, got: %v", err)
+}
+
+// TestAuthentikClient_CreateUser_OtherUsernameValidation_PropagatesGenericError
+// guards the discrimination boundary: a 400 with a "username"-keyed validation
+// error that is NOT a duplicate (e.g., "may not be blank") must propagate as a
+// generic error, not ErrDuplicateUsername. Today's shadow helper always sends
+// a non-empty FID so this can't fire in practice, but a future caller mis-
+// classifying these would be hard to debug.
+func TestAuthentikClient_CreateUser_OtherUsernameValidation_PropagatesGenericError(t *testing.T) {
+	_, c := newFakeAuthentikServer(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"username":["This field may not be blank."]}`))
+	})
+
+	user, err := c.CreateUser(context.Background(), CreateUserRequest{
+		Username: "",
+		Name:     "Pattern State",
+	})
+	assert.Nil(t, user)
+	require.Error(t, err)
+	assert.False(t, errors.Is(err, ErrDuplicateUsername),
+		"non-duplicate username validation must NOT map to ErrDuplicateUsername")
+	assert.Contains(t, err.Error(), "400")
+	assert.Contains(t, err.Error(), "may not be blank")
 }
 
 // TestAuthentikClient_CreateUser_OtherError_PropagatesError covers 5xx and

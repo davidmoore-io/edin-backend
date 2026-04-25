@@ -495,6 +495,7 @@ func TestClientAuthCallback_AuthentikCreateFails_Returns403(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodGet,
 		fmt.Sprintf("/api/commander/auth/callback?code=desktop-code&state=%s", state), nil)
+	req.Header.Set("User-Agent", "test/1.0")
 	rr := httptest.NewRecorder()
 	srv.handleCommanderAuthCallback(rr, req)
 
@@ -524,4 +525,11 @@ func TestClientAuthCallback_AuthentikCreateFails_Returns403(t *testing.T) {
 	assert.Equal(t, loginFlowDesktop, logged.Flow)
 	assert.Equal(t, "authentik_unreachable", logged.Reason,
 		"desktop Authentik failure must audit reason=authentik_unreachable")
+
+	// Pin IP / UserAgent / Time so a regression that silently drops these
+	// fields from the audit pipeline is caught.
+	assert.NotEmpty(t, logged.IP, "audit record must record caller IP")
+	assert.Equal(t, "test/1.0", logged.UserAgent,
+		"audit record must echo the caller's User-Agent")
+	assert.False(t, logged.Time.IsZero(), "audit record must stamp Time")
 }

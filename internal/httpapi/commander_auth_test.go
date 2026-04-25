@@ -828,6 +828,7 @@ func TestCallback_AuthentikCreateFails_Returns403AndAuditsDenial(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodGet,
 		"/api/commander/auth/callback?code=code&state="+state, nil)
+	req.Header.Set("User-Agent", "test/1.0")
 	rr := httptest.NewRecorder()
 	srv.handleCommanderAuthCallback(rr, req)
 
@@ -851,6 +852,14 @@ func TestCallback_AuthentikCreateFails_Returns403AndAuditsDenial(t *testing.T) {
 	assert.Equal(t, loginFlowWeb, logged.Flow)
 	assert.Equal(t, "authentik_unreachable", logged.Reason,
 		"Authentik failure must audit reason=authentik_unreachable")
+
+	// Pin IP / UserAgent / Time so a regression that silently drops these
+	// fields from the audit pipeline is caught — the fields are populated
+	// in production but were not previously test-covered.
+	assert.NotEmpty(t, logged.IP, "audit record must record caller IP")
+	assert.Equal(t, "test/1.0", logged.UserAgent,
+		"audit record must echo the caller's User-Agent")
+	assert.False(t, logged.Time.IsZero(), "audit record must stamp Time")
 }
 
 // TestCallback_ShadowCreatedButLinkPersistFails_AuditsAndReturns403 covers
@@ -880,6 +889,7 @@ func TestCallback_ShadowCreatedButLinkPersistFails_AuditsAndReturns403(t *testin
 
 	req := httptest.NewRequest(http.MethodGet,
 		"/api/commander/auth/callback?code=code&state="+state, nil)
+	req.Header.Set("User-Agent", "test/1.0")
 	rr := httptest.NewRecorder()
 	srv.handleCommanderAuthCallback(rr, req)
 
@@ -903,4 +913,11 @@ func TestCallback_ShadowCreatedButLinkPersistFails_AuditsAndReturns403(t *testin
 	assert.Equal(t, loginFlowWeb, logged.Flow)
 	assert.Equal(t, "link_persist_failed", logged.Reason,
 		"link-persist failure must audit reason=link_persist_failed")
+
+	// Pin IP / UserAgent / Time so a regression that silently drops these
+	// fields from the audit pipeline is caught.
+	assert.NotEmpty(t, logged.IP, "audit record must record caller IP")
+	assert.Equal(t, "test/1.0", logged.UserAgent,
+		"audit record must echo the caller's User-Agent")
+	assert.False(t, logged.Time.IsZero(), "audit record must stamp Time")
 }
