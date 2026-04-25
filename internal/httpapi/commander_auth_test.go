@@ -17,6 +17,7 @@ import (
 
 	"github.com/alicebob/miniredis/v2"
 	"github.com/edin-space/edin-backend/internal/auth"
+	"github.com/edin-space/edin-backend/internal/authentik"
 	"github.com/edin-space/edin-backend/internal/authz"
 	"github.com/edin-space/edin-backend/internal/config"
 	"github.com/edin-space/edin-backend/internal/observability"
@@ -920,4 +921,98 @@ func TestCallback_ShadowCreatedButLinkPersistFails_AuditsAndReturns403(t *testin
 	assert.Equal(t, "test/1.0", logged.UserAgent,
 		"audit record must echo the caller's User-Agent")
 	assert.False(t, logged.Time.IsZero(), "audit record must stamp Time")
+}
+
+// ─── Task 6 callback integration ──────────────────────────────────────────────
+
+// TestCallback_LinkedApprovedCommander_IssuesJWTWithAuthentikScopes covers the
+// happy post-approval path end-to-end: a commander whose row is already
+// linked + approved completes the Frontier callback, resolveCommanderAccess
+// consults Authentik, derives scopes from the user's "edin-copilot" group,
+// and the issued JWT carries those scopes (not the literal default).
+func TestCallback_LinkedApprovedCommander_IssuesJWTWithAuthentikScopes(t *testing.T) {
+	frontierSrv := frontierTestServer(t, frontierTokenPayload(), "2504", "Pattern State", 0, false)
+	defer frontierSrv.Close()
+
+	rdb := newTestMiniredis(t)
+	srv := newCommanderAuthTestServer(t, frontierSrv.URL, rdb, 5*time.Second)
+
+	authentikUUID := uuid.MustParse("aaaaaaaa-1111-2222-3333-444455556666")
+	repo := newLinkTestRepo()
+	repo.seedRow("F2504", &authentikUUID)
+	repo.rowByFID["F2504"].Approved = true
+	srv.commanderRepo = repo
+
+	srv.authentikUserGroups = &fakeAuthentikUserGroups{
+		userByUUID: map[uuid.UUID]*authentik.UserWithConnection{
+			authentikUUID: {GroupNames: []string{"edin-copilot"}},
+		},
+	}
+
+	state := "state-approved-authentik-scopes"
+	srv.commanderPKCEStore.store(state, "verifier", "http://localhost/copilot/callback", 10*time.Minute)
+
+	req := httptest.NewRequest(http.MethodGet,
+		"/api/commander/auth/callback?code=code&state="+state, nil)
+	rr := httptest.NewRecorder()
+	srv.handleCommanderAuthCallback(rr, req)
+
+	require.Equal(t, http.StatusOK, rr.Code, "body: %s", rr.Body.String())
+
+	claims := parseIssuedSessionJWT(t, rr)
+	// ScopesForGroups([edin-copilot]) sorts lexicographically →
+	// {commander_data, copilot_chat, galaxy_read}.
+	assert.Equal(t, []string{"commander_data", "copilot_chat", "galaxy_read"}, claims.Scopes,
+		"JWT must carry scopes derived from the Authentik group, not the literal default")
+}
+
+// TestCallback_LinkedNotApprovedOffAllowlist_AuditsAwaitingApproval covers a
+// representative denial path through resolveCommanderAccess. The commander
+// is linked (Task 5 ran) but not yet approved, and the FID is not on the
+// env-var allowlist → 403 + audit reason=awaiting_approval.
+func TestCallback_LinkedNotApprovedOffAllowlist_AuditsAwaitingApproval(t *testing.T) {
+	frontierSrv := frontierTestServer(t, frontierTokenPayload(), "2504", "Pattern State", 0, false)
+	defer frontierSrv.Close()
+
+	rdb := newTestMiniredis(t)
+	srv := newCommanderAuthTestServer(t, frontierSrv.URL, rdb, 5*time.Second)
+
+	logPath := filepath.Join(t.TempDir(), "attempts.log")
+	srv.cfg.CommanderAuth.LoginAttemptLogPath = logPath
+	srv.cfg.CommanderAuth.AllowedFIDs = []string{"F-other"} // FID not on list.
+
+	authentikUUID := uuid.MustParse("aaaaaaaa-1111-2222-3333-444455556666")
+	repo := newLinkTestRepo()
+	repo.seedRow("F2504", &authentikUUID) // Approved defaults to false.
+	srv.commanderRepo = repo
+
+	// Authentik must NOT be consulted on the not-approved branch — verify
+	// by injecting a fake that records call count.
+	groups := &fakeAuthentikUserGroups{}
+	srv.authentikUserGroups = groups
+
+	state := "state-awaiting-approval"
+	srv.commanderPKCEStore.store(state, "verifier", "http://localhost/copilot/callback", 10*time.Minute)
+
+	req := httptest.NewRequest(http.MethodGet,
+		"/api/commander/auth/callback?code=code&state="+state, nil)
+	req.Header.Set("User-Agent", "test/1.0")
+	rr := httptest.NewRecorder()
+	srv.handleCommanderAuthCallback(rr, req)
+
+	assert.Equal(t, http.StatusForbidden, rr.Code,
+		"linked-but-not-approved off-allowlist must deny-close")
+	assert.Equal(t, 0, groups.calls,
+		"Authentik must NOT be consulted when the row is not yet approved")
+
+	// No JWT cookie on denial.
+	for _, c := range rr.Result().Cookies() {
+		assert.NotEqual(t, "commander_session", c.Name,
+			"commander_session cookie must NOT be set on denial")
+	}
+
+	logged := readLastDeniedLoginAttempt(t, logPath)
+	assert.Equal(t, "F2504", logged.FID)
+	assert.Equal(t, loginFlowWeb, logged.Flow)
+	assert.Equal(t, "awaiting_approval", logged.Reason)
 }

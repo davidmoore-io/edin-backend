@@ -14,7 +14,8 @@ type edinMetrics struct {
 	ingestEventsTotal    *prometheus.CounterVec
 	ingestLatencySeconds *prometheus.HistogramVec
 
-	commanderAuthAttemptsTotal *prometheus.CounterVec
+	commanderAuthAttemptsTotal    *prometheus.CounterVec
+	commanderAccessDecisionsTotal *prometheus.CounterVec
 
 	copilotChatSessionsActive prometheus.Gauge
 	copilotToolCallsTotal     *prometheus.CounterVec
@@ -45,6 +46,11 @@ func initEdinMetrics() *edinMetrics {
 			Help: "Total number of commander auth callback outcomes.",
 		}, []string{"outcome"})
 
+		commanderAccessDecisionsTotal := prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "edin_commander_access_decisions_total",
+			Help: "Total number of commander access-resolution decisions, labelled by reason (e.g. authentik_groups, no_scopes_granted, allowlist_fallback, awaiting_approval).",
+		}, []string{"reason"})
+
 		copilotChatSessionsActive := prometheus.NewGauge(prometheus.GaugeOpts{
 			Name: "edin_copilot_chat_sessions_active",
 			Help: "Number of currently active Copilot WebSocket sessions.",
@@ -59,16 +65,18 @@ func initEdinMetrics() *edinMetrics {
 			ingestEventsTotal,
 			ingestLatencySeconds,
 			commanderAuthAttemptsTotal,
+			commanderAccessDecisionsTotal,
 			copilotChatSessionsActive,
 			copilotToolCallsTotal,
 		)
 
 		emet = &edinMetrics{
-			ingestEventsTotal:          ingestEventsTotal,
-			ingestLatencySeconds:       ingestLatencySeconds,
-			commanderAuthAttemptsTotal: commanderAuthAttemptsTotal,
-			copilotChatSessionsActive:  copilotChatSessionsActive,
-			copilotToolCallsTotal:      copilotToolCallsTotal,
+			ingestEventsTotal:             ingestEventsTotal,
+			ingestLatencySeconds:          ingestLatencySeconds,
+			commanderAuthAttemptsTotal:    commanderAuthAttemptsTotal,
+			commanderAccessDecisionsTotal: commanderAccessDecisionsTotal,
+			copilotChatSessionsActive:     copilotChatSessionsActive,
+			copilotToolCallsTotal:         copilotToolCallsTotal,
 		}
 	})
 	return emet

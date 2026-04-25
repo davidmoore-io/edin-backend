@@ -9,7 +9,6 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/edin-space/edin-backend/internal/authz"
 	"github.com/edin-space/edin-backend/internal/frontier"
 	"github.com/redis/go-redis/v9"
 )
@@ -36,8 +35,8 @@ func clientAuthStateKey(state string) string {
 type clientAuthSession struct {
 	State        string `json:"state"`
 	CodeVerifier string `json:"code_verifier"`
-	Status       string `json:"status"`    // "pending" | "complete"
-	Token        string `json:"token"`     // EDIN JWT (only when complete)
+	Status       string `json:"status"`     // "pending" | "complete"
+	Token        string `json:"token"`      // EDIN JWT (only when complete)
 	ExpiresAt    string `json:"expires_at"` // RFC3339
 }
 
@@ -352,9 +351,16 @@ func (s *Server) handleClientAuthDesktopCallback(w http.ResponseWriter, r *http.
 		}
 	}
 
-	// Allowlist gate — same policy as the browser callback. Denied attempts
-	// are logged with flow=desktop so the audit trail distinguishes them.
-	if !s.enforceCommanderAllowlist(w, r, loginFlowDesktop, fid, name) {
+	// Resolve commander access — same policy as the browser callback. Denied
+	// attempts are logged with flow=desktop so the audit trail distinguishes
+	// them. See commander_allowlist.go for the full decision matrix.
+	decision := s.resolveCommanderAccess(ctx, r, loginFlowDesktop, fid, name)
+	if !decision.Allowed {
+		if decision.Denial != nil {
+			s.recordDeniedLogin(*decision.Denial)
+		}
+		s.writeError(w, http.StatusForbidden,
+			"this commander is not currently permitted to use EDIN. Contact the administrator to request access.")
 		return
 	}
 
@@ -363,14 +369,10 @@ func (s *Server) handleClientAuthDesktopCallback(w http.ResponseWriter, r *http.
 		s.writeError(w, http.StatusServiceUnavailable, "commander auth not configured")
 		return
 	}
-	// Default commander scope set — Task 6 will replace this literal with a
-	// dynamic resolution via resolveCommanderAccess. Do not extract into a
-	// constant; the literal goes away when the refactor lands.
-	tokenString, jti, err := s.commanderJWTIssuer.Issue(fid, name, []authz.Scope{
-		authz.ScopeCopilotChat,
-		authz.ScopeGalaxyRead,
-		authz.ScopeCommanderData,
-	})
+	// Scopes derived by resolveCommanderAccess — either from Authentik group
+	// membership (linked + approved commanders) or the default commander set
+	// (allowlist-fallback transitional case).
+	tokenString, jti, err := s.commanderJWTIssuer.Issue(fid, name, decision.Scopes)
 	if err != nil {
 		slog.Error("client_auth_callback: JWT issue failed", "error", err)
 		s.writeError(w, http.StatusInternalServerError, "failed to issue session token")

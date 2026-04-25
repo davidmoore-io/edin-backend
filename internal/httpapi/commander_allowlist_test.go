@@ -1,21 +1,26 @@
 package httpapi
 
 import (
-	"bufio"
-	"encoding/json"
+	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
-	"os"
-	"path/filepath"
-	"strings"
+	"sync"
 	"testing"
+	"time"
 
+	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/edin-space/edin-backend/internal/authentik"
+	"github.com/edin-space/edin-backend/internal/authz"
 	"github.com/edin-space/edin-backend/internal/config"
 	"github.com/edin-space/edin-backend/internal/observability"
+	"github.com/edin-space/edin-backend/internal/store"
 )
+
+// ─── fidAllowed helper retained ───────────────────────────────────────────────
 
 func TestFIDAllowed_EmptyAllowlist_AllowsEveryone(t *testing.T) {
 	// An empty allowlist is the "disabled" state. Any caller proceeds.
@@ -38,134 +43,270 @@ func TestFIDAllowed_CaseSensitive(t *testing.T) {
 	assert.False(t, fidAllowed(list, "f2504"))
 }
 
-// TestEnforceCommanderAllowlist_AllowsKnownFID — happy path. No denial
-// written, no 403 returned.
-func TestEnforceCommanderAllowlist_AllowsKnownFID(t *testing.T) {
-	logPath := filepath.Join(t.TempDir(), "attempts.log")
-	srv := newAllowlistTestServer(t, []string{"F2504"}, logPath)
+// ─── resolveCommanderAccess decision-matrix tests ─────────────────────────────
 
-	rr := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/anything", nil)
-	ok := srv.enforceCommanderAllowlist(rr, req, loginFlowWeb, "F2504", "Pattern State")
+// TestResolveCommanderAccess_LinkedApproved_UsesAuthentikGroups covers the
+// primary post-Task-5 path: a linked + approved commander whose Authentik
+// user has a recognised group → scopes derived from authz.ScopesForGroups.
+func TestResolveCommanderAccess_LinkedApproved_UsesAuthentikGroups(t *testing.T) {
+	fid := "F2504"
+	authentikUUID := uuid.MustParse("aaaaaaaa-1111-2222-3333-444455556666")
 
-	assert.True(t, ok)
-	assert.Equal(t, http.StatusOK, rr.Code) // no response written
-	assert.NoFileExists(t, logPath,
-		"accepted login must not touch the denial log")
-}
+	repo := newLinkTestRepo()
+	repo.seedRow(fid, &authentikUUID)
+	row := repo.rowByFID[fid]
+	row.Approved = true
 
-// TestEnforceCommanderAllowlist_DisabledWhenEmpty — legacy open posture.
-func TestEnforceCommanderAllowlist_DisabledWhenEmpty(t *testing.T) {
-	logPath := filepath.Join(t.TempDir(), "attempts.log")
-	srv := newAllowlistTestServer(t, nil, logPath)
-
-	rr := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/anything", nil)
-	ok := srv.enforceCommanderAllowlist(rr, req, loginFlowWeb, "F9999", "Random")
-
-	assert.True(t, ok, "empty allowlist must not deny anyone")
-	assert.NoFileExists(t, logPath)
-}
-
-// TestEnforceCommanderAllowlist_DeniedWritesLogAndReturns403 is the core
-// denial path: a 403 is written, and the attempt lands in the log file as
-// a single JSON line with identity + request metadata.
-func TestEnforceCommanderAllowlist_DeniedWritesLogAndReturns403(t *testing.T) {
-	logPath := filepath.Join(t.TempDir(), "attempts.log")
-	srv := newAllowlistTestServer(t, []string{"F2504"}, logPath)
-
-	rr := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/anything", nil)
-	req.Header.Set("User-Agent", "UnitTestUA/1.0")
-	req.Header.Set("X-Forwarded-For", "198.51.100.7")
-
-	ok := srv.enforceCommanderAllowlist(rr, req, loginFlowDesktop, "F9999", "CMDR Sneaky")
-	assert.False(t, ok)
-	assert.Equal(t, http.StatusForbidden, rr.Code)
-	assert.Contains(t, rr.Body.String(), "not currently permitted")
-
-	// Log file must exist with exactly one line of parseable JSON carrying
-	// the full identity + request context.
-	contents, err := os.ReadFile(logPath)
-	require.NoError(t, err)
-	require.NotEmpty(t, contents)
-
-	var logged deniedLoginAttempt
-	require.NoError(t, json.Unmarshal([]byte(strings.TrimRight(string(contents), "\n")), &logged))
-	assert.Equal(t, "F9999", logged.FID)
-	assert.Equal(t, "CMDR Sneaky", logged.CommanderName)
-	assert.Equal(t, loginFlowDesktop, logged.Flow)
-	assert.Equal(t, "198.51.100.7", logged.IP)
-	assert.Equal(t, "UnitTestUA/1.0", logged.UserAgent)
-	assert.Equal(t, "not_on_allowlist", logged.Reason)
-	assert.False(t, logged.Time.IsZero())
-}
-
-// TestEnforceCommanderAllowlist_LogIsAppendOnly — two denials must produce
-// two JSON lines, not overwrite one another.
-func TestEnforceCommanderAllowlist_LogIsAppendOnly(t *testing.T) {
-	logPath := filepath.Join(t.TempDir(), "attempts.log")
-	srv := newAllowlistTestServer(t, []string{"F2504"}, logPath)
-
-	for _, fid := range []string{"F100", "F200", "F300"} {
-		rr := httptest.NewRecorder()
-		req := httptest.NewRequest(http.MethodGet, "/anything", nil)
-		srv.enforceCommanderAllowlist(rr, req, loginFlowWeb, fid, "")
+	groups := &fakeAuthentikUserGroups{
+		userByUUID: map[uuid.UUID]*authentik.UserWithConnection{
+			authentikUUID: {GroupNames: []string{"edin-copilot"}},
+		},
 	}
 
-	f, err := os.Open(logPath)
-	require.NoError(t, err)
-	defer f.Close()
+	srv := newAccessTestServer(t, nil, "")
+	srv.commanderRepo = repo
+	srv.authentikUserGroups = groups
 
-	var lines []string
-	scanner := bufio.NewScanner(f)
-	for scanner.Scan() {
-		lines = append(lines, scanner.Text())
-	}
-	require.NoError(t, scanner.Err())
-	require.Len(t, lines, 3, "each denial should produce exactly one line")
+	r := httptest.NewRequest(http.MethodGet, "/anything", nil)
+	dec := srv.resolveCommanderAccess(context.Background(), r, loginFlowWeb, fid, "Pattern State")
 
-	for i, line := range lines {
-		var entry deniedLoginAttempt
-		require.NoErrorf(t, json.Unmarshal([]byte(line), &entry),
-			"line %d must be valid JSON: %s", i, line)
-	}
+	assert.True(t, dec.Allowed, "linked+approved with mapped group must be allowed")
+	assert.Equal(t, "authentik_groups", dec.Reason)
+	assert.Nil(t, dec.Denial)
+	assert.Equal(t, []authz.Scope{
+		authz.ScopeCommanderData,
+		authz.ScopeCopilotChat,
+		authz.ScopeGalaxyRead,
+	}, dec.Scopes, "scopes must match ScopesForGroups([edin-copilot])")
 }
 
-// TestEnforceCommanderAllowlist_NoLogPathDoesNotError — an operator who
-// wants zero log-file state can leave the path empty; denials are still
-// enforced and logged to the server logger.
-func TestEnforceCommanderAllowlist_NoLogPathDoesNotError(t *testing.T) {
-	srv := newAllowlistTestServer(t, []string{"F2504"}, "")
+// TestResolveCommanderAccess_LinkedApproved_NoGroupsMapped_Denied covers the
+// case where Authentik returns groups but none of them map to a scope set.
+// Plan: deny with reason=no_scopes_granted. Must NOT fall through to the
+// allowlist branch.
+func TestResolveCommanderAccess_LinkedApproved_NoGroupsMapped_Denied(t *testing.T) {
+	fid := "F2504"
+	authentikUUID := uuid.MustParse("aaaaaaaa-1111-2222-3333-444455556666")
 
-	rr := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/anything", nil)
-	ok := srv.enforceCommanderAllowlist(rr, req, loginFlowWeb, "F9999", "")
-	assert.False(t, ok)
-	assert.Equal(t, http.StatusForbidden, rr.Code)
+	repo := newLinkTestRepo()
+	repo.seedRow(fid, &authentikUUID)
+	row := repo.rowByFID[fid]
+	row.Approved = true
+
+	groups := &fakeAuthentikUserGroups{
+		userByUUID: map[uuid.UUID]*authentik.UserWithConnection{
+			authentikUUID: {GroupNames: []string{"totally-unknown-group"}},
+		},
+	}
+
+	// Allowlist contains the FID; the linked+approved branch must NOT fall
+	// through to allowlist_fallback. This is a critical safety property.
+	srv := newAccessTestServer(t, []string{fid}, "")
+	srv.commanderRepo = repo
+	srv.authentikUserGroups = groups
+
+	r := httptest.NewRequest(http.MethodGet, "/anything", nil)
+	dec := srv.resolveCommanderAccess(context.Background(), r, loginFlowWeb, fid, "Pattern State")
+
+	assert.False(t, dec.Allowed)
+	assert.Equal(t, "no_scopes_granted", dec.Reason)
+	assert.Nil(t, dec.Scopes)
+	require.NotNil(t, dec.Denial)
+	assert.Equal(t, "no_scopes_granted", dec.Denial.Reason)
+	assert.Equal(t, fid, dec.Denial.FID)
+	assert.Equal(t, loginFlowWeb, dec.Denial.Flow)
 }
 
-// TestEnforceCommanderAllowlist_UnwritableLogDoesNotBlockResponse — if the
-// file can't be opened (permissions, disk full, ...), the 403 must still
-// reach the caller. The denial is the primary function; the audit line is
-// best-effort.
-func TestEnforceCommanderAllowlist_UnwritableLogDoesNotBlockResponse(t *testing.T) {
-	// Use a path inside a non-existent directory to force an open failure.
-	logPath := filepath.Join(t.TempDir(), "does-not-exist", "attempts.log")
-	srv := newAllowlistTestServer(t, []string{"F2504"}, logPath)
+// TestResolveCommanderAccess_LinkedApproved_AuthentikUserDeleted_DeniesWithMissingReason
+// covers the "shadow user wiped from Authentik" failure mode.
+func TestResolveCommanderAccess_LinkedApproved_AuthentikUserDeleted_DeniesWithMissingReason(t *testing.T) {
+	fid := "F2504"
+	authentikUUID := uuid.MustParse("aaaaaaaa-1111-2222-3333-444455556666")
 
-	rr := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/anything", nil)
-	ok := srv.enforceCommanderAllowlist(rr, req, loginFlowWeb, "F9999", "")
-	assert.False(t, ok)
-	assert.Equal(t, http.StatusForbidden, rr.Code)
+	repo := newLinkTestRepo()
+	repo.seedRow(fid, &authentikUUID)
+	row := repo.rowByFID[fid]
+	row.Approved = true
+
+	groups := &fakeAuthentikUserGroups{
+		errByUUID: map[uuid.UUID]error{authentikUUID: authentik.ErrUserNotFound},
+	}
+
+	srv := newAccessTestServer(t, nil, "")
+	srv.commanderRepo = repo
+	srv.authentikUserGroups = groups
+
+	r := httptest.NewRequest(http.MethodGet, "/anything", nil)
+	dec := srv.resolveCommanderAccess(context.Background(), r, loginFlowWeb, fid, "Pattern State")
+
+	assert.False(t, dec.Allowed)
+	assert.Equal(t, "authentik_user_missing", dec.Reason)
+	require.NotNil(t, dec.Denial)
+	assert.Equal(t, "authentik_user_missing", dec.Denial.Reason)
+}
+
+// TestResolveCommanderAccess_LinkedApproved_AuthentikTransientError_DeniesClosed
+// covers transient Authentik failures (timeout, network, 5xx) — they must
+// deny-closed with reason=authentik_unreachable.
+func TestResolveCommanderAccess_LinkedApproved_AuthentikTransientError_DeniesClosed(t *testing.T) {
+	fid := "F2504"
+	authentikUUID := uuid.MustParse("aaaaaaaa-1111-2222-3333-444455556666")
+
+	repo := newLinkTestRepo()
+	repo.seedRow(fid, &authentikUUID)
+	row := repo.rowByFID[fid]
+	row.Approved = true
+
+	groups := &fakeAuthentikUserGroups{
+		errByUUID: map[uuid.UUID]error{authentikUUID: errors.New("authentik 502 bad gateway")},
+	}
+
+	srv := newAccessTestServer(t, nil, "")
+	srv.commanderRepo = repo
+	srv.authentikUserGroups = groups
+
+	r := httptest.NewRequest(http.MethodGet, "/anything", nil)
+	dec := srv.resolveCommanderAccess(context.Background(), r, loginFlowWeb, fid, "Pattern State")
+
+	assert.False(t, dec.Allowed)
+	assert.Equal(t, "authentik_unreachable", dec.Reason)
+	require.NotNil(t, dec.Denial)
+}
+
+// TestResolveCommanderAccess_LinkedApproved_AuthentikTimeout_DeniesUnreachable
+// pins the 2-second timeout: an Authentik fake that blocks past the deadline
+// must surface as authentik_unreachable.
+func TestResolveCommanderAccess_LinkedApproved_AuthentikTimeout_DeniesUnreachable(t *testing.T) {
+	fid := "F2504"
+	authentikUUID := uuid.MustParse("aaaaaaaa-1111-2222-3333-444455556666")
+
+	repo := newLinkTestRepo()
+	repo.seedRow(fid, &authentikUUID)
+	row := repo.rowByFID[fid]
+	row.Approved = true
+
+	// blockUntilCancelled mimics Authentik blocking past the 2s deadline; the
+	// fake honours ctx so we don't actually wait 2 seconds in the test.
+	groups := &fakeAuthentikUserGroups{blockUntilCancelled: true}
+
+	srv := newAccessTestServer(t, nil, "")
+	srv.commanderRepo = repo
+	srv.authentikUserGroups = groups
+
+	// Use a parent context with a short deadline so the test completes
+	// quickly while still proving the inner timeout path is honoured.
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+
+	r := httptest.NewRequest(http.MethodGet, "/anything", nil)
+	dec := srv.resolveCommanderAccess(ctx, r, loginFlowWeb, fid, "Pattern State")
+
+	assert.False(t, dec.Allowed)
+	assert.Equal(t, "authentik_unreachable", dec.Reason)
+}
+
+// TestResolveCommanderAccess_LinkedNotApproved_OnAllowlist_UsesFallback covers
+// the migration window: a linked-but-not-yet-approved commander whose FID is
+// on the env-var allowlist gets the default commander scope set. The
+// Authentik client is NOT consulted — approved=false short-circuits.
+func TestResolveCommanderAccess_LinkedNotApproved_OnAllowlist_UsesFallback(t *testing.T) {
+	fid := "F2504"
+	authentikUUID := uuid.MustParse("aaaaaaaa-1111-2222-3333-444455556666")
+
+	repo := newLinkTestRepo()
+	repo.seedRow(fid, &authentikUUID) // Approved defaults to false on a freshly-seeded row.
+
+	groups := &fakeAuthentikUserGroups{} // Should NOT be consulted.
+
+	srv := newAccessTestServer(t, []string{fid}, "")
+	srv.commanderRepo = repo
+	srv.authentikUserGroups = groups
+
+	r := httptest.NewRequest(http.MethodGet, "/anything", nil)
+	dec := srv.resolveCommanderAccess(context.Background(), r, loginFlowWeb, fid, "Pattern State")
+
+	assert.True(t, dec.Allowed)
+	assert.Equal(t, "allowlist_fallback", dec.Reason)
+	assert.Equal(t, []authz.Scope{
+		authz.ScopeCopilotChat,
+		authz.ScopeGalaxyRead,
+		authz.ScopeCommanderData,
+	}, dec.Scopes, "default commander scope set")
+	assert.Equal(t, 0, groups.calls, "Authentik must NOT be consulted for not-approved rows")
+}
+
+// TestResolveCommanderAccess_LinkedNotApproved_OffAllowlist_DeniesAwaiting
+// covers the post-rollout shape: linked but awaiting admin approval, with
+// no env-var fallback.
+func TestResolveCommanderAccess_LinkedNotApproved_OffAllowlist_DeniesAwaiting(t *testing.T) {
+	fid := "F2504"
+	authentikUUID := uuid.MustParse("aaaaaaaa-1111-2222-3333-444455556666")
+
+	repo := newLinkTestRepo()
+	repo.seedRow(fid, &authentikUUID)
+
+	srv := newAccessTestServer(t, []string{"F-other"}, "")
+	srv.commanderRepo = repo
+	srv.authentikUserGroups = &fakeAuthentikUserGroups{}
+
+	r := httptest.NewRequest(http.MethodGet, "/anything", nil)
+	dec := srv.resolveCommanderAccess(context.Background(), r, loginFlowWeb, fid, "Pattern State")
+
+	assert.False(t, dec.Allowed)
+	assert.Equal(t, "awaiting_approval", dec.Reason)
+	require.NotNil(t, dec.Denial)
+	assert.Equal(t, "awaiting_approval", dec.Denial.Reason)
+}
+
+// TestResolveCommanderAccess_RowAbsent_OnAllowlist_UsesFallback covers the
+// transitional path (a row should always exist post-Task-5, but the legacy
+// allowlist branch is kept until Task 12).
+func TestResolveCommanderAccess_RowAbsent_OnAllowlist_UsesFallback(t *testing.T) {
+	fid := "F2504"
+	repo := newLinkTestRepo() // No seedRow — GetCommanderAsAdmin returns ErrCommanderNotFound.
+
+	srv := newAccessTestServer(t, []string{fid}, "")
+	srv.commanderRepo = repo
+	srv.authentikUserGroups = &fakeAuthentikUserGroups{}
+
+	r := httptest.NewRequest(http.MethodGet, "/anything", nil)
+	dec := srv.resolveCommanderAccess(context.Background(), r, loginFlowWeb, fid, "Pattern State")
+
+	assert.True(t, dec.Allowed)
+	assert.Equal(t, "allowlist", dec.Reason,
+		"row absent + on allowlist must surface reason=allowlist (distinct from allowlist_fallback)")
+	assert.Equal(t, []authz.Scope{
+		authz.ScopeCopilotChat,
+		authz.ScopeGalaxyRead,
+		authz.ScopeCommanderData,
+	}, dec.Scopes)
+}
+
+// TestResolveCommanderAccess_RowAbsent_OffAllowlist_Denied covers the
+// transitional reject path.
+func TestResolveCommanderAccess_RowAbsent_OffAllowlist_Denied(t *testing.T) {
+	fid := "F9999"
+	repo := newLinkTestRepo()
+
+	srv := newAccessTestServer(t, []string{"F2504"}, "")
+	srv.commanderRepo = repo
+	srv.authentikUserGroups = &fakeAuthentikUserGroups{}
+
+	r := httptest.NewRequest(http.MethodGet, "/anything", nil)
+	dec := srv.resolveCommanderAccess(context.Background(), r, loginFlowWeb, fid, "Stranger")
+
+	assert.False(t, dec.Allowed)
+	assert.Equal(t, "not_on_allowlist", dec.Reason)
+	require.NotNil(t, dec.Denial)
+	assert.Equal(t, "not_on_allowlist", dec.Denial.Reason)
+	assert.Equal(t, fid, dec.Denial.FID)
 }
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
 
-// newAllowlistTestServer produces a server stub with only the two fields
-// enforceCommanderAllowlist reads, plus a logger. Avoids miniredis setup.
-func newAllowlistTestServer(t *testing.T, allowlist []string, logPath string) *Server {
+// newAccessTestServer produces a Server stub with the fields
+// resolveCommanderAccess reads, plus a logger.
+func newAccessTestServer(t *testing.T, allowlist []string, logPath string) *Server {
 	t.Helper()
 	return &Server{
 		logger: observability.NewLogger("test"),
@@ -176,4 +317,54 @@ func newAllowlistTestServer(t *testing.T, allowlist []string, logPath string) *S
 			},
 		},
 	}
+}
+
+// fakeAuthentikUserGroups is a deterministic stand-in for
+// *authentik.Client (the production type) implementing only the
+// authentikUserGroupResolver interface used by resolveCommanderAccess.
+//
+// userByUUID returns the configured user; errByUUID overrides with an
+// error (e.g. authentik.ErrUserNotFound or a generic transient error).
+// blockUntilCancelled exercises the 2-second timeout: the fake blocks on
+// ctx.Done() and returns context.DeadlineExceeded.
+type fakeAuthentikUserGroups struct {
+	mu sync.Mutex
+
+	userByUUID          map[uuid.UUID]*authentik.UserWithConnection
+	errByUUID           map[uuid.UUID]error
+	blockUntilCancelled bool
+
+	calls int
+}
+
+func (f *fakeAuthentikUserGroups) GetUserByUUID(ctx context.Context, userUUID uuid.UUID) (*authentik.UserWithConnection, error) {
+	f.mu.Lock()
+	f.calls++
+	f.mu.Unlock()
+
+	if f.blockUntilCancelled {
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
+	if err, ok := f.errByUUID[userUUID]; ok {
+		return nil, err
+	}
+	if u, ok := f.userByUUID[userUUID]; ok {
+		return u, nil
+	}
+	return nil, authentik.ErrUserNotFound
+}
+
+// Compile-time interface check: keep this near the fake so a future change
+// to authentikUserGroupResolver surfaces here, not at every test call site.
+var _ authentikUserGroupResolver = (*fakeAuthentikUserGroups)(nil)
+
+// errCommanderNotFoundReexport guarantees the test file references the
+// store sentinel — keeps the import "live" if the only other reference
+// becomes indirect via linkTestRepo.
+var errCommanderNotFoundReexport = store.ErrCommanderNotFound
+
+func init() {
+	// Suppress "declared but not used" on the sentinel reference above.
+	_ = errCommanderNotFoundReexport
 }

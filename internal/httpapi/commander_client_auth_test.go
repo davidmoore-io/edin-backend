@@ -11,6 +11,7 @@ import (
 
 	"github.com/alicebob/miniredis/v2"
 	"github.com/edin-space/edin-backend/internal/auth"
+	"github.com/edin-space/edin-backend/internal/authentik"
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
@@ -532,4 +533,55 @@ func TestClientAuthCallback_AuthentikCreateFails_Returns403(t *testing.T) {
 	assert.Equal(t, "test/1.0", logged.UserAgent,
 		"audit record must echo the caller's User-Agent")
 	assert.False(t, logged.Time.IsZero(), "audit record must stamp Time")
+}
+
+// ─── Task 6 callback integration (desktop) ────────────────────────────────────
+
+// TestClientAuthCallback_LinkedApprovedCommander_IssuesJWTWithAuthentikScopes
+// is the desktop mirror of the browser-flow happy-path: a linked + approved
+// commander whose Authentik user is in "edin-copilot" gets a JWT carrying
+// the scopes derived from that group (not the literal default), and the
+// session row in Redis becomes "complete" with the JWT for the desktop
+// client to poll.
+func TestClientAuthCallback_LinkedApprovedCommander_IssuesJWTWithAuthentikScopes(t *testing.T) {
+	frontierSrv := frontierTestServer(t, frontierTokenPayload(), "7777", "Desktop Commander", 0, false)
+	defer frontierSrv.Close()
+
+	rdb, mr := newClientAuthMiniredis(t)
+	srv := newCommanderAuthTestServer(t, frontierSrv.URL, rdb, 5*time.Second)
+
+	authentikUUID := uuid.MustParse("bbbbbbbb-1111-2222-3333-444455556666")
+	repo := newLinkTestRepo()
+	repo.seedRow("F7777", &authentikUUID)
+	repo.rowByFID["F7777"].Approved = true
+	srv.commanderRepo = repo
+
+	srv.authentikUserGroups = &fakeAuthentikUserGroups{
+		userByUUID: map[uuid.UUID]*authentik.UserWithConnection{
+			authentikUUID: {GroupNames: []string{"edin-copilot"}},
+		},
+	}
+
+	sessionID, state := seedPendingSession(t, mr, rdb, "desktop-verifier-approved")
+
+	req := httptest.NewRequest(http.MethodGet,
+		fmt.Sprintf("/api/commander/auth/callback?code=desktop-code&state=%s", state), nil)
+	rr := httptest.NewRecorder()
+	srv.handleCommanderAuthCallback(rr, req)
+
+	require.Equal(t, http.StatusOK, rr.Code, "body: %s", rr.Body.String())
+
+	raw, err := mr.Get(clientAuthSessionKey(sessionID))
+	require.NoError(t, err)
+	var session clientAuthSession
+	require.NoError(t, json.Unmarshal([]byte(raw), &session))
+	require.Equal(t, "complete", session.Status,
+		"desktop session must be marked complete on a successful callback")
+	require.NotEmpty(t, session.Token)
+
+	claims := &auth.CommanderClaims{}
+	_, _, err = new(jwt.Parser).ParseUnverified(session.Token, claims)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"commander_data", "copilot_chat", "galaxy_read"}, claims.Scopes,
+		"desktop JWT must carry scopes derived from the Authentik group")
 }

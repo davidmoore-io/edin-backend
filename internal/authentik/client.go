@@ -450,6 +450,53 @@ func (c *Client) CreateUser(ctx context.Context, req CreateUserRequest) (*User, 
 	}
 }
 
+// GetUserByUUID returns a single user looked up by their UUID. Returns
+// ErrUserNotFound when no user matches.
+//
+// Authentik's list endpoint accepts ?uuid=... and returns a paginated result;
+// we take the first match (Authentik enforces UUID uniqueness). Mirrors the
+// shape of GetUserByUsername.
+//
+// Discord-connection enrichment is intentionally skipped here: shadow users
+// (the dominant case post-Task 5) have no Discord connection, and the
+// per-user OAuth-connection lookup adds a request that the access-decision
+// path does not need. DiscordID and DiscordUsername on the returned
+// UserWithConnection are therefore always empty. Callers that need Discord
+// enrichment should call GetUser (by PK) explicitly.
+func (c *Client) GetUserByUUID(ctx context.Context, userUUID uuid.UUID) (*UserWithConnection, error) {
+	endpoint := "/core/users/?uuid=" + encodeQueryComponent(userUUID.String())
+	resp, err := c.doRequest(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return nil, fmt.Errorf("get user by uuid request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("get user by uuid failed: %s - %s", resp.Status, string(body))
+	}
+
+	var result PaginatedResponse[User]
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, fmt.Errorf("decode user by uuid: %w", err)
+	}
+
+	for _, u := range result.Results {
+		if u.UUID == userUUID {
+			user := u
+			uwc := UserWithConnection{
+				User:       user,
+				GroupNames: make([]string, 0, len(user.Groups)),
+			}
+			for _, g := range user.Groups {
+				uwc.GroupNames = append(uwc.GroupNames, g.Name)
+			}
+			return &uwc, nil
+		}
+	}
+	return nil, ErrUserNotFound
+}
+
 // GetUserByUsername returns the user whose username exactly matches the
 // argument. Returns ErrUserNotFound if no such user exists.
 //

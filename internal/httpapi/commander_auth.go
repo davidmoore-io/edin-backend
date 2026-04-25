@@ -364,11 +364,18 @@ func (s *Server) handleCommanderAuthCallback(w http.ResponseWriter, r *http.Requ
 		}
 	}
 
-	// Allowlist gate — refuse to mint a JWT for FIDs not on the allowlist.
-	// The check runs AFTER we've identified the commander so the attempt
-	// log captures who tried, not just that "someone" tried.
-	if !s.enforceCommanderAllowlist(w, r, loginFlowWeb, fid, name) {
+	// Resolve commander access — single decision-point that consults the
+	// linked Authentik user's groups for approved commanders, falls back to
+	// the env-var allowlist for transitional cases, and denies otherwise.
+	// See commander_allowlist.go for the full decision matrix.
+	decision := s.resolveCommanderAccess(r.Context(), r, loginFlowWeb, fid, name)
+	if !decision.Allowed {
+		if decision.Denial != nil {
+			s.recordDeniedLogin(*decision.Denial)
+		}
 		am.commanderAuthAttemptsTotal.WithLabelValues("denied").Inc()
+		s.writeError(w, http.StatusForbidden,
+			"this commander is not currently permitted to use EDIN. Contact the administrator to request access.")
 		return
 	}
 
@@ -378,14 +385,10 @@ func (s *Server) handleCommanderAuthCallback(w http.ResponseWriter, r *http.Requ
 		s.writeError(w, http.StatusServiceUnavailable, "commander auth not configured")
 		return
 	}
-	// Default commander scope set — Task 6 will replace this literal with a
-	// dynamic resolution via resolveCommanderAccess. Do not extract into a
-	// constant; the literal goes away when the refactor lands.
-	tokenString, jti, err := s.commanderJWTIssuer.Issue(fid, name, []authz.Scope{
-		authz.ScopeCopilotChat,
-		authz.ScopeGalaxyRead,
-		authz.ScopeCommanderData,
-	})
+	// Scopes derived by resolveCommanderAccess — either from Authentik group
+	// membership (linked + approved commanders) or the default commander set
+	// (allowlist-fallback transitional case).
+	tokenString, jti, err := s.commanderJWTIssuer.Issue(fid, name, decision.Scopes)
 	if err != nil {
 		slog.Error("JWT issue failed", "error", err)
 		am.commanderAuthAttemptsTotal.WithLabelValues("failure").Inc()

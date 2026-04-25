@@ -13,9 +13,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/google/uuid"
-	"github.com/gorilla/websocket"
-	"github.com/redis/go-redis/v9"
 	"github.com/edin-space/edin-backend/internal/anthropic"
 	"github.com/edin-space/edin-backend/internal/assistant"
 	"github.com/edin-space/edin-backend/internal/auth"
@@ -33,6 +30,9 @@ import (
 	"github.com/edin-space/edin-backend/internal/store"
 	"github.com/edin-space/edin-backend/internal/tools"
 	ws "github.com/edin-space/edin-backend/internal/websocket"
+	"github.com/google/uuid"
+	"github.com/gorilla/websocket"
+	"github.com/redis/go-redis/v9"
 )
 
 // Run launches the HTTP API server with the provided dependencies.
@@ -65,27 +65,27 @@ func Run(ctx context.Context, cfg *config.Config, opsManager *ops.Manager, llmSt
 	commanderNonceStore := newCommanderChatNonceStore()
 
 	server := &Server{
-		cfg:                 cfg,
-		ops:                 opsManager,
-		llmStore:            llmStore,
-		llmClient:           llmClient,
-		logger:              observability.NewLogger("httpapi"),
-		apiKey:              cfg.HTTP.InternalKey,
-		metrics:             metrics,
-		rateLimiter:         newRateLimiter(cfg.RateLimit.RequestsPerWindow, cfg.RateLimit.Window),
-		toolExec:            toolExec,
-		llmRunner:           runner,
-		storeCfg:            cfg.LLM.Store,
-		spansh:              spanshClient,
-		cacheStore:          cacheStore,
-		wsHub:               wsHub,
-		memgraph:            memgraphClient,
-		dayz:                dayzService,
-		kaineStore:          kaineStore,
-		eddnIntelStore:      eddnIntelStore,
-		nonceStore:          nonceStore,
-		commanderPKCEStore:  pkceStore,
-		commanderNonceStore: commanderNonceStore,
+		cfg:                  cfg,
+		ops:                  opsManager,
+		llmStore:             llmStore,
+		llmClient:            llmClient,
+		logger:               observability.NewLogger("httpapi"),
+		apiKey:               cfg.HTTP.InternalKey,
+		metrics:              metrics,
+		rateLimiter:          newRateLimiter(cfg.RateLimit.RequestsPerWindow, cfg.RateLimit.Window),
+		toolExec:             toolExec,
+		llmRunner:            runner,
+		storeCfg:             cfg.LLM.Store,
+		spansh:               spanshClient,
+		cacheStore:           cacheStore,
+		wsHub:                wsHub,
+		memgraph:             memgraphClient,
+		dayz:                 dayzService,
+		kaineStore:           kaineStore,
+		eddnIntelStore:       eddnIntelStore,
+		nonceStore:           nonceStore,
+		commanderPKCEStore:   pkceStore,
+		commanderNonceStore:  commanderNonceStore,
 		commanderRepo:        commanderRepo,
 		ingestRateLimiter:    newIngestFIDRateLimiter(),
 		heartbeatRateLimiter: newHeartbeatFIDRateLimiter(),
@@ -155,6 +155,11 @@ func Run(ctx context.Context, cfg *config.Config, opsManager *ops.Manager, llmSt
 		server.createShadowUser = func(ctx context.Context, fid, cmdrName string) (uuid.UUID, error) {
 			return authentik.CreateShadowUser(ctx, client, fid, cmdrName)
 		}
+
+		// Wire the user-groups resolver used by resolveCommanderAccess to
+		// derive scopes for approved+linked commanders. *authentik.Client
+		// satisfies the interface via its GetUserByUUID method.
+		server.authentikUserGroups = client
 	}
 
 	// Commander auth initialization (if enabled)
@@ -210,9 +215,9 @@ func Run(ctx context.Context, cfg *config.Config, opsManager *ops.Manager, llmSt
 	mux.HandleFunc("/api/edin/hip-thunderdome", server.handleHIPThunderdome)
 	mux.HandleFunc("/api/edin/powerplay", server.handlePowerplay)
 	mux.HandleFunc("/api/edin/power-standings", server.handlePowerStandings)
-	mux.HandleFunc("/api/edin/inara-links", server.handleEDINInaraLinks)         // Inara IDs for direct links
-	mux.HandleFunc("/api/edin/inara/latest", server.handleEDINInaraLinks)        // Legacy route (same handler)
-	mux.HandleFunc("/api/edin/systems/", server.handleEDINSystemHistory)         // /api/edin/systems/{name}/history
+	mux.HandleFunc("/api/edin/inara-links", server.handleEDINInaraLinks)  // Inara IDs for direct links
+	mux.HandleFunc("/api/edin/inara/latest", server.handleEDINInaraLinks) // Legacy route (same handler)
+	mux.HandleFunc("/api/edin/systems/", server.handleEDINSystemHistory)  // /api/edin/systems/{name}/history
 	mux.HandleFunc("/api/edin/status", server.handleEDINStatus)
 	mux.HandleFunc("/api/edin/openapi.json", server.handleEDINOpenAPI)
 	mux.HandleFunc("/api/edin/ws", server.handleEDINWebSocket)
@@ -301,25 +306,25 @@ func Run(ctx context.Context, cfg *config.Config, opsManager *ops.Manager, llmSt
 
 // Server holds HTTP handlers and shared dependencies.
 type Server struct {
-	cfg          *config.Config
-	ops          *ops.Manager
-	llmStore     llm.SessionBackend
-	llmClient    *anthropic.Client
-	logger       *observability.Logger
-	apiKey       string
-	metrics      *observability.Metrics
-	rateLimiter  *rateLimiter
-	toolExec     *tools.Executor
-	llmRunner     *assistant.Runner // Discord ops runner (has access to system management tools)
-	kaineRunner   *assistant.Runner // Kaine chat runner (Elite Dangerous tools only, no ops)
-	copilotRunner *assistant.Runner // Copilot chat runner (commander-authenticated, includes commander tools)
-	storeCfg     config.ConversationStoreConfig
-	spansh       *spansh.Client
-	cacheStore   *store.CacheStore
-	wsHub        *ws.Hub
-	memgraph     *memgraph.Client
-	dayz         *dayz.Service
-	kaineStore   *kaine.Store
+	cfg             *config.Config
+	ops             *ops.Manager
+	llmStore        llm.SessionBackend
+	llmClient       *anthropic.Client
+	logger          *observability.Logger
+	apiKey          string
+	metrics         *observability.Metrics
+	rateLimiter     *rateLimiter
+	toolExec        *tools.Executor
+	llmRunner       *assistant.Runner // Discord ops runner (has access to system management tools)
+	kaineRunner     *assistant.Runner // Kaine chat runner (Elite Dangerous tools only, no ops)
+	copilotRunner   *assistant.Runner // Copilot chat runner (commander-authenticated, includes commander tools)
+	storeCfg        config.ConversationStoreConfig
+	spansh          *spansh.Client
+	cacheStore      *store.CacheStore
+	wsHub           *ws.Hub
+	memgraph        *memgraph.Client
+	dayz            *dayz.Service
+	kaineStore      *kaine.Store
 	jwtValidator    TokenValidator
 	nonceStore      *kaineNonceStore        // Single-use nonce store for WebSocket auth frames
 	eddnIntelStore  *store.SystemIntelStore // EDDN raw feed queries for system intel
@@ -333,16 +338,23 @@ type Server struct {
 	// callback denies the login.
 	createShadowUser func(ctx context.Context, fid, cmdrName string) (uuid.UUID, error)
 
+	// authentikUserGroups is the seam used by resolveCommanderAccess
+	// (commander_allowlist.go) to look up an approved+linked commander's
+	// Authentik groups and derive their scope set. Production wiring
+	// (NewServer below) assigns s.authentikClient. Tests inject a fake.
+	// nil on a linked+approved row deny-closes with reason=authentik_unreachable.
+	authentikUserGroups authentikUserGroupResolver
+
 	// Commander (Copilot) auth
-	redisClient              *redis.Client
-	commanderJWTIssuer       *auth.CommanderJWTIssuer
-	commanderJWTValidator    *auth.CommanderJWTValidator
-	commanderPKCEStore       *commanderPKCEStore
-	commanderNonceStore      *commanderChatNonceStore // Single-use nonce store for commander WebSocket auth frames
-	commanderIPLimiter       sync.Map // map[string]*security.TokenBucket — per-IP rate limiters
+	redisClient           *redis.Client
+	commanderJWTIssuer    *auth.CommanderJWTIssuer
+	commanderJWTValidator *auth.CommanderJWTValidator
+	commanderPKCEStore    *commanderPKCEStore
+	commanderNonceStore   *commanderChatNonceStore // Single-use nonce store for commander WebSocket auth frames
+	commanderIPLimiter    sync.Map                 // map[string]*security.TokenBucket — per-IP rate limiters
 
 	// Commander journal ingest
-	commanderRepo      store.CommanderRepository
+	commanderRepo        store.CommanderRepository
 	ingestRateLimiter    *ingestFIDRateLimiter
 	heartbeatRateLimiter *heartbeatFIDRateLimiter
 

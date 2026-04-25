@@ -1,12 +1,19 @@
 package httpapi
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
 	"sync"
 	"time"
+
+	"github.com/edin-space/edin-backend/internal/authentik"
+	"github.com/edin-space/edin-backend/internal/authz"
+	"github.com/edin-space/edin-backend/internal/store"
+	"github.com/google/uuid"
 )
 
 // Commander allowlist — first-cut access control for the copilot / ingest /
@@ -105,39 +112,165 @@ func (s *Server) recordDeniedLogin(attempt deniedLoginAttempt) {
 	}
 }
 
-// enforceCommanderAllowlist returns true if the caller should proceed with
-// JWT issuance, or false if the request has been rejected and an HTTP
-// response has already been written. Callers must return immediately when
-// this returns false.
+// authentikUserGroupResolver is the subset of the Authentik client used
+// when deciding what scopes a commander gets. Defining it as an interface
+// rather than depending on *authentik.Client directly lets resolveCommanderAccess
+// be tested without httptest fixtures, and mirrors the existing
+// createShadowUser function-typed seam in spirit (test substitution without
+// a wider dependency surface).
+type authentikUserGroupResolver interface {
+	GetUserByUUID(ctx context.Context, userUUID uuid.UUID) (*authentik.UserWithConnection, error)
+}
+
+// commanderAccessDecision is the outcome of resolveCommanderAccess. Allowed
+// callers receive Scopes (which flow into JWT issuance) and a Reason label
+// (used in metrics). Denied callers receive a populated Denial which the
+// caller passes to recordDeniedLogin before writing the 403 response.
 //
-// Centralising the check here means web and desktop callbacks deny
-// identically and a future change (e.g. switching to a DB-backed list) lives
-// in one place.
-func (s *Server) enforceCommanderAllowlist(
-	w http.ResponseWriter,
+// The split keeps resolveCommanderAccess HTTP-response-free: it is a pure
+// decision function, easy to unit-test in isolation, and the caller owns
+// the writer / audit pipeline.
+type commanderAccessDecision struct {
+	Allowed bool
+	Scopes  []authz.Scope
+	Reason  string              // labels used in metrics + denial log
+	Denial  *deniedLoginAttempt // populated only when Allowed=false
+}
+
+// resolveCommanderAccess is the single decision-point for "should this
+// Frontier-authenticated commander get a JWT, and with what scopes?"
+//
+// Decision matrix (per the Authentik commander-access plan, Task 6):
+//
+//	| commander row     | Authentik state                       | allowlist | result                                  |
+//	|-------------------|---------------------------------------|-----------|-----------------------------------------|
+//	| linked + approved | groups → ScopesForGroups non-empty    | —         | allowed, scopes=mapped, authentik_groups |
+//	| linked + approved | groups → ScopesForGroups EMPTY        | —         | denied, no_scopes_granted               |
+//	| linked + approved | Authentik 404 (user deleted)          | —         | denied, authentik_user_missing          |
+//	| linked + approved | Authentik transient error             | —         | denied, authentik_unreachable           |
+//	| linked + !approved| —                                     | on        | allowed, scopes=default, allowlist_fallback |
+//	| linked + !approved| —                                     | off       | denied, awaiting_approval               |
+//	| row absent        | —                                     | on        | allowed, scopes=default, allowlist      |
+//	| row absent        | —                                     | off       | denied, not_on_allowlist                |
+//
+// Notes:
+//   - Post-Task 5, every callback invokes ensureCommanderLink before this,
+//     so the "row absent" branch is transitional only (allowlist /
+//     not_on_allowlist reasons retired in Task 12).
+//   - The default commander scope set is a literal at the call sites below,
+//     not a helper or constant — a deliberate choice; the literal goes away
+//     entirely when Task 12 retires the env-var allowlist.
+//   - s.authentikClient == nil (Authentik disabled in config) on a
+//     linked+approved row is treated as authentik_unreachable: deny-closed
+//     until the deployment is reconfigured.
+//   - s.commanderRepo == nil mirrors the "row absent" branch (the callbacks
+//     already guard their Upsert/link block on this same nil-check). The
+//     allowlist gate runs and Authentik is not consulted — preserves the
+//     pre-Task-6 callback contract for deployments running without the
+//     commander repository wired.
+//   - All return paths increment edin_commander_access_decisions_total{reason}.
+func (s *Server) resolveCommanderAccess(
+	ctx context.Context,
 	r *http.Request,
 	flow loginAttemptAuthFlow,
-	fid string,
-	commanderName string,
-) bool {
-	if fidAllowed(s.cfg.CommanderAuth.AllowedFIDs, fid) {
-		return true
+	fid, name string,
+) commanderAccessDecision {
+	am := initEdinMetrics()
+
+	denyWith := func(reason string) commanderAccessDecision {
+		am.commanderAccessDecisionsTotal.WithLabelValues(reason).Inc()
+		return commanderAccessDecision{
+			Allowed: false,
+			Reason:  reason,
+			Denial: &deniedLoginAttempt{
+				Time:          time.Now().UTC(),
+				FID:           fid,
+				CommanderName: name,
+				Flow:          flow,
+				IP:            clientIP(r),
+				UserAgent:     r.UserAgent(),
+				Reason:        reason,
+			},
+		}
+	}
+	allowWith := func(reason string, scopes []authz.Scope) commanderAccessDecision {
+		am.commanderAccessDecisionsTotal.WithLabelValues(reason).Inc()
+		return commanderAccessDecision{
+			Allowed: true,
+			Scopes:  scopes,
+			Reason:  reason,
+		}
 	}
 
-	s.recordDeniedLogin(deniedLoginAttempt{
-		Time:          time.Now().UTC(),
-		FID:           fid,
-		CommanderName: commanderName,
-		Flow:          flow,
-		IP:            clientIP(r),
-		UserAgent:     r.UserAgent(),
-		Reason:        "not_on_allowlist",
-	})
+	// commanderRepo nil mirrors the "row absent" branch — the callbacks guard
+	// the Upsert/link block on this same nil-check, so a deployment without
+	// the repo wired never had a row to consult. Behaviour preserves the
+	// pre-Task-6 contract: allowlist gate runs, no Authentik consultation.
+	if s.commanderRepo == nil {
+		if fidAllowed(s.cfg.CommanderAuth.AllowedFIDs, fid) {
+			return allowWith("allowlist", []authz.Scope{
+				authz.ScopeCopilotChat,
+				authz.ScopeGalaxyRead,
+				authz.ScopeCommanderData,
+			})
+		}
+		return denyWith("not_on_allowlist")
+	}
 
-	// 403 (not 401) — the OAuth exchange succeeded, we identified the caller,
-	// and we're refusing service to that identity. 401 would incorrectly
-	// suggest retrying the auth would help.
-	s.writeError(w, http.StatusForbidden,
-		"this commander is not currently permitted to use EDIN. Contact the administrator to request access.")
-	return false
+	row, err := s.commanderRepo.GetCommanderAsAdmin(ctx, fid)
+	switch {
+	case errors.Is(err, store.ErrCommanderNotFound):
+		// Transitional path — Task 5 guarantees a row, but the legacy
+		// allowlist branches stay until Task 12 retires them.
+		if fidAllowed(s.cfg.CommanderAuth.AllowedFIDs, fid) {
+			return allowWith("allowlist", []authz.Scope{
+				authz.ScopeCopilotChat,
+				authz.ScopeGalaxyRead,
+				authz.ScopeCommanderData,
+			})
+		}
+		return denyWith("not_on_allowlist")
+	case err != nil:
+		// Repo failure that isn't ErrCommanderNotFound — treat as transient
+		// and deny-closed. authentik_unreachable is the closest existing
+		// label; a future task may add db_unreachable.
+		return denyWith("authentik_unreachable")
+	}
+
+	// Row exists. Approved + linked → consult Authentik groups.
+	if row.Approved && row.AuthentikUserID != nil && *row.AuthentikUserID != uuid.Nil {
+		if s.authentikUserGroups == nil {
+			// Authentik disabled in config but the row is approved+linked —
+			// can't derive scopes, deny-closed.
+			return denyWith("authentik_unreachable")
+		}
+		// 2-second timeout — the callback already paid for one round-trip
+		// against Frontier; we want the access-decision lookup to be snappy
+		// or fail loudly rather than block the user behind an Authentik hang.
+		authentikCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+		defer cancel()
+		user, err := s.authentikUserGroups.GetUserByUUID(authentikCtx, *row.AuthentikUserID)
+		switch {
+		case errors.Is(err, authentik.ErrUserNotFound):
+			return denyWith("authentik_user_missing")
+		case err != nil:
+			return denyWith("authentik_unreachable")
+		}
+		scopes := authz.ScopesForGroups(user.GroupNames)
+		if len(scopes) == 0 {
+			return denyWith("no_scopes_granted")
+		}
+		return allowWith("authentik_groups", scopes)
+	}
+
+	// Row exists but is NOT approved (or not linked yet).
+	// Allowlist fallback covers the migration window.
+	if fidAllowed(s.cfg.CommanderAuth.AllowedFIDs, fid) {
+		return allowWith("allowlist_fallback", []authz.Scope{
+			authz.ScopeCopilotChat,
+			authz.ScopeGalaxyRead,
+			authz.ScopeCommanderData,
+		})
+	}
+	return denyWith("awaiting_approval")
 }

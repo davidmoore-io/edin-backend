@@ -219,3 +219,57 @@ func TestAuthentikClient_GetUserByUsername_5xx_PropagatesError(t *testing.T) {
 	assert.False(t, errors.Is(err, ErrUserNotFound))
 	assert.Contains(t, strings.ToLower(err.Error()), "502")
 }
+
+// TestAuthentikClient_GetUserByUUID_Success exercises the happy path: the
+// fake server returns one user with the requested UUID and a kaine group;
+// the client returns *UserWithConnection with GroupNames populated.
+func TestAuthentikClient_GetUserByUUID_Success(t *testing.T) {
+	wantUUID := uuid.MustParse("aaaaaaaa-1111-2222-3333-444455556666")
+
+	_, c := newFakeAuthentikServer(t, func(w http.ResponseWriter, r *http.Request) {
+		require.Equal(t, http.MethodGet, r.Method)
+		require.Equal(t, "/api/v3/core/users/", r.URL.Path)
+		assert.Equal(t, wantUUID.String(), r.URL.Query().Get("uuid"))
+
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"pagination": map[string]any{"count": 1},
+			"results": []map[string]any{
+				{
+					"pk":        7,
+					"uuid":      wantUUID.String(),
+					"username":  "F2504",
+					"name":      "Pattern State",
+					"is_active": true,
+					"groups_obj": []map[string]any{
+						{"pk": "group-1", "name": "edin-copilot", "is_superuser": false},
+					},
+				},
+			},
+		})
+	})
+
+	user, err := c.GetUserByUUID(context.Background(), wantUUID)
+	require.NoError(t, err)
+	require.NotNil(t, user)
+	assert.Equal(t, wantUUID, user.UUID)
+	assert.Equal(t, "F2504", user.Username)
+	assert.Equal(t, []string{"edin-copilot"}, user.GroupNames)
+	// Discord enrichment is intentionally skipped on this path.
+	assert.Empty(t, user.DiscordID)
+}
+
+// TestAuthentikClient_GetUserByUUID_NotFound_ReturnsErrUserNotFound covers
+// the empty-result case.
+func TestAuthentikClient_GetUserByUUID_NotFound_ReturnsErrUserNotFound(t *testing.T) {
+	_, c := newFakeAuthentikServer(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"pagination":{"count":0},"results":[]}`))
+	})
+
+	missing := uuid.MustParse("00000000-0000-0000-0000-000000000001")
+	user, err := c.GetUserByUUID(context.Background(), missing)
+	assert.Nil(t, user)
+	assert.True(t, errors.Is(err, ErrUserNotFound),
+		"expected ErrUserNotFound, got: %v", err)
+}
