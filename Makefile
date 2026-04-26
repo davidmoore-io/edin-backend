@@ -40,6 +40,11 @@ test-edin-bot-cover:
 lint-edin-bot:
 	golangci-lint run ./internal/edinbot/... ./cmd/edin-bot/... ./cmd/docker-inspect-sidecar/...
 
+# E2E test against REAL Discord. Requires EDIN_E2E=1, EDIN_BOT_TOKEN,
+# EDIN_E2E_TEST_CHANNEL_ID set in the environment.
+test-edin-bot-e2e:
+	EDIN_E2E=1 go test -tags e2e ./internal/edinbot/ -run TestE2E -v
+
 test:
 	go test ./...
 

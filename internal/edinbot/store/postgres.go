@@ -118,20 +118,36 @@ func (s *PostgresStore) UpdateLastSeen(ctx context.Context, bindingID string, id
 }
 
 func (s *PostgresStore) DisableBinding(ctx context.Context, bindingID string, at time.Time) error {
-	_, err := s.pool.Exec(ctx,
-		`UPDATE discord.posted_messages SET disabled_at = $1 WHERE binding_id = $2`,
-		at, bindingID)
+	tx, err := s.pool.Begin(ctx)
 	if err != nil {
-		return fmt.Errorf("disable binding: %w", err)
+		return fmt.Errorf("disable binding (begin): %w", err)
 	}
-	return nil
+	defer tx.Rollback(ctx) //nolint:errcheck
+
+	// Mark all existing posted rows so per-row queries see disabled_at too
+	// (kept for symmetry with the unit-test memStore behaviour).
+	if _, err := tx.Exec(ctx,
+		`UPDATE discord.posted_messages SET disabled_at = $1 WHERE binding_id = $2`,
+		at, bindingID); err != nil {
+		return fmt.Errorf("disable binding (update posted): %w", err)
+	}
+
+	// Authoritative tombstone — works even when posted_messages is empty for
+	// this binding (e.g. first-cycle ErrChannelGone).
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO discord.disabled_bindings (binding_id, disabled_at)
+		VALUES ($1, $2)
+		ON CONFLICT (binding_id) DO UPDATE SET disabled_at = EXCLUDED.disabled_at`,
+		bindingID, at); err != nil {
+		return fmt.Errorf("disable binding (insert disabled_bindings): %w", err)
+	}
+	return tx.Commit(ctx)
 }
 
 func (s *PostgresStore) IsBindingDisabled(ctx context.Context, bindingID string) (bool, error) {
 	var n int
 	err := s.pool.QueryRow(ctx,
-		`SELECT count(*) FROM discord.posted_messages
-		 WHERE binding_id = $1 AND disabled_at IS NOT NULL`,
+		`SELECT count(*) FROM discord.disabled_bindings WHERE binding_id = $1`,
 		bindingID,
 	).Scan(&n)
 	if err != nil {
