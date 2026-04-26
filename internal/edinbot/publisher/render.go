@@ -1,11 +1,32 @@
 package publisher
 
 import (
+	"fmt"
 	"strings"
 	"time"
 
 	"github.com/bwmarrin/discordgo"
 )
+
+// AnnotateTimestamps appends a "Posted <relative> · Updated <relative>" line
+// to the embed description. Uses Discord's <t:UNIX:R> formatting so each
+// viewer's client renders a live, locale-appropriate "5 minutes ago" — the
+// timestamps stay accurate without ever editing the message. Returns a copy
+// (does not mutate the input). If postedAt and updatedAt are equal (initial
+// post), only the "Posted" line is rendered.
+func AnnotateTimestamps(in *discordgo.MessageEmbed, postedAt, updatedAt time.Time) *discordgo.MessageEmbed {
+	out := *in
+	stamp := fmt.Sprintf("Posted <t:%d:R>", postedAt.Unix())
+	if !updatedAt.Equal(postedAt) {
+		stamp += fmt.Sprintf(" · Updated <t:%d:R>", updatedAt.Unix())
+	}
+	if out.Description == "" {
+		out.Description = stamp
+	} else {
+		out.Description = out.Description + "\n" + stamp
+	}
+	return &out
+}
 
 // RenderStruckThrough returns a copy of the embed with all text wrapped in
 // Discord strikethrough markdown (~~ ~~) and a footer noting when the item

@@ -57,6 +57,43 @@ func TestPlatinumBoomAlerts_HappyPath_BuildsItemsFromBuyers(t *testing.T) {
 	require.Contains(t, bodyText, "280k")  // price formatted
 }
 
+func TestPlatinumBoomAlerts_DropsBuyersWithoutPricing(t *testing.T) {
+	// Three buyers across two systems:
+	//   - Sol/Galileo: full pricing → keep
+	//   - Sol/Bayliss: zero price+demand → drop
+	//   - Wolf/Solo: zero on both Pt and Os → drop, system disappears
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"maps": [{
+				"system_name": "M",
+				"buyers": [
+					{"system_name":"Sol","station_name":"Galileo","faction_state":"Boom","platinum_demand":1500,"platinum_price":280000,"score":40},
+					{"system_name":"Sol","station_name":"Bayliss","faction_state":"Boom","platinum_demand":0,"platinum_price":0,"score":40},
+					{"system_name":"Wolf","station_name":"Solo","faction_state":"Boom","platinum_demand":0,"platinum_price":0,"osmium_demand":0,"osmium_price":0,"score":100}
+				]
+			}],
+			"generated_at": "2026-04-26T14:23:01Z",
+			"total_maps": 1, "total_buyers": 3
+		}`))
+	}))
+	defer srv.Close()
+
+	feat := features.NewPlatinumBoomAlerts(controlclient.New(srv.URL, &fakeTokenSource{}))
+	feat.SetRetryIntervals([]time.Duration{10 * time.Millisecond})
+	snap, err := feat.Poll(context.Background(), feat.DefaultConfig())
+	require.NoError(t, err)
+	require.Len(t, snap.Items, 1, "only Sol should survive (Wolf system dropped, only Galileo within Sol)")
+	require.Equal(t, "system:Sol", snap.Items[0].Identity())
+
+	body := snap.Items[0].Render().Description
+	for _, f := range snap.Items[0].Render().Fields {
+		body += " " + f.Name + " " + f.Value
+	}
+	require.Contains(t, body, "Galileo")
+	require.NotContains(t, body, "Bayliss", "buyer without pricing must not appear")
+}
+
 func TestPlatinumBoomAlerts_StructurallyInvalidResponse_ReturnsError(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")

@@ -54,6 +54,9 @@ func (l *LTDAlerts) Poll(ctx context.Context, c Config) (Snapshot, error) {
 	bySys := map[string][]controlclient.Buyer{}
 	for _, m := range resp.Maps {
 		for _, b := range m.Buyers {
+			if b.LTDPrice <= 0 || b.LTDDemand <= 0 {
+				continue
+			}
 			bySys[b.SystemName] = append(bySys[b.SystemName], b)
 		}
 	}
@@ -145,7 +148,7 @@ func (l *ltdItem) Render() *discordgo.MessageEmbed {
 	for _, b := range l.buyers {
 		val := strings.Builder{}
 		fmt.Fprintf(&val, "**%s** — %s · score %.0f", b.StationName, b.FactionState, b.Score)
-		if b.LTDDemand > 0 {
+		if b.LTDDemand > 0 && b.LTDPrice > 0 {
 			fmt.Fprintf(&val, "\n• LTD: %s t @ %sk", commaInt(b.LTDDemand), kInt(b.LTDPrice))
 		}
 		var kp float64

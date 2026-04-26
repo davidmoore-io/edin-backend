@@ -61,6 +61,9 @@ func (p *PlatinumBoomAlerts) Poll(ctx context.Context, c Config) (Snapshot, erro
 	bySys := map[string][]controlclient.Buyer{}
 	for _, m := range resp.Maps {
 		for _, b := range m.Buyers {
+			if !platinumBuyerHasPricing(b) {
+				continue
+			}
 			bySys[b.SystemName] = append(bySys[b.SystemName], b)
 		}
 	}
@@ -154,10 +157,10 @@ func (p *platinumItem) Render() *discordgo.MessageEmbed {
 	for _, b := range p.buyers {
 		val := strings.Builder{}
 		fmt.Fprintf(&val, "**%s** — %s · score %.0f", b.StationName, b.FactionState, b.Score)
-		if b.PlatinumDemand > 0 {
+		if b.PlatinumDemand > 0 && b.PlatinumPrice > 0 {
 			fmt.Fprintf(&val, "\n• Pt: %s t @ %sk", commaInt(b.PlatinumDemand), kInt(b.PlatinumPrice))
 		}
-		if b.OsmiumDemand > 0 {
+		if b.OsmiumDemand > 0 && b.OsmiumPrice > 0 {
 			fmt.Fprintf(&val, "\n• Os: %s t @ %sk", commaInt(b.OsmiumDemand), kInt(b.OsmiumPrice))
 		}
 		var kp float64
@@ -170,6 +173,20 @@ func (p *platinumItem) Render() *discordgo.MessageEmbed {
 		})
 	}
 	return embed
+}
+
+// platinumBuyerHasPricing returns true when at least one of the two commodities
+// (platinum, osmium) has BOTH a non-zero price AND a non-zero demand. Buyers
+// without pricing are dropped from the snapshot — operators want only
+// actionable targets, not stations whose price feed has lapsed.
+func platinumBuyerHasPricing(b controlclient.Buyer) bool {
+	if b.PlatinumPrice > 0 && b.PlatinumDemand > 0 {
+		return true
+	}
+	if b.OsmiumPrice > 0 && b.OsmiumDemand > 0 {
+		return true
+	}
+	return false
 }
 
 func commaInt(n int64) string {

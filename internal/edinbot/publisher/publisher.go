@@ -96,7 +96,7 @@ func (p *Publisher) applyOne(ctx context.Context, b bindings.Binding, item featu
 
 	// New identity: post.
 	if prev.MessageID == "" {
-		embed := item.Render()
+		embed := AnnotateTimestamps(item.Render(), at, at)
 		msgID, err := p.dc.PostMessage(ctx, b.ChannelID, embed)
 		if err != nil {
 			return ItemResult{Identity: identity, Action: ActionPost, Err: err}
@@ -121,7 +121,7 @@ func (p *Publisher) applyOne(ctx context.Context, b bindings.Binding, item featu
 
 	// Returning after a strike: unstrike (re-render fresh).
 	if prev.StruckAt != nil {
-		embed := item.Render()
+		embed := AnnotateTimestamps(item.Render(), prev.PostedAt, at)
 		if err := p.dc.EditMessage(ctx, b.ChannelID, prev.MessageID, embed); err != nil {
 			return ItemResult{Identity: identity, Action: ActionUnstrike, Err: err}
 		}
@@ -145,7 +145,7 @@ func (p *Publisher) applyOne(ctx context.Context, b bindings.Binding, item featu
 	}
 
 	// Changed: edit.
-	embed := item.Render()
+	embed := AnnotateTimestamps(item.Render(), prev.PostedAt, at)
 	if err := p.dc.EditMessage(ctx, b.ChannelID, prev.MessageID, embed); err != nil {
 		return ItemResult{Identity: identity, Action: ActionEdit, Err: err}
 	}

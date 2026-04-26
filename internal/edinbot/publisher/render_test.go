@@ -2,6 +2,7 @@ package publisher_test
 
 import (
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -10,6 +11,35 @@ import (
 	"github.com/edin-space/edin-backend/internal/edinbot/publisher"
 	"github.com/stretchr/testify/require"
 )
+
+func TestAnnotateTimestamps_OnlyPostedWhenEqual(t *testing.T) {
+	at := time.Date(2026, 4, 26, 14, 23, 0, 0, time.UTC)
+	in := &discordgo.MessageEmbed{Description: "**Platinum buyers** — 3 stations"}
+
+	out := publisher.AnnotateTimestamps(in, at, at)
+	require.Contains(t, out.Description, "**Platinum buyers**")
+	require.Contains(t, out.Description, fmt.Sprintf("Posted <t:%d:R>", at.Unix()))
+	require.NotContains(t, out.Description, "Updated", "no Updated line on initial post")
+	require.Equal(t, "**Platinum buyers** — 3 stations", in.Description, "input not mutated")
+}
+
+func TestAnnotateTimestamps_BothWhenEdited(t *testing.T) {
+	posted := time.Date(2026, 4, 26, 14, 0, 0, 0, time.UTC)
+	updated := time.Date(2026, 4, 26, 15, 0, 0, 0, time.UTC)
+	in := &discordgo.MessageEmbed{Description: "Body"}
+
+	out := publisher.AnnotateTimestamps(in, posted, updated)
+	require.Contains(t, out.Description, fmt.Sprintf("Posted <t:%d:R>", posted.Unix()))
+	require.Contains(t, out.Description, fmt.Sprintf("Updated <t:%d:R>", updated.Unix()))
+}
+
+func TestAnnotateTimestamps_EmptyDescription(t *testing.T) {
+	at := time.Date(2026, 4, 26, 14, 23, 0, 0, time.UTC)
+	in := &discordgo.MessageEmbed{}
+
+	out := publisher.AnnotateTimestamps(in, at, at)
+	require.Equal(t, fmt.Sprintf("Posted <t:%d:R>", at.Unix()), out.Description)
+}
 
 func TestStrikeThrough_WrapsAllTextFields(t *testing.T) {
 	at := time.Date(2026, 4, 26, 14, 23, 0, 0, time.UTC)
