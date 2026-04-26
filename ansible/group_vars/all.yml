@@ -58,6 +58,17 @@ kaine_auth_issuer: "https://auth.edin.space/application/o/kaine-portal/"
 kaine_auth_audience: "kaine-portal"
 kaine_auth_token_url: "https://auth.edin.space/application/o/token/"
 
+# Bot M2M JWT trust — control-api accepts JWTs issued by the edin-bot-provider
+# in addition to kaine-portal browser tokens. The issuer in the JWT is the
+# Authentik-internal docker hostname (the bot reaches Authentik over the
+# authentik_external network, and Authentik signs with that origin in the iss
+# claim). The audience is the client_id (Authentik's default audience). The
+# client_id itself is not secret; it lives in atlas vault but is duplicated
+# here so control-api ansible can render it without cross-repo coupling.
+bot_auth_issuer: "http://authentik-server:9000/application/o/edin-bot/"
+bot_auth_audience: "ClJKpMqrk65M4qtrcdxnmFXBE7wfzAFr5E610jUu"
+bot_auth_jwks_url: "https://auth.edin.space/application/o/edin-bot/jwks/"
+
 # Domain
 edin_domain: edin.space
 

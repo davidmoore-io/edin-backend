@@ -21,6 +21,13 @@ type Config struct {
 	ClientID     string
 	ClientSecret string
 
+	// Scope is the OAuth2 scope value sent on the token request. For Authentik,
+	// this controls which scope mappings (and thus claims) are attached to the
+	// access token. The bot needs "openid edin-bot-groups" so the JWT carries
+	// the bot:edin group claim that control-api checks for read access to
+	// /api/kaine/*. If empty, no scope parameter is sent.
+	Scope string
+
 	// RefreshLeadTime is how far before access_token expiry the cache treats
 	// the token as stale. Default: 30 seconds.
 	RefreshLeadTime time.Duration
@@ -90,6 +97,9 @@ func (c *Client) fetch(ctx context.Context) (*cachedToken, error) {
 	form.Set("grant_type", "client_credentials")
 	form.Set("client_id", c.cfg.ClientID)
 	form.Set("client_secret", c.cfg.ClientSecret)
+	if c.cfg.Scope != "" {
+		form.Set("scope", c.cfg.Scope)
+	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.cfg.TokenURL,
 		strings.NewReader(form.Encode()))

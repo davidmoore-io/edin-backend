@@ -64,6 +64,7 @@ func run() error {
 		TokenURL:        cfg.OAuthTokenURL,
 		ClientID:        cfg.OAuthClientID,
 		ClientSecret:    cfg.OAuthClientSecret,
+		Scope:           cfg.OAuthScope,
 		RefreshLeadTime: 30 * time.Second,
 	})
 	control := controlclient.New(cfg.ControlAPIURL, auth)
@@ -129,6 +130,7 @@ type envConfig struct {
 	OAuthTokenURL     string
 	OAuthClientID     string
 	OAuthClientSecret string
+	OAuthScope        string
 	ControlAPIURL     string
 	PostgresURL       string
 	BindingsPath      string
@@ -140,12 +142,16 @@ func loadEnv() (envConfig, error) {
 		OAuthTokenURL:     os.Getenv("OAUTH_TOKEN_URL"),
 		OAuthClientID:     os.Getenv("OAUTH_CLIENT_ID"),
 		OAuthClientSecret: os.Getenv("OAUTH_CLIENT_SECRET"),
+		OAuthScope:        os.Getenv("OAUTH_SCOPE"),
 		ControlAPIURL:     os.Getenv("CONTROL_API_URL"),
 		PostgresURL:       os.Getenv("POSTGRES_URL"),
 		BindingsPath:      os.Getenv("BINDINGS_PATH"),
 	}
 	if c.BindingsPath == "" {
 		c.BindingsPath = "/etc/edin-bot/bindings.yml"
+	}
+	if c.OAuthScope == "" {
+		c.OAuthScope = "openid edin-bot-groups"
 	}
 	missing := []string{}
 	if c.DiscordBotToken == "" {

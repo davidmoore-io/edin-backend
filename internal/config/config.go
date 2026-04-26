@@ -115,6 +115,15 @@ type KaineAuthConfig struct {
 	CookieDomain string // ".edin.space" in prod, "" in dev
 	CookieSecure bool   // true in prod, false in dev
 	CookieMaxAge int    // 3600 (1 hour)
+
+	// Bot M2M (client_credentials) trust. The edin-bot calls control-API
+	// with JWTs from a separate Authentik provider that has its own issuer,
+	// audience and JWKS endpoint. If any of these are set, all three must be
+	// set; the JWT validator then accepts both the kaine-portal trust and
+	// the edin-bot trust.
+	BotIssuer   string
+	BotAudience string
+	BotJWKSURL  string
 }
 
 // EDINConfig holds configuration for the EDIN (Elite Dangerous Intel Network) database.
@@ -567,6 +576,10 @@ func loadKaineAuthConfig() KaineAuthConfig {
 		CookieDomain:    os.Getenv("KAINE_AUTH_COOKIE_DOMAIN"),
 		CookieSecure:    getEnvBool("KAINE_AUTH_COOKIE_SECURE", false),
 		CookieMaxAge:    3600,
+
+		BotIssuer:   os.Getenv("BOT_AUTH_ISSUER"),
+		BotAudience: os.Getenv("BOT_AUTH_AUDIENCE"),
+		BotJWKSURL:  os.Getenv("BOT_AUTH_JWKS_URL"),
 	}
 }
 

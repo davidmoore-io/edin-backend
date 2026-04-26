@@ -57,6 +57,55 @@ type fakeClock struct {
 func (c *fakeClock) Now() time.Time          { return c.t }
 func (c *fakeClock) advance(d time.Duration) { c.t = c.t.Add(d) }
 
+func TestAuthClient_SendsScopeWhenConfigured(t *testing.T) {
+	gotScope := ""
+	mux := http.NewServeMux()
+	mux.HandleFunc("/token/", func(w http.ResponseWriter, r *http.Request) {
+		require.NoError(t, r.ParseForm())
+		gotScope = r.Form.Get("scope")
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"access_token": "tok", "token_type": "bearer", "expires_in": 3600,
+		})
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	c := authclient.New(authclient.Config{
+		TokenURL:     srv.URL + "/token/",
+		ClientID:     "cid",
+		ClientSecret: "csec",
+		Scope:        "openid edin-bot-groups",
+	})
+	_, err := c.Token(context.Background())
+	require.NoError(t, err)
+	require.Equal(t, "openid edin-bot-groups", gotScope)
+}
+
+func TestAuthClient_OmitsScopeWhenEmpty(t *testing.T) {
+	scopeKeyPresent := false
+	mux := http.NewServeMux()
+	mux.HandleFunc("/token/", func(w http.ResponseWriter, r *http.Request) {
+		require.NoError(t, r.ParseForm())
+		_, scopeKeyPresent = r.Form["scope"]
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"access_token": "tok", "token_type": "bearer", "expires_in": 3600,
+		})
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	c := authclient.New(authclient.Config{
+		TokenURL:     srv.URL + "/token/",
+		ClientID:     "cid",
+		ClientSecret: "csec",
+	})
+	_, err := c.Token(context.Background())
+	require.NoError(t, err)
+	require.False(t, scopeKeyPresent, "scope key must not be sent when empty")
+}
+
 func TestAuthClient_FetchTokenOnFirstCall(t *testing.T) {
 	srv := newFakeOAuthServer(t)
 	c := authclient.New(authclient.Config{
