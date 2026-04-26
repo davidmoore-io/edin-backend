@@ -7,20 +7,12 @@ import (
 	"strings"
 	"time"
 
-	"github.com/edin-space/edin-backend/internal/authz"
 	"github.com/edin-space/edin-backend/internal/store"
 )
 
 // galaxyPowerplayCycle retrieves cycle-aware powerplay data for systems.
 // It understands the weekly Thursday 07:00 UTC tick and can compare cycles.
 func (e *Executor) galaxyPowerplayCycle(ctx context.Context, args map[string]any) (any, error) {
-	// Allow both full ops scope and limited Kaine scope
-	if err := requireScope(ctx, authz.ScopeLlmOperator); err != nil {
-		if err2 := requireScope(ctx, authz.ScopeKaineChat); err2 != nil {
-			return nil, err
-		}
-	}
-
 	if e.historyClient == nil {
 		return nil, errors.New("historical data not available (EDDN raw database not configured)")
 	}

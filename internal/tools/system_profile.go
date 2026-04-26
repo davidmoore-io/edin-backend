@@ -8,17 +8,12 @@ import (
 	"strings"
 	"time"
 
-	"github.com/edin-space/edin-backend/internal/authz"
 	"github.com/edin-space/edin-backend/internal/memgraph"
 )
 
 // systemProfile queries EDIN (Elite Dangerous Intel Network) for system data.
 // EDIN is the authoritative source for real-time galaxy data.
 func (e *Executor) systemProfile(ctx context.Context, args map[string]any) (any, error) {
-	if err := requireScope(ctx, authz.ScopeLlmOperator); err != nil {
-		return nil, err
-	}
-
 	systemName := strings.TrimSpace(getString(args, "system_name"))
 	systemID := strings.TrimSpace(getString(args, "system_id"))
 	if systemName == "" && systemID == "" {

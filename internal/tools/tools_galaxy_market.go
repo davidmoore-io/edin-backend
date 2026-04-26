@@ -3,8 +3,6 @@ package tools
 import (
 	"context"
 	"strings"
-
-	"github.com/edin-space/edin-backend/internal/authz"
 )
 
 // normalizeCommodityName normalizes commodity names for fuzzy matching.
@@ -56,13 +54,6 @@ func buildDistanceLSFilter(maxDistanceLS float64) string {
 
 // galaxyMarket queries commodity market data from Memgraph.
 func (e *Executor) galaxyMarket(ctx context.Context, args map[string]any) (any, error) {
-	// Allow both full ops scope and limited Kaine scope (market queries are public)
-	if err := requireScope(ctx, authz.ScopeLlmOperator); err != nil {
-		if err2 := requireScope(ctx, authz.ScopeKaineChat); err2 != nil {
-			return nil, err
-		}
-	}
-
 	if e.memgraph == nil {
 		return map[string]any{
 			"error":  "memgraph not available",

@@ -75,12 +75,3 @@ func TestBgsGuideSearch_EmptyQueryFails(t *testing.T) {
 		t.Fatal("expected error for query shorter than 2 chars")
 	}
 }
-
-func TestBgsGuideSearch_RequiresScope(t *testing.T) {
-	ctx := context.Background() // no scopes
-	e := &Executor{}
-
-	if _, err := e.bgsGuideSearch(ctx, map[string]any{"query": "influence"}); err == nil {
-		t.Fatal("expected scope error when no scope in context")
-	}
-}

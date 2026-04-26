@@ -5,19 +5,11 @@ import (
 	"errors"
 	"fmt"
 	"strings"
-
-	"github.com/edin-space/edin-backend/internal/authz"
 )
 
 // galaxySystem queries a system with all relationships from Memgraph.
 // The optional "include" parameter filters which sections are returned.
 func (e *Executor) galaxySystem(ctx context.Context, args map[string]any) (any, error) {
-	// Allow both full ops scope and limited Kaine scope (galaxy queries are public)
-	if err := requireScope(ctx, authz.ScopeLlmOperator); err != nil {
-		if err2 := requireScope(ctx, authz.ScopeKaineChat); err2 != nil {
-			return nil, err
-		}
-	}
 	if e.memgraph == nil {
 		return nil, errors.New("memgraph not available")
 	}
@@ -114,12 +106,6 @@ func parseIncludeFilter(args map[string]any) map[string]bool {
 
 // galaxyStation queries station data from Memgraph.
 func (e *Executor) galaxyStation(ctx context.Context, args map[string]any) (any, error) {
-	// Allow both full ops scope and limited Kaine scope (galaxy queries are public)
-	if err := requireScope(ctx, authz.ScopeLlmOperator); err != nil {
-		if err2 := requireScope(ctx, authz.ScopeKaineChat); err2 != nil {
-			return nil, err
-		}
-	}
 	if e.memgraph == nil {
 		return nil, errors.New("memgraph not available")
 	}
@@ -184,12 +170,6 @@ func (e *Executor) galaxyStation(ctx context.Context, args map[string]any) (any,
 
 // galaxyFleetCarrier queries fleet carrier data from Memgraph.
 func (e *Executor) galaxyFleetCarrier(ctx context.Context, args map[string]any) (any, error) {
-	// Allow both full ops scope and limited Kaine scope (galaxy queries are public)
-	if err := requireScope(ctx, authz.ScopeLlmOperator); err != nil {
-		if err2 := requireScope(ctx, authz.ScopeKaineChat); err2 != nil {
-			return nil, err
-		}
-	}
 	if e.memgraph == nil {
 		return nil, errors.New("memgraph not available")
 	}
@@ -236,12 +216,6 @@ func (e *Executor) galaxyFleetCarrier(ctx context.Context, args map[string]any) 
 
 // galaxyBodies queries body data from Memgraph.
 func (e *Executor) galaxyBodies(ctx context.Context, args map[string]any) (any, error) {
-	// Allow both full ops scope and limited Kaine scope (galaxy queries are public)
-	if err := requireScope(ctx, authz.ScopeLlmOperator); err != nil {
-		if err2 := requireScope(ctx, authz.ScopeKaineChat); err2 != nil {
-			return nil, err
-		}
-	}
 	if e.memgraph == nil {
 		return nil, errors.New("memgraph not available")
 	}
@@ -287,12 +261,6 @@ func (e *Executor) galaxyBodies(ctx context.Context, args map[string]any) (any, 
 
 // galaxySignals queries system-level signals from Memgraph.
 func (e *Executor) galaxySignals(ctx context.Context, args map[string]any) (any, error) {
-	// Allow both full ops scope and limited Kaine scope (galaxy queries are public)
-	if err := requireScope(ctx, authz.ScopeLlmOperator); err != nil {
-		if err2 := requireScope(ctx, authz.ScopeKaineChat); err2 != nil {
-			return nil, err
-		}
-	}
 	if e.memgraph == nil {
 		return nil, errors.New("memgraph not available")
 	}

@@ -7,18 +7,11 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/edin-space/edin-backend/internal/authz"
 	"github.com/edin-space/edin-backend/internal/spansh"
 )
 
 // spanshQuery executes a Spansh API query.
 func (e *Executor) spanshQuery(ctx context.Context, args map[string]any) (any, error) {
-	// Allow both full ops scope and limited Kaine scope (carrier routes are public)
-	if err := requireScope(ctx, authz.ScopeLlmOperator); err != nil {
-		if err2 := requireScope(ctx, authz.ScopeKaineChat); err2 != nil {
-			return nil, err
-		}
-	}
 	if e.spansh == nil {
 		return nil, errors.New("spansh integration not available")
 	}
@@ -70,12 +63,6 @@ func (e *Executor) spanshQuery(ctx context.Context, args map[string]any) (any, e
 
 // retrieveCarrierRoute retrieves a fleet carrier route result from Spansh.
 func (e *Executor) retrieveCarrierRoute(ctx context.Context, args map[string]any) (any, error) {
-	// Allow both full ops scope and limited Kaine scope (carrier routes are public)
-	if err := requireScope(ctx, authz.ScopeLlmOperator); err != nil {
-		if err2 := requireScope(ctx, authz.ScopeKaineChat); err2 != nil {
-			return nil, err
-		}
-	}
 	if e.spansh == nil {
 		return nil, errors.New("spansh integration not available")
 	}

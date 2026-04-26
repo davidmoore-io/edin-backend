@@ -94,8 +94,8 @@ Their ability to invoke a given tool = `toolScopes[tool] ∈ scopes`.
 |---|---|
 | `kaine-god` | admin, llm_operator, kaine_chat, galaxy_read, kaine_mining, commander_data |
 | `kaine-approved` | kaine_chat, galaxy_read, kaine_mining |
-| `kaine-chat` | kaine_chat, galaxy_read |
-| `kaine-chat-debug` | kaine_chat, galaxy_read (+ debug tool-result visibility) |
+| `kaine-chat` | kaine_chat, galaxy_read, kaine_mining |
+| `kaine-chat-debug` | kaine_chat, galaxy_read, kaine_mining (+ debug tool-result visibility) |
 | `edin-copilot` | copilot_chat, galaxy_read, commander_data |
 | `edin-copilot-trusted` | copilot_chat, galaxy_read, commander_data, kaine_mining |
 

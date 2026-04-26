@@ -6,8 +6,6 @@ import (
 	"errors"
 	"sort"
 	"strings"
-
-	"github.com/edin-space/edin-backend/internal/authz"
 )
 
 //go:embed data/bgsguide.txt
@@ -30,13 +28,6 @@ const bgsGroundingRule = "!IMPORTANT — STRICT GROUNDING RULE: Answer using ONL
 // BGS guide and returns text windows of roughly 2000 tokens around each match
 // cluster. Intended as a lightweight, non-vectorised retrieval surface.
 func (e *Executor) bgsGuideSearch(ctx context.Context, args map[string]any) (any, error) {
-	// Available to both ops and Kaine chat.
-	if err := requireScope(ctx, authz.ScopeLlmOperator); err != nil {
-		if err2 := requireScope(ctx, authz.ScopeKaineChat); err2 != nil {
-			return nil, err
-		}
-	}
-
 	query, _ := args["query"].(string)
 	query = strings.TrimSpace(query)
 	if query == "" {

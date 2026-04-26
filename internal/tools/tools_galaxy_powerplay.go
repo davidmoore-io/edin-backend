@@ -5,18 +5,10 @@ import (
 	"errors"
 	"fmt"
 	"strings"
-
-	"github.com/edin-space/edin-backend/internal/authz"
 )
 
 // galaxyPower queries powerplay power data from Memgraph.
 func (e *Executor) galaxyPower(ctx context.Context, args map[string]any) (any, error) {
-	// Allow both full ops scope and limited Kaine scope (galaxy queries are public)
-	if err := requireScope(ctx, authz.ScopeLlmOperator); err != nil {
-		if err2 := requireScope(ctx, authz.ScopeKaineChat); err2 != nil {
-			return nil, err
-		}
-	}
 	if e.memgraph == nil {
 		return nil, errors.New("memgraph not available")
 	}
@@ -62,12 +54,6 @@ func (e *Executor) galaxyPower(ctx context.Context, args map[string]any) (any, e
 
 // galaxyFaction queries minor faction data from Memgraph.
 func (e *Executor) galaxyFaction(ctx context.Context, args map[string]any) (any, error) {
-	// Allow both full ops scope and limited Kaine scope (faction queries are public)
-	if err := requireScope(ctx, authz.ScopeLlmOperator); err != nil {
-		if err2 := requireScope(ctx, authz.ScopeKaineChat); err2 != nil {
-			return nil, err
-		}
-	}
 	if e.memgraph == nil {
 		return nil, errors.New("memgraph not available")
 	}
@@ -156,12 +142,6 @@ func (e *Executor) galaxyFaction(ctx context.Context, args map[string]any) (any,
 
 // galaxyStats returns galaxy database statistics from Memgraph.
 func (e *Executor) galaxyStats(ctx context.Context, args map[string]any) (any, error) {
-	// Allow both full ops scope and limited Kaine scope (galaxy queries are public)
-	if err := requireScope(ctx, authz.ScopeLlmOperator); err != nil {
-		if err2 := requireScope(ctx, authz.ScopeKaineChat); err2 != nil {
-			return nil, err
-		}
-	}
 	if e.memgraph == nil {
 		return nil, errors.New("memgraph not available")
 	}
@@ -179,11 +159,6 @@ func (e *Executor) galaxyStats(ctx context.Context, args map[string]any) (any, e
 
 // galaxySchema returns the current Memgraph schema: labels, edge types, indexes, constraints, and counts.
 func (e *Executor) galaxySchema(ctx context.Context, args map[string]any) (any, error) {
-	if err := requireScope(ctx, authz.ScopeLlmOperator); err != nil {
-		if err2 := requireScope(ctx, authz.ScopeKaineChat); err2 != nil {
-			return nil, err
-		}
-	}
 	if e.memgraph == nil {
 		return nil, errors.New("memgraph not available")
 	}

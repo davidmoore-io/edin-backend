@@ -3,18 +3,10 @@ package tools
 import (
 	"context"
 	"errors"
-
-	"github.com/edin-space/edin-backend/internal/authz"
 )
 
 // galaxyLTDBuyers finds stations that buy Low Temperature Diamonds near Kaine mining maps.
 func (e *Executor) galaxyLTDBuyers(ctx context.Context, args map[string]any) (any, error) {
-	if err := requireScope(ctx, authz.ScopeLlmOperator); err != nil {
-		if err2 := requireScope(ctx, authz.ScopeKaineChat); err2 != nil {
-			return nil, err
-		}
-	}
-
 	if e.memgraph == nil {
 		return nil, errors.New("memgraph not available")
 	}

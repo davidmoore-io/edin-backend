@@ -6,19 +6,11 @@ import (
 	"fmt"
 	"strings"
 	"time"
-
-	"github.com/edin-space/edin-backend/internal/authz"
 )
 
 // galaxyQuery executes an ad-hoc Cypher query against Memgraph.
 // Only read operations are allowed (no CREATE, DELETE, SET, etc.)
 func (e *Executor) galaxyQuery(ctx context.Context, args map[string]any) (any, error) {
-	// Allow both full ops scope and limited Kaine scope
-	if err := requireScope(ctx, authz.ScopeLlmOperator); err != nil {
-		if err2 := requireScope(ctx, authz.ScopeKaineChat); err2 != nil {
-			return nil, err
-		}
-	}
 	if e.memgraph == nil {
 		return nil, errors.New("memgraph not available")
 	}

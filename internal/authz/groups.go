@@ -7,15 +7,20 @@ import "sort"
 // The mapping encodes EDIN's two-tier access model:
 //
 //   - Kaine groups (kaine-*) grant kaine_chat plus read access to
-//     galaxy data. kaine-approved adds mining tools. kaine-god is the
-//     superset (admin + llm_operator + everything).
+//     galaxy data and the kaine_mining tool surface (plasmium / LTD /
+//     schema) — those tools are exactly what Kaine exists to surface,
+//     so chat-tier access implies mining-tool access. kaine-approved
+//     differs from kaine-chat in WRITE access to objectives /
+//     mining-maps (gated by middleware), not in tool calls.
+//     kaine-god is the superset (admin + llm_operator + everything).
 //
 //   - edin-copilot grants copilot_chat + galaxy read + the commander's
 //     own data. edin-copilot-trusted layers on kaine_mining so trusted
 //     commanders can see mining intel alongside their own journal.
 //
-// Both kaine-chat and kaine-chat-test map to the same set so that
-// test accounts exercise production code paths end-to-end.
+// Both kaine-chat and kaine-chat-test (and kaine-chat-debug) map to
+// the same set so that test/debug accounts exercise production code
+// paths end-to-end.
 var groupScopes = map[string][]Scope{
 	"kaine-god": {
 		ScopeAdmin,
@@ -33,14 +38,17 @@ var groupScopes = map[string][]Scope{
 	"kaine-chat": {
 		ScopeKaineChat,
 		ScopeGalaxyRead,
+		ScopeKaineMining,
 	},
 	"kaine-chat-test": {
 		ScopeKaineChat,
 		ScopeGalaxyRead,
+		ScopeKaineMining,
 	},
 	"kaine-chat-debug": {
 		ScopeKaineChat,
 		ScopeGalaxyRead,
+		ScopeKaineMining,
 	},
 	"edin-copilot": {
 		ScopeCopilotChat,

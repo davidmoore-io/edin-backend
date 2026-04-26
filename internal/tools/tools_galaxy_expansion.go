@@ -6,18 +6,11 @@ import (
 	"fmt"
 	"math"
 	"strings"
-
-	"github.com/edin-space/edin-backend/internal/authz"
 )
 
 // galaxyExpansionCheck validates if a system is a valid expansion target for a power.
 // It checks distances to nearest Fortified (20 Ly range) and Stronghold (30 Ly range) systems.
 func (e *Executor) galaxyExpansionCheck(ctx context.Context, args map[string]any) (any, error) {
-	if err := requireScope(ctx, authz.ScopeLlmOperator); err != nil {
-		if err2 := requireScope(ctx, authz.ScopeKaineChat); err2 != nil {
-			return nil, err
-		}
-	}
 	if e.memgraph == nil {
 		return nil, errors.New("memgraph not available")
 	}
@@ -139,11 +132,6 @@ func (e *Executor) galaxyExpansionCheck(ctx context.Context, args map[string]any
 
 // galaxyNearbyPowerplay finds powerplay activity near a system for a specific power.
 func (e *Executor) galaxyNearbyPowerplay(ctx context.Context, args map[string]any) (any, error) {
-	if err := requireScope(ctx, authz.ScopeLlmOperator); err != nil {
-		if err2 := requireScope(ctx, authz.ScopeKaineChat); err2 != nil {
-			return nil, err
-		}
-	}
 	if e.memgraph == nil {
 		return nil, errors.New("memgraph not available")
 	}
@@ -285,11 +273,6 @@ func (e *Executor) galaxyNearbyPowerplay(ctx context.Context, args map[string]an
 
 // galaxyExpansionFrontier finds systems on the edge of a power's control bubble around a specific control system.
 func (e *Executor) galaxyExpansionFrontier(ctx context.Context, args map[string]any) (any, error) {
-	if err := requireScope(ctx, authz.ScopeLlmOperator); err != nil {
-		if err2 := requireScope(ctx, authz.ScopeKaineChat); err2 != nil {
-			return nil, err
-		}
-	}
 	if e.memgraph == nil {
 		return nil, errors.New("memgraph not available")
 	}

@@ -67,7 +67,7 @@ func TestScopesForGroups_UnknownGroup_Ignored(t *testing.T) {
 	}
 	// Mixed with a known group, the unknown entry is silently dropped.
 	got := ScopesForGroups([]string{"not-a-real-group", "kaine-chat"})
-	want := []Scope{ScopeGalaxyRead, ScopeKaineChat}
+	want := []Scope{ScopeGalaxyRead, ScopeKaineChat, ScopeKaineMining}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("ScopesForGroups([unknown, kaine-chat]) = %v, want %v", got, want)
 	}

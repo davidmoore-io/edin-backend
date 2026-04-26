@@ -143,16 +143,6 @@ func (e *Executor) WithHistoryClient(client HistoryQuerier) *Executor {
 	return e
 }
 
-func requireScope(ctx context.Context, scope authz.Scope) error {
-	if scope == "" {
-		return nil
-	}
-	if authz.Allow(authz.ScopesFromContext(ctx), scope) {
-		return nil
-	}
-	return fmt.Errorf("unauthorized: requires %s scope", scope)
-}
-
 // Invoke executes the named tool with arguments originating from MCP or Anthropics tool calls.
 func (e *Executor) Invoke(ctx context.Context, name string, args map[string]any) (any, error) {
 	toolName := ToolName(name)
