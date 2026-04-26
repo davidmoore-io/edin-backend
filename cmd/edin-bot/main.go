@@ -152,7 +152,10 @@ func loadEnv() (envConfig, error) {
 		c.BindingsPath = "/etc/edin-bot/bindings.yml"
 	}
 	if c.OAuthScope == "" {
-		c.OAuthScope = "openid edin-bot-groups"
+		// Authentik rejects "openid" on client_credentials grants (no user
+		// session → no OIDC). Just the custom group-mapping scope is enough
+		// to attach the bot:edin group claim to the JWT.
+		c.OAuthScope = "edin-bot-groups"
 	}
 	missing := []string{}
 	if c.DiscordBotToken == "" {
