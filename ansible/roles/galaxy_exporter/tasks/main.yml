@@ -13,7 +13,9 @@
 - name: Cross-compile galaxy exporter binary (macOS → linux/amd64)
   ansible.builtin.command:
     cmd: "go build -o /tmp/galaxy-exporter-linux ./cmd/galaxy-exporter"
-    chdir: "{{ playbook_dir }}/../../"
+    # playbook_dir = edin-backend/ansible/, so ../ lands at edin-backend/
+    # which is the Go module root containing cmd/galaxy-exporter/.
+    chdir: "{{ playbook_dir }}/../"
   environment:
     CGO_ENABLED: "0"
     GOOS: linux
