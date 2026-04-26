@@ -1,4 +1,6 @@
-.PHONY: build test lint build-api build-bot build-exporter
+.PHONY: build test lint build-api build-exporter
+.PHONY: build-edin-bot build-docker-inspect-sidecar
+.PHONY: test-edin-bot test-edin-bot-integration test-edin-bot-all test-edin-bot-cover lint-edin-bot
 .PHONY: quick-dev dev-setup dev-keys dev-redis dev-ngrok dev-run dev-stop
 
 # =============================================================================
@@ -11,11 +13,32 @@ build:
 build-api:
 	CGO_ENABLED=0 go build -o bin/control-api ./cmd/control-api
 
-build-bot:
-	CGO_ENABLED=0 go build -o bin/discord-bot ./cmd/discord-bot
-
 build-exporter:
 	CGO_ENABLED=0 go build -o bin/galaxy-exporter ./cmd/galaxy-exporter
+
+# ---- edin-bot targets ----
+build-edin-bot:
+	CGO_ENABLED=0 go build -o bin/edin-bot ./cmd/edin-bot
+
+build-docker-inspect-sidecar:
+	CGO_ENABLED=0 go build -o bin/docker-inspect-sidecar ./cmd/docker-inspect-sidecar
+
+# Unit tests (fast; no integration tag, no DB required).
+test-edin-bot:
+	go test ./internal/edinbot/... ./cmd/edin-bot/... ./cmd/docker-inspect-sidecar/...
+
+# Integration tests (testcontainers-backed; gated by build tag).
+test-edin-bot-integration:
+	go test -tags integration ./internal/edinbot/...
+
+# Both layers — used by every implementation plan task gate.
+test-edin-bot-all: test-edin-bot test-edin-bot-integration
+
+test-edin-bot-cover:
+	go test -cover -coverprofile=coverage.out ./internal/edinbot/...
+
+lint-edin-bot:
+	golangci-lint run ./internal/edinbot/... ./cmd/edin-bot/... ./cmd/docker-inspect-sidecar/...
 
 test:
 	go test ./...
