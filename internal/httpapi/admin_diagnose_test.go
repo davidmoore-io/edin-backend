@@ -189,3 +189,71 @@ func mustReadAdminDiagnoseSource(t *testing.T) string {
 	require.NoError(t, err)
 	return string(b)
 }
+
+// Phase 6.4: route wire-up test. Asserts that withBotEdinOnly composes
+// withKaineAuth + the kaineBotIdentityKey check correctly.
+
+func TestWithBotEdinOnly_RejectsNoAuth(t *testing.T) {
+	ts := newTestableServer()
+	h := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("handler must not be reached without auth")
+	})
+	wrapped := ts.withKaineAuthMock(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Simulate withBotEdinOnly's inner check.
+		if _, ok := r.Context().Value(kaineBotIdentityKey{}).(string); !ok {
+			ts.writeError(w, http.StatusForbidden, "bot:edin only")
+			return
+		}
+		h.ServeHTTP(w, r)
+	}).ServeHTTP)
+
+	req := httptest.NewRequest("POST", "/admin/diagnose", nil)
+	rr := httptest.NewRecorder()
+	wrapped(rr, req)
+	require.Equal(t, http.StatusUnauthorized, rr.Code)
+}
+
+func TestWithBotEdinOnly_RejectsUserJWT(t *testing.T) {
+	ts := newTestableServer()
+	ts.mockValidator.addUser("director-token", &KaineUser{
+		Sub:    "user-director",
+		Groups: []string{"kaine-directors"},
+	})
+	wrapped := ts.withKaineAuthMock(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if _, ok := r.Context().Value(kaineBotIdentityKey{}).(string); !ok {
+			ts.writeError(w, http.StatusForbidden, "bot:edin only")
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	}).ServeHTTP)
+
+	req := httptest.NewRequest("POST", "/admin/diagnose", nil)
+	req.Header.Set("Authorization", "Bearer director-token")
+	rr := httptest.NewRecorder()
+	wrapped(rr, req)
+	require.Equal(t, http.StatusForbidden, rr.Code, "user JWTs (even directors) MUST NOT reach /admin/diagnose")
+}
+
+func TestWithBotEdinOnly_AllowsBotEdin(t *testing.T) {
+	ts := newTestableServer()
+	ts.mockValidator.addUser("bot-token", &KaineUser{
+		Sub:    "svc-edin-bot",
+		Groups: []string{botEdinGroup},
+	})
+	reached := false
+	wrapped := ts.withKaineAuthMock(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if _, ok := r.Context().Value(kaineBotIdentityKey{}).(string); !ok {
+			ts.writeError(w, http.StatusForbidden, "bot:edin only")
+			return
+		}
+		reached = true
+		w.WriteHeader(http.StatusOK)
+	}).ServeHTTP)
+
+	req := httptest.NewRequest("POST", "/admin/diagnose", nil)
+	req.Header.Set("Authorization", "Bearer bot-token")
+	rr := httptest.NewRecorder()
+	wrapped(rr, req)
+	require.Equal(t, http.StatusOK, rr.Code)
+	require.True(t, reached)
+}

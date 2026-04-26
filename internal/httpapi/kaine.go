@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -253,13 +254,16 @@ func (s *Server) withKaineAuth(next http.HandlerFunc) http.HandlerFunc {
 		// bot:edin service identity: read-only access to kaine endpoints.
 		// Bot tokens (issued via Authentik client_credentials to svc-edin-bot)
 		// carry only this group; they bypass the editor-role check that
-		// would otherwise reject them. Writes are forbidden — defence-in-depth
-		// against a stolen bot token being used to mutate state.
+		// would otherwise reject them. Writes to /api/kaine/* are forbidden —
+		// defence-in-depth against a stolen bot token being used to mutate
+		// state. /admin/* is allowed POST (e.g. /admin/diagnose) because the
+		// admin endpoints are read-only-by-design despite using POST for
+		// JSON request bodies.
 		if user != nil && hasGroup(user.Groups, botEdinGroup) {
-			if r.Method != http.MethodGet {
+			if r.Method != http.MethodGet && strings.HasPrefix(r.URL.Path, "/api/kaine/") {
 				s.logger.Warn(fmt.Sprintf("m2m write rejected: sub=%s method=%s path=%s",
 					user.Sub, r.Method, r.URL.Path))
-				s.writeError(w, http.StatusForbidden, "bot:edin identities are read-only")
+				s.writeError(w, http.StatusForbidden, "bot:edin identities are read-only on /api/kaine/")
 				return
 			}
 			s.logger.Info(fmt.Sprintf("m2m call: sub=%s method=%s path=%s",
@@ -380,6 +384,77 @@ func (s *Server) RegisterKaineRoutes(mux *http.ServeMux) {
 	// at the same dispatcher which inspects r.URL.Path to pick the action.
 	mux.HandleFunc("/api/kaine/admin/commanders", s.withKaineAuth(s.withKaineAdmin(s.handleKaineAdminCommandersSubtree)))
 	mux.HandleFunc("/api/kaine/admin/commanders/", s.withKaineAuth(s.withKaineAdmin(s.handleKaineAdminCommandersSubtree)))
+
+	// /admin/diagnose — m2m-only structured health probe used by edin-bot's
+	// ops-health-alerts feature. bot:edin JWT required (enforced by
+	// withBotEdinOnly composing withKaineAuth + a context-key check).
+	mux.Handle("/admin/diagnose", s.withBotEdinOnly(diagnoseHandler(s.buildDiagnoseDeps())))
+}
+
+// withBotEdinOnly composes withKaineAuth (which authenticates the JWT and
+// recognises bot:edin) with an additional context-key check that fails closed
+// (403) if the request is not from a bot:edin caller. User JWTs cannot reach
+// the wrapped handler.
+func (s *Server) withBotEdinOnly(next http.Handler) http.Handler {
+	return s.withKaineAuth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if _, ok := r.Context().Value(kaineBotIdentityKey{}).(string); !ok {
+			s.writeError(w, http.StatusForbidden, "bot:edin only")
+			return
+		}
+		next.ServeHTTP(w, r)
+	}).ServeHTTP)
+}
+
+// buildDiagnoseDeps wires the prober interfaces from Server's existing
+// fields. nil pools/clients produce probers that fail-open with a clear
+// error message (rather than crashing the bot's diagnose request).
+func (s *Server) buildDiagnoseDeps() diagnoseDeps {
+	sidecarURL := os.Getenv("DOCKER_INSPECT_URL")
+	if sidecarURL == "" {
+		sidecarURL = "http://docker-inspect:8081"
+	}
+	deps := diagnoseDeps{
+		sidecar: newSidecarClient(sidecarURL),
+	}
+	if s.memgraph != nil {
+		deps.memgraph = s.memgraph
+	} else {
+		deps.memgraph = nilMemgraphProber{}
+	}
+	if s.cacheStore != nil {
+		deps.edinTS = s.cacheStore.Pool()
+	} else {
+		deps.edinTS = nilPgProber{}
+	}
+	if s.eddnIntelStore != nil {
+		deps.eddnTS = s.eddnIntelStore.Pool()
+		deps.listener = newListenerLagAdapter(s.eddnIntelStore.Pool())
+	} else {
+		deps.eddnTS = nilPgProber{}
+		deps.listener = nilListenerProber{}
+	}
+	return deps
+}
+
+// nil*Prober implementations: returned when the corresponding dependency
+// isn't wired on the Server. They fail-loudly so the diagnose response shows
+// the missing wire-up rather than silently lying.
+type nilMemgraphProber struct{}
+
+func (nilMemgraphProber) ProbeMemgraph(ctx context.Context) error {
+	return fmt.Errorf("memgraph prober not configured on this server")
+}
+
+type nilPgProber struct{}
+
+func (nilPgProber) Ping(ctx context.Context) error {
+	return fmt.Errorf("postgres prober not configured on this server")
+}
+
+type nilListenerProber struct{}
+
+func (nilListenerProber) Lag(ctx context.Context) (time.Duration, error) {
+	return 0, fmt.Errorf("eddn-listener prober not configured on this server")
 }
 
 // handleKaineToken handles GET /api/kaine/token.

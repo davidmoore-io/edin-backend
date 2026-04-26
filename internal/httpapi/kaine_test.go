@@ -348,10 +348,10 @@ func (ts *testableServer) withKaineAuthMock(next http.HandlerFunc) http.HandlerF
 
 		// Mirror withKaineAuth's bot:edin handling so tests cover the same path.
 		if user != nil && hasGroup(user.Groups, botEdinGroup) {
-			if r.Method != http.MethodGet {
+			if r.Method != http.MethodGet && strings.HasPrefix(r.URL.Path, "/api/kaine/") {
 				ts.logger.Warn(fmt.Sprintf("m2m write rejected: sub=%s method=%s path=%s",
 					user.Sub, r.Method, r.URL.Path))
-				ts.writeError(w, http.StatusForbidden, "bot:edin identities are read-only")
+				ts.writeError(w, http.StatusForbidden, "bot:edin identities are read-only on /api/kaine/")
 				return
 			}
 			ts.logger.Info(fmt.Sprintf("m2m call: sub=%s method=%s path=%s",

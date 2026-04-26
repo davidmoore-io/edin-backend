@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 // CacheStore provides read/write operations for EDIN powerplay cache tables.
@@ -1003,4 +1004,15 @@ func getFloat64(m map[string]any, key string) float64 {
 		return float64(v)
 	}
 	return 0
+}
+
+// Pool exposes the underlying pgxpool for read-only use by callers that
+// need to ping the database directly (e.g. /admin/diagnose). Returns nil if
+// the store has no client. NEVER USE FOR WRITES — that's what the typed
+// methods are for.
+func (s *CacheStore) Pool() *pgxpool.Pool {
+	if s.client == nil {
+		return nil
+	}
+	return s.client.Pool()
 }
