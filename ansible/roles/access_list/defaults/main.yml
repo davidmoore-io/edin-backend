@@ -12,3 +12,9 @@
 # the container so writes land on the host filesystem, not in the container
 # overlay (where they'd be lost on the next deploy).
 commander_login_attempt_log: /var/log/edin/login-attempts.log
+
+# Where the backend writes admin-action audit lines (Grant/Revoke/Link/Unlink
+# /Approve/Deny mutations through the Kaine AdminPage Commanders tab). Same
+# /var/log/edin/ directory + bind-mount as the denial log; same JSON-lines
+# shape — a single canonical "who changed what access" record for incidents.
+commander_admin_actions_log: /var/log/edin/admin-actions.log
