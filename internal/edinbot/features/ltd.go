@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"log"
 	"sort"
 	"strings"
 	"time"
@@ -86,8 +87,13 @@ func (l *LTDAlerts) fetchWithRetry(ctx context.Context) (*controlclient.LTDBuyer
 		}
 		resp, err := l.client.LTDBuyers(ctx)
 		if err == nil {
+			if attempt > 0 {
+				log.Printf("[INFO] ltd: fetch succeeded on attempt %d", attempt+1)
+			}
 			return resp, nil
 		}
+		log.Printf("[WARN] ltd: fetch attempt %d/%d failed: %v",
+			attempt+1, len(l.retries)+1, err)
 		lastErr = err
 	}
 	return nil, fmt.Errorf("ltd fetch exhausted retries: %w", lastErr)

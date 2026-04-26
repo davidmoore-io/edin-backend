@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"log"
 	"sort"
 	"strconv"
 	"strings"
@@ -93,8 +94,13 @@ func (p *PlatinumBoomAlerts) fetchWithRetry(ctx context.Context) (*controlclient
 		}
 		resp, err := p.client.PlasmiumBuyers(ctx)
 		if err == nil {
+			if attempt > 0 {
+				log.Printf("[INFO] platinum: fetch succeeded on attempt %d", attempt+1)
+			}
 			return resp, nil
 		}
+		log.Printf("[WARN] platinum: fetch attempt %d/%d failed: %v",
+			attempt+1, len(p.retries)+1, err)
 		lastErr = err
 	}
 	return nil, fmt.Errorf("plasmium fetch exhausted retries: %w", lastErr)

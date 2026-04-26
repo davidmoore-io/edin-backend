@@ -19,9 +19,18 @@ type HealthOracle interface {
 	PerBindingHealth() map[string]bool
 }
 
+// PollTrigger is satisfied by the scheduler. Lets the debug endpoint kick a
+// binding's poll cycle without waiting for the next interval. Internal-only:
+// the bot's :8080 listener is never published outside the docker network.
+type PollTrigger interface {
+	TriggerNow(bindingID string) error
+	BindingIDs() []string
+}
+
 type Config struct {
 	Addr    string
 	Health  HealthOracle
+	Trigger PollTrigger
 	Version string
 }
 
@@ -62,6 +71,40 @@ func (s *Server) Handler() http.Handler {
 
 	mux.HandleFunc("/version", func(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprintln(w, s.cfg.Version)
+	})
+
+	// /debug/poll/{binding_id} — POST runs an immediate tick for that binding.
+	// GET lists the known binding IDs. Internal-only (docker-network reachable
+	// only); we still accept POST-without-body so a plain `curl -XPOST` works.
+	mux.HandleFunc("/debug/poll/", func(w http.ResponseWriter, r *http.Request) {
+		if s.cfg.Trigger == nil {
+			http.Error(w, "trigger not configured", http.StatusServiceUnavailable)
+			return
+		}
+		bindingID := r.URL.Path[len("/debug/poll/"):]
+		switch r.Method {
+		case http.MethodGet:
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"bindings": s.cfg.Trigger.BindingIDs(),
+			})
+		case http.MethodPost:
+			if bindingID == "" {
+				http.Error(w, "binding id required: POST /debug/poll/{binding_id}", http.StatusBadRequest)
+				return
+			}
+			if err := s.cfg.Trigger.TriggerNow(bindingID); err != nil {
+				http.Error(w, err.Error(), http.StatusNotFound)
+				return
+			}
+			w.WriteHeader(http.StatusAccepted)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"triggered": bindingID,
+				"note":      "tick queued; check logs and discord.poll_cycles for outcome",
+			})
+		default:
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		}
 	})
 
 	mux.HandleFunc("/metrics", func(w http.ResponseWriter, r *http.Request) {

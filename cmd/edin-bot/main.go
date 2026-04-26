@@ -105,6 +105,7 @@ func run() error {
 	srv := httpserver.New(httpserver.Config{
 		Addr:    ":8080",
 		Health:  newHealthOracle(st, bs),
+		Trigger: sch,
 		Version: version,
 	})
 	go func() {

@@ -31,13 +31,53 @@ type Scheduler struct {
 	wg      sync.WaitGroup
 	cancel  context.CancelFunc
 	running atomic.Bool
+
+	// triggers is populated by runPoll for every PollFeature binding so that
+	// TriggerNow can ask the existing per-binding goroutine to run a tick
+	// immediately. Sending on a 1-buffered channel: if the slot is full the
+	// caller knows a tick is already queued and we coalesce. The map is
+	// written only during Start; reads during TriggerNow happen-after Start
+	// returned, so no extra lock is needed beyond cfg immutability.
+	triggers map[string]chan struct{}
 }
 
 func New(cfg Config) *Scheduler {
 	if cfg.StaggerMs == 0 {
 		cfg.StaggerMs = 500
 	}
-	return &Scheduler{cfg: cfg}
+	triggers := make(map[string]chan struct{}, len(cfg.Bindings))
+	for _, b := range cfg.Bindings {
+		triggers[b.ID] = make(chan struct{}, 1)
+	}
+	return &Scheduler{cfg: cfg, triggers: triggers}
+}
+
+// TriggerNow asks the goroutine running bindingID to run a poll tick as soon
+// as it can. If a tick is already queued the call is a coalesced no-op. Only
+// PollFeature bindings are triggerable; event-driven bindings ignore the
+// channel. Returns an error if the binding is unknown.
+func (s *Scheduler) TriggerNow(bindingID string) error {
+	ch, ok := s.triggers[bindingID]
+	if !ok {
+		return fmt.Errorf("unknown binding: %s", bindingID)
+	}
+	select {
+	case ch <- struct{}{}:
+	default:
+		// Already queued — coalesce.
+	}
+	return nil
+}
+
+// BindingIDs returns the set of binding IDs the scheduler knows about, in the
+// order they were configured. Used by the debug HTTP endpoint to surface what
+// can be triggered.
+func (s *Scheduler) BindingIDs() []string {
+	ids := make([]string, 0, len(s.cfg.Bindings))
+	for _, b := range s.cfg.Bindings {
+		ids = append(ids, b.ID)
+	}
+	return ids
 }
 
 func (s *Scheduler) Start(ctx context.Context) error {
@@ -147,11 +187,14 @@ func (s *Scheduler) runPoll(ctx context.Context, b bindings.Binding, pf features
 	}
 
 	tick() // first tick immediately after stagger
+	trigger := s.triggers[b.ID]
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-t.C:
+			tick()
+		case <-trigger:
 			tick()
 		}
 	}
