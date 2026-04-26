@@ -30,6 +30,26 @@ type KaineUser struct {
 // contextKey is a type for context keys.
 type kaineUserKey struct{}
 
+// kaineBotIdentityKey marks a request as authenticated via a bot:edin
+// service identity (rather than a user JWT). The string value is the bot's
+// `sub` claim (e.g. "svc-edin-bot") for audit logging.
+type kaineBotIdentityKey struct{}
+
+// botEdinGroup is the canonical Authentik group claim that grants the bot
+// service identity GET-only access to kaine endpoints.
+const botEdinGroup = "bot:edin"
+
+// hasGroup returns true if the user's Groups slice contains the named group
+// (exact match, no prefix logic — unlike HasRole, which is for kaine- groups).
+func hasGroup(groups []string, want string) bool {
+	for _, g := range groups {
+		if g == want {
+			return true
+		}
+	}
+	return false
+}
+
 // KaineUserFromContext retrieves the authenticated user from context.
 func KaineUserFromContext(ctx context.Context) *KaineUser {
 	user, _ := ctx.Value(kaineUserKey{}).(*KaineUser)
@@ -230,14 +250,40 @@ func (s *Server) withKaineAuth(next http.HandlerFunc) http.HandlerFunc {
 			return
 		}
 
+		// bot:edin service identity: read-only access to kaine endpoints.
+		// Bot tokens (issued via Authentik client_credentials to svc-edin-bot)
+		// carry only this group; they bypass the editor-role check that
+		// would otherwise reject them. Writes are forbidden — defence-in-depth
+		// against a stolen bot token being used to mutate state.
+		if user != nil && hasGroup(user.Groups, botEdinGroup) {
+			if r.Method != http.MethodGet {
+				s.logger.Warn(fmt.Sprintf("m2m write rejected: sub=%s method=%s path=%s",
+					user.Sub, r.Method, r.URL.Path))
+				s.writeError(w, http.StatusForbidden, "bot:edin identities are read-only")
+				return
+			}
+			s.logger.Info(fmt.Sprintf("m2m call: sub=%s method=%s path=%s",
+				user.Sub, r.Method, r.URL.Path))
+			ctx := context.WithValue(r.Context(), kaineUserKey{}, user)
+			ctx = context.WithValue(ctx, kaineBotIdentityKey{}, user.Sub)
+			next(w, r.WithContext(ctx))
+			return
+		}
+
 		ctx := context.WithValue(r.Context(), kaineUserKey{}, user)
 		next(w, r.WithContext(ctx))
 	}
 }
 
 // withKaineEditor requires the user to have edit permissions.
+// bot:edin service identities (already gated to GET-only by withKaineAuth)
+// bypass this check via the kaineBotIdentityKey context sentinel.
 func (s *Server) withKaineEditor(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		if _, ok := r.Context().Value(kaineBotIdentityKey{}).(string); ok {
+			next(w, r)
+			return
+		}
 		user := KaineUserFromContext(r.Context())
 		if user == nil || !user.CanEditObjectives() {
 			s.writeError(w, http.StatusForbidden, "requires director or lead-ops role")

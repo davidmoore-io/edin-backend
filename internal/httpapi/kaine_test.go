@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -342,6 +343,22 @@ func (ts *testableServer) withKaineAuthMock(next http.HandlerFunc) http.HandlerF
 		user, err := ts.mockValidator.ValidateToken(token)
 		if err != nil {
 			ts.writeError(w, http.StatusUnauthorized, "invalid token")
+			return
+		}
+
+		// Mirror withKaineAuth's bot:edin handling so tests cover the same path.
+		if user != nil && hasGroup(user.Groups, botEdinGroup) {
+			if r.Method != http.MethodGet {
+				ts.logger.Warn(fmt.Sprintf("m2m write rejected: sub=%s method=%s path=%s",
+					user.Sub, r.Method, r.URL.Path))
+				ts.writeError(w, http.StatusForbidden, "bot:edin identities are read-only")
+				return
+			}
+			ts.logger.Info(fmt.Sprintf("m2m call: sub=%s method=%s path=%s",
+				user.Sub, r.Method, r.URL.Path))
+			ctx := context.WithValue(r.Context(), kaineUserKey{}, user)
+			ctx = context.WithValue(ctx, kaineBotIdentityKey{}, user.Sub)
+			next(w, r.WithContext(ctx))
 			return
 		}
 
@@ -1032,5 +1049,189 @@ func TestKaineAdminUserByID_AddGroup_MissingFetchHeader_400(t *testing.T) {
 
 	if rr.Code != http.StatusBadRequest {
 		t.Errorf("expected 400, got %d body=%s", rr.Code, rr.Body.String())
+	}
+}
+
+// =============================================================================
+// bot:edin service identity tests (Phase 4 of edin-bot plan)
+// =============================================================================
+
+// botEdinFixture wires a testable server with the mock validator + a bot:edin
+// user mapped to a fixed token, and a director user for regression baseline.
+type botEdinFixture struct {
+	ts             *testableServer
+	botToken       string
+	directorToken  string
+}
+
+func newBotEdinFixture(t *testing.T) *botEdinFixture {
+	t.Helper()
+	ts := newTestableServer()
+	ts.mockValidator.addUser("bot-token", &KaineUser{
+		Sub:    "svc-edin-bot",
+		Groups: []string{botEdinGroup},
+	})
+	ts.mockValidator.addUser("director-token", &KaineUser{
+		Sub:    "user-director",
+		Groups: []string{"kaine-directors"},
+	})
+	return &botEdinFixture{ts: ts, botToken: "bot-token", directorToken: "director-token"}
+}
+
+// fixedHandler returns a handler that records whether it was reached.
+func fixedHandler() (http.HandlerFunc, *bool) {
+	reached := false
+	return func(w http.ResponseWriter, r *http.Request) {
+		reached = true
+		w.WriteHeader(http.StatusOK)
+	}, &reached
+}
+
+func TestWithKaineAuth_BotEdin_AllowsGET(t *testing.T) {
+	f := newBotEdinFixture(t)
+	h, reached := fixedHandler()
+	wrapped := f.ts.withKaineAuthMock(f.ts.withKaineEditor(h))
+
+	req := httptest.NewRequest(http.MethodGet, "/api/kaine/mining/plasmium-buyers", nil)
+	req.Header.Set("Authorization", "Bearer "+f.botToken)
+	rr := httptest.NewRecorder()
+	wrapped(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Errorf("expected 200, got %d body=%s", rr.Code, rr.Body.String())
+	}
+	if !*reached {
+		t.Error("handler must be invoked for bot:edin GET")
+	}
+}
+
+func TestWithKaineAuth_BotEdin_RejectsPOST(t *testing.T) {
+	f := newBotEdinFixture(t)
+	h, reached := fixedHandler()
+	wrapped := f.ts.withKaineAuthMock(h)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/kaine/objectives", nil)
+	req.Header.Set("Authorization", "Bearer "+f.botToken)
+	rr := httptest.NewRecorder()
+	wrapped(rr, req)
+
+	if rr.Code != http.StatusForbidden {
+		t.Errorf("expected 403 for bot:edin POST, got %d", rr.Code)
+	}
+	if *reached {
+		t.Error("handler MUST NOT be invoked for bot:edin POST")
+	}
+}
+
+func TestWithKaineAuth_BotEdin_RejectsPUT(t *testing.T) {
+	f := newBotEdinFixture(t)
+	h, _ := fixedHandler()
+	wrapped := f.ts.withKaineAuthMock(h)
+
+	req := httptest.NewRequest(http.MethodPut, "/api/kaine/objectives/abc", nil)
+	req.Header.Set("Authorization", "Bearer "+f.botToken)
+	rr := httptest.NewRecorder()
+	wrapped(rr, req)
+
+	if rr.Code != http.StatusForbidden {
+		t.Errorf("expected 403 for bot:edin PUT, got %d", rr.Code)
+	}
+}
+
+func TestWithKaineAuth_BotEdin_RejectsDELETE(t *testing.T) {
+	f := newBotEdinFixture(t)
+	h, _ := fixedHandler()
+	wrapped := f.ts.withKaineAuthMock(h)
+
+	req := httptest.NewRequest(http.MethodDelete, "/api/kaine/objectives/abc", nil)
+	req.Header.Set("Authorization", "Bearer "+f.botToken)
+	rr := httptest.NewRecorder()
+	wrapped(rr, req)
+
+	if rr.Code != http.StatusForbidden {
+		t.Errorf("expected 403 for bot:edin DELETE, got %d", rr.Code)
+	}
+}
+
+func TestWithKaineAuth_DirectorJWT_StillWorksUnchanged(t *testing.T) {
+	f := newBotEdinFixture(t)
+	h, reached := fixedHandler()
+	wrapped := f.ts.withKaineAuthMock(f.ts.withKaineEditor(h))
+
+	req := httptest.NewRequest(http.MethodGet, "/api/kaine/mining/plasmium-buyers", nil)
+	req.Header.Set("Authorization", "Bearer "+f.directorToken)
+	rr := httptest.NewRecorder()
+	wrapped(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Errorf("director regression: expected 200, got %d body=%s", rr.Code, rr.Body.String())
+	}
+	if !*reached {
+		t.Error("director handler must still be invoked")
+	}
+}
+
+func TestWithKaineEditor_BotEdinBypassesEditorCheck(t *testing.T) {
+	// Sanity: even though bot:edin user does NOT satisfy CanEditObjectives,
+	// withKaineEditor lets it through because withKaineAuth set the
+	// bot-identity context sentinel.
+	f := newBotEdinFixture(t)
+	h, reached := fixedHandler()
+	wrapped := f.ts.withKaineAuthMock(f.ts.withKaineEditor(h))
+
+	req := httptest.NewRequest(http.MethodGet, "/api/kaine/mining/plasmium-buyers", nil)
+	req.Header.Set("Authorization", "Bearer "+f.botToken)
+	rr := httptest.NewRecorder()
+	wrapped(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Errorf("bot:edin must bypass editor check; got %d", rr.Code)
+	}
+	if !*reached {
+		t.Error("handler must be reached")
+	}
+}
+
+func TestWithKaineEditor_NonBotNonDirector_StillRejected(t *testing.T) {
+	// A user with no editor group AND no bot:edin group is still rejected.
+	ts := newTestableServer()
+	ts.mockValidator.addUser("plain-token", &KaineUser{
+		Sub:    "user-pleb",
+		Groups: []string{"kaine-pledge"},
+	})
+	h, reached := fixedHandler()
+	wrapped := ts.withKaineAuthMock(ts.withKaineEditor(h))
+
+	req := httptest.NewRequest(http.MethodGet, "/api/kaine/mining/plasmium-buyers", nil)
+	req.Header.Set("Authorization", "Bearer plain-token")
+	rr := httptest.NewRecorder()
+	wrapped(rr, req)
+
+	if rr.Code != http.StatusForbidden {
+		t.Errorf("non-bot non-editor: expected 403, got %d", rr.Code)
+	}
+	if *reached {
+		t.Error("handler MUST NOT be invoked")
+	}
+}
+
+// hasGroup helper coverage.
+func TestHasGroup(t *testing.T) {
+	cases := []struct {
+		groups []string
+		want   string
+		expect bool
+	}{
+		{[]string{"a", "b"}, "a", true},
+		{[]string{"a", "b"}, "c", false},
+		{nil, "a", false},
+		{[]string{}, "a", false},
+		{[]string{"bot:edin", "kaine-director"}, "bot:edin", true},
+		{[]string{"bot:edin-fake"}, "bot:edin", false},
+	}
+	for _, c := range cases {
+		if got := hasGroup(c.groups, c.want); got != c.expect {
+			t.Errorf("hasGroup(%v, %q) = %v, want %v", c.groups, c.want, got, c.expect)
+		}
 	}
 }
