@@ -57,24 +57,22 @@ func TestPlatinumBoomAlerts_HappyPath_BuildsItemsFromBuyers(t *testing.T) {
 	require.Contains(t, bodyText, "280k")  // price formatted
 }
 
-func TestPlatinumBoomAlerts_DropsBuyersWithoutPricing(t *testing.T) {
-	// Three buyers across two systems:
-	//   - Sol/Galileo: full pricing → keep
-	//   - Sol/Bayliss: zero price+demand → drop
-	//   - Wolf/Solo: zero on both Pt and Os → drop, system disappears
+func TestPlatinumBoomAlerts_RendersLastSeenStamp(t *testing.T) {
+	// Buyer with MarketUpdatedAt → renders Discord <t:N:R> token. The pricing
+	// filter that briefly existed has been removed; we surface every buyer the
+	// kaine API returns, with freshness indicated via "last seen".
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{
 			"maps": [{
 				"system_name": "M",
 				"buyers": [
-					{"system_name":"Sol","station_name":"Galileo","faction_state":"Boom","platinum_demand":1500,"platinum_price":280000,"score":40},
-					{"system_name":"Sol","station_name":"Bayliss","faction_state":"Boom","platinum_demand":0,"platinum_price":0,"score":40},
-					{"system_name":"Wolf","station_name":"Solo","faction_state":"Boom","platinum_demand":0,"platinum_price":0,"osmium_demand":0,"osmium_price":0,"score":100}
+					{"system_name":"Sol","station_name":"Galileo","faction_state":"Boom","platinum_demand":1500,"platinum_price":280000,"score":40,"market_updated_at":"2026-04-26T14:00:00Z"},
+					{"system_name":"Sol","station_name":"Bayliss","faction_state":"Boom","platinum_demand":0,"platinum_price":0,"score":40,"bgs_updated_at":"2026-04-26T13:00:00Z"}
 				]
 			}],
 			"generated_at": "2026-04-26T14:23:01Z",
-			"total_maps": 1, "total_buyers": 3
+			"total_maps": 1, "total_buyers": 2
 		}`))
 	}))
 	defer srv.Close()
@@ -83,15 +81,16 @@ func TestPlatinumBoomAlerts_DropsBuyersWithoutPricing(t *testing.T) {
 	feat.SetRetryIntervals([]time.Duration{10 * time.Millisecond})
 	snap, err := feat.Poll(context.Background(), feat.DefaultConfig())
 	require.NoError(t, err)
-	require.Len(t, snap.Items, 1, "only Sol should survive (Wolf system dropped, only Galileo within Sol)")
-	require.Equal(t, "system:Sol", snap.Items[0].Identity())
+	require.Len(t, snap.Items, 1, "no pricing filter — both buyers in Sol survive")
 
-	body := snap.Items[0].Render().Description
+	var body string
 	for _, f := range snap.Items[0].Render().Fields {
-		body += " " + f.Name + " " + f.Value
+		body += " " + f.Value
 	}
 	require.Contains(t, body, "Galileo")
-	require.NotContains(t, body, "Bayliss", "buyer without pricing must not appear")
+	require.Contains(t, body, "Bayliss", "buyer without pricing should still appear")
+	require.Contains(t, body, "<t:1777212000:R>", "Galileo MarketUpdatedAt rendered as live timestamp")
+	require.Contains(t, body, "<t:1777208400:R> (BGS)", "Bayliss falls back to BGS timestamp with annotation")
 }
 
 func TestPlatinumBoomAlerts_StructurallyInvalidResponse_ReturnsError(t *testing.T) {

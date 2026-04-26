@@ -61,9 +61,6 @@ func (p *PlatinumBoomAlerts) Poll(ctx context.Context, c Config) (Snapshot, erro
 	bySys := map[string][]controlclient.Buyer{}
 	for _, m := range resp.Maps {
 		for _, b := range m.Buyers {
-			if !platinumBuyerHasPricing(b) {
-				continue
-			}
 			bySys[b.SystemName] = append(bySys[b.SystemName], b)
 		}
 	}
@@ -128,9 +125,9 @@ func buildPlatinumItem(system string, buyers []controlclient.Buyer) *platinumIte
 		if b.KaineProgress != nil {
 			kp = *b.KaineProgress
 		}
-		fmt.Fprintf(h, "stn=%s|pp=%d|pd=%d|op=%d|od=%d|sc=%.0f|kp=%.3f|fs=%s\n",
+		fmt.Fprintf(h, "stn=%s|pp=%d|pd=%d|op=%d|od=%d|sc=%.0f|kp=%.3f|fs=%s|mu=%d|bu=%d\n",
 			b.StationName, b.PlatinumPrice, b.PlatinumDemand, b.OsmiumPrice, b.OsmiumDemand,
-			b.Score, kp, b.FactionState)
+			b.Score, kp, b.FactionState, unixOrZero(b.MarketUpdatedAt), unixOrZero(b.BGSUpdatedAt))
 	}
 	return &platinumItem{
 		system: system,
@@ -157,10 +154,13 @@ func (p *platinumItem) Render() *discordgo.MessageEmbed {
 	for _, b := range p.buyers {
 		val := strings.Builder{}
 		fmt.Fprintf(&val, "**%s** — %s · score %.0f", b.StationName, b.FactionState, b.Score)
-		if b.PlatinumDemand > 0 && b.PlatinumPrice > 0 {
+		if seen := lastSeenStamp(b); seen != "" {
+			fmt.Fprintf(&val, " · last seen %s", seen)
+		}
+		if b.PlatinumDemand > 0 {
 			fmt.Fprintf(&val, "\n• Pt: %s t @ %sk", commaInt(b.PlatinumDemand), kInt(b.PlatinumPrice))
 		}
-		if b.OsmiumDemand > 0 && b.OsmiumPrice > 0 {
+		if b.OsmiumDemand > 0 {
 			fmt.Fprintf(&val, "\n• Os: %s t @ %sk", commaInt(b.OsmiumDemand), kInt(b.OsmiumPrice))
 		}
 		var kp float64
@@ -175,18 +175,27 @@ func (p *platinumItem) Render() *discordgo.MessageEmbed {
 	return embed
 }
 
-// platinumBuyerHasPricing returns true when at least one of the two commodities
-// (platinum, osmium) has BOTH a non-zero price AND a non-zero demand. Buyers
-// without pricing are dropped from the snapshot — operators want only
-// actionable targets, not stations whose price feed has lapsed.
-func platinumBuyerHasPricing(b controlclient.Buyer) bool {
-	if b.PlatinumPrice > 0 && b.PlatinumDemand > 0 {
-		return true
+// lastSeenStamp picks the most-relevant freshness timestamp for a buyer and
+// formats it as Discord's live-relative <t:N:R> token ("5 minutes ago").
+// MarketUpdatedAt is preferred because the message content is commodity
+// pricing — operators want to know how stale the price feed is. If market
+// data is missing, BGSUpdatedAt is shown as a fallback (still useful: tells
+// you when faction state was last refreshed). Returns "" when neither is set.
+func unixOrZero(t *time.Time) int64 {
+	if t == nil || t.IsZero() {
+		return 0
 	}
-	if b.OsmiumPrice > 0 && b.OsmiumDemand > 0 {
-		return true
+	return t.Unix()
+}
+
+func lastSeenStamp(b controlclient.Buyer) string {
+	if b.MarketUpdatedAt != nil && !b.MarketUpdatedAt.IsZero() {
+		return fmt.Sprintf("<t:%d:R>", b.MarketUpdatedAt.Unix())
 	}
-	return false
+	if b.BGSUpdatedAt != nil && !b.BGSUpdatedAt.IsZero() {
+		return fmt.Sprintf("<t:%d:R> (BGS)", b.BGSUpdatedAt.Unix())
+	}
+	return ""
 }
 
 func commaInt(n int64) string {
