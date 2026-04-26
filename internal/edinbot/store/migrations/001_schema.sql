@@ -1,18 +1,17 @@
--- Bot-owned schema. The edin_bot_writer role is granted USAGE+CREATE here
--- via the timescaledb ansible role (Phase 1.1). This migration is idempotent
--- and re-grants on every run as a safety net.
+-- Bot-owned schema and grants are managed by the database ansible role
+-- (edin-data/ansible/roles/databases/templates/edin-init.sql.j2). This file
+-- is intentionally a no-op asserting the schema is reachable — running
+-- 'CREATE SCHEMA IF NOT EXISTS' here would require CREATE-on-database, which
+-- edin_bot_writer does not (and should not) have.
 --
--- The grants below are guarded by a role-exists check so this migration runs
--- cleanly against a fresh test database (where the connected user owns the
--- schema directly and edin_bot_writer does not exist).
-CREATE SCHEMA IF NOT EXISTS discord;
-
+-- For a fresh test database where the bot connects as the testuser (which
+-- DOES have CREATE-on-database), the schema is also created via the same
+-- DO-block guard.
 DO $$
 BEGIN
-    IF EXISTS (SELECT FROM pg_roles WHERE rolname = 'edin_bot_writer') THEN
-        EXECUTE 'GRANT USAGE, CREATE ON SCHEMA discord TO edin_bot_writer';
-        EXECUTE 'ALTER DEFAULT PRIVILEGES IN SCHEMA discord GRANT ALL ON TABLES TO edin_bot_writer';
-        EXECUTE 'ALTER DEFAULT PRIVILEGES IN SCHEMA discord GRANT ALL ON SEQUENCES TO edin_bot_writer';
+    IF NOT EXISTS (SELECT 1 FROM information_schema.schemata WHERE schema_name = 'discord') THEN
+        -- Only attempt creation if we have privilege (test contexts do; bot in prod doesn't).
+        EXECUTE 'CREATE SCHEMA discord';
     END IF;
 END
 $$;
