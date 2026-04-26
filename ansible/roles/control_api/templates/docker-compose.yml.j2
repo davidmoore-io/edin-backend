@@ -33,6 +33,37 @@ services:
         reservations:
           memory: 256M
 
+  docker-inspect:
+    # Tiny sidecar that holds the docker socket so control-api doesn't need
+    # to. Single endpoint: GET /inspect/{name} with an embedded allowlist of
+    # 4 container names. See edin-backend/cmd/docker-inspect-sidecar/.
+    build:
+      context: {{ control_api_src_dir }}
+      dockerfile: cmd/docker-inspect-sidecar/Dockerfile
+    container_name: docker-inspect
+    restart: unless-stopped
+    user: "65532:65532"
+    group_add:
+      # Host docker GID. Override per-host in inventory if it isn't 999.
+      - "{{ docker_socket_gid | default(999) }}"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks:
+      - {{ edin_app_network }}
+    # No host port published — only reachable from within the docker network.
+    deploy:
+      resources:
+        limits:
+          memory: 64M
+        reservations:
+          memory: 16M
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8081/inspect/memgraph"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+
 networks:
   {{ edin_app_network }}:
     external: true
