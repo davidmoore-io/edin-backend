@@ -57,12 +57,10 @@ services:
           memory: 64M
         reservations:
           memory: 16M
-    healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://localhost:8081/inspect/memgraph"]
-      interval: 30s
-      timeout: 5s
-      retries: 3
-      start_period: 5s
+    # No docker-compose healthcheck: the sidecar is built on a distroless
+    # image that has no probe binary (wget/curl/sh). Health is observed via
+    # 'docker logs docker-inspect' and by control-api's first /admin/diagnose
+    # call (any sidecar failure surfaces in the diagnose response).
 
 networks:
   {{ edin_app_network }}:
