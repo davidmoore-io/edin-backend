@@ -57,6 +57,9 @@ const (
 	// Background Simulation reference material.
 	ToolBgsGuideSearch ToolName = "bgs_guide_search"
 
+	// Powerplay reference material.
+	ToolPowerplayGuideSearch ToolName = "powerplay_guide_search"
+
 	// Commander tools (full implementation in Stories 5.2/5.3)
 	ToolCommanderEvents   ToolName = "commander_events"
 	ToolCommanderLocation ToolName = "commander_location"
@@ -246,6 +249,8 @@ func (e *Executor) Invoke(ctx context.Context, name string, args map[string]any)
 	// Reference material
 	case ToolBgsGuideSearch:
 		return e.bgsGuideSearch(ctx, args)
+	case ToolPowerplayGuideSearch:
+		return e.powerplayGuideSearch(ctx, args)
 
 	// Meta-tools
 	case ToolDescribeTool:

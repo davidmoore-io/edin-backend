@@ -50,6 +50,7 @@ var toolScopes = map[ToolName]authz.Scope{
 	// prose initially grouped it with mining tools.
 	ToolGalaxyExpansionTargets: authz.ScopeGalaxyRead,
 	ToolBgsGuideSearch:         authz.ScopeGalaxyRead,
+	ToolPowerplayGuideSearch:   authz.ScopeGalaxyRead,
 	ToolSpanshQuery:            authz.ScopeGalaxyRead,
 	ToolRetrieveRoute:          authz.ScopeGalaxyRead,
 	ToolSystemProfile:          authz.ScopeGalaxyRead,

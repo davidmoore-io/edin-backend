@@ -163,6 +163,11 @@ func MCPToolDefinitions() []mcp.Tool {
 			mcp.WithString("query", mcp.Required(), mcp.Description("Keyword or distinctive phrase (case-insensitive, min 2 chars).")),
 			mcp.WithNumber("max_chunks", mcp.Description("1–5, default 3. Each chunk ~2000 tokens.")),
 		),
+		mcp.NewTool(string(ToolPowerplayGuideSearch),
+			mcp.WithDescription("Search the Elite Dangerous Powerplay Reference Card for activity rules, merit/CP modifiers, CP thresholds, system types, and Stronghold Carrier mechanics. Call describe_tool first for landmark keywords. Not for live galaxy data — use galaxy_power / galaxy_powerplay_cycle / galaxy_nearby_powerplay for that."),
+			mcp.WithString("query", mcp.Required(), mcp.Description("Keyword or distinctive phrase (case-insensitive, min 2 chars).")),
+			mcp.WithNumber("max_chunks", mcp.Description("1–5, default 2. Each chunk ~1000 tokens.")),
+		),
 		DescribeToolMCPDefinition(),
 		CommanderEventsToolDefinition(),
 		CommanderLocationToolDefinition(),
@@ -236,6 +241,7 @@ var complexTools = map[ToolName]bool{
 	ToolGalaxyNearbyPowerplay:   true,
 	ToolGalaxyExpansionFrontier: true,
 	ToolBgsGuideSearch:          true,
+	ToolPowerplayGuideSearch:    true,
 }
 
 // slimDescriptions provides 1-line descriptions for complex tools used in slim definitions.
@@ -249,6 +255,7 @@ var slimDescriptions = map[ToolName]string{
 	ToolGalaxyNearbyPowerplay:   "Find powerplay activity near a system. Use describe_tool for parameters.",
 	ToolGalaxyExpansionFrontier: "Find systems on the edge of a power's control bubble. Use describe_tool for parameters.",
 	ToolBgsGuideSearch:          "Search the BGS reference guide. Use describe_tool first for landmark keywords, search tips, and strict grounding rules.",
+	ToolPowerplayGuideSearch:    "Search the Powerplay refcard. Use describe_tool first for landmark keywords, search tips, and strict grounding rules.",
 }
 
 // SlimBetaToolDefinitions returns beta tool definitions with slim descriptions

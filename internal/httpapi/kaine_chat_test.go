@@ -517,6 +517,7 @@ func TestKaineChatScopeDerivation_ApprovedUser_SeesLegacyKaineTools(t *testing.T
 		"galaxy_station",
 		"galaxy_stats",
 		"galaxy_system",
+		"powerplay_guide_search",
 		"retrieve_carrier_route",
 		"spansh_query",
 		"system_profile",

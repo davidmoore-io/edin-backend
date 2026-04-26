@@ -50,6 +50,8 @@ Buying and selling commodities
 Powerplay 2.0 Reference:
 Understanding powerplay mechanics is critical for accurate reporting. EDIN stores `powerplay_state`, `powers` (list of competing powers), `controlling_power`, and `powerplay_conflict_progress`.
 
+For activity rules, merit/CP modifiers, control point thresholds, system-type definitions, and Stronghold Carrier mechanics, call `powerplay_guide_search` with a keyword (e.g. `exobiology`, `fortified threshold`, `stronghold carrier`, `general undermining bonus`, `transport power commodity`). The tool returns ~1000-token chunks from the refcard sourced from heatmap.sotl.org.uk/powers/refcard. Quote or paraphrase strictly from returned chunks; do not draw on outside Powerplay knowledge.
+
 **The Control Bubble — Expansion Range Rules:**
 Powers can only expand into systems within range of their existing controlled territory:
 - **20 Ly** from any **Fortified** system

@@ -215,4 +215,33 @@ Do NOT assume, presuppose, infer, extrapolate, or draw on any other knowledge ab
 Dangerous BGS, even if you believe you know the answer. If the returned chunks do not contain
 enough information to answer the user's question, say so explicitly and offer to search with
 a different keyword. Quote or paraphrase the chunks directly; do not embellish.`,
+
+	ToolPowerplayGuideSearch: `powerplay_guide_search — Keyword search over the Elite Dangerous Powerplay Reference Card. Returns ~1000-token text chunks around match clusters.
+
+Use for questions about Powerplay activity rules, merit/CP modifiers, control point thresholds, system types, and Stronghold Carrier mechanics. NOT for live galaxy data — use galaxy_* tools (galaxy_power, galaxy_powerplay_cycle, galaxy_nearby_powerplay, etc.) for current cycle state, who controls a system, etc.
+
+Topics in the refcard (use these as landmark search keywords):
+  - Activity Requirements (CP thresholds): "120000", "350000", "650000", "1000000", "fortified threshold", "stronghold threshold"
+  - Weekly tasks: "weekly tasks", "rank 40", "assignments"
+  - System types: "supporting system", "acquisition system", "reinforcement system", "undermining system", "friendly system", "unfriendly system"
+  - Activities (look up by name): "bounty hunting", "exobiology", "exploration data", "scan datalinks", "transport power commodity", "upload malware", "sell mined resources", "sell rare goods", "holoscreen hacking", "power kills", "commit crimes", "collect escape pods", "complete support missions", "flood markets"
+  - Modifiers: "ethos bonus", "system strength penalty", "beyond frontline", "system rank penalty", "stronghold carrier nullification", "general undermining bonus", "focused undermining bonus", "general reinforcement penalty", "resistance reinforcement", "overkill reinforcement", "emergency defence bonus", "acquisition follow-through", "assignment completion", "exploration data exchange rate"
+  - Stronghold Carriers: "+SC", "-SC", "stronghold carrier"
+
+Parameters:
+- query (string, required): Keyword or distinctive phrase. Case-insensitive, min 2 chars.
+- max_chunks (number, optional): 1–5, default 2. Each chunk ~1000 tokens (~4000 chars). The corpus is small so 1-2 chunks usually covers a topic.
+
+Search behaviour:
+- Matching is literal case-insensitive substring. Two-word phrases must appear verbatim.
+- If a multi-word phrase returns 0 matches, RETRY with a single distinctive keyword.
+- Results are ranked by match density: the first chunk is usually the main section for the topic.
+- Chunks are nudged to line boundaries so they open/close cleanly.
+
+!IMPORTANT — STRICT GROUNDING RULE:
+When you use this tool, you MUST answer using ONLY the text contained in the returned chunks.
+Do NOT assume, presuppose, infer, extrapolate, or draw on any other knowledge about Elite
+Dangerous Powerplay, even if you believe you know the answer. If the returned chunks do not
+contain enough information to answer the user's question, say so explicitly and offer to
+search with a different keyword. Quote or paraphrase the chunks directly; do not embellish.`,
 }

@@ -1,0 +1,365 @@
+Elite Dangerous Powerplay Tools: Reference Card
+Source: https://heatmap.sotl.org.uk/powers/refcard
+
+================================================================
+ACTIVITY REQUIREMENTS (Control Points)
+================================================================
+
+These are the "Control Points" shown on the tug-of-war display on the
+map. Personally-earned merits for rank are usually four times greater
+than these, but multipliers can vary.
+
+- To start Acquisition Conflict: 36,000 control points
+- To Acquire a system: 120,000 control points (including the above)
+- To reinforce a system to Fortified from minimum Exploited: 350,000 control points
+- To reinforce a system to Stronghold from minimum Fortified: 650,000 control points
+- To reinforce a system to maximum Stronghold from minimum Stronghold: 1,000,000 control points
+
+================================================================
+WEEKLY TASKS
+================================================================
+
+Each player is given five tasks at the start of the Powerplay cycle,
+granting a significant number of bonus personal merits. Players starting
+the cycle at rank 40 or higher get an additional five tasks (total ten).
+
+Weekly tasks may specify particular systems to be carried out in; these
+will normally be near to the player's start-of-cycle location. To reduce
+the chance of being given an impossible task, it is best to start the
+week near a border with another Power.
+
+Weekly tasks are mostly optional and there is no penalty for not
+completing them - a new set will be given the following week regardless.
+The initial set of five tasks given when joining a Power is required to
+unlock rank progression (but will never specify systems, so should
+always be possible).
+
+================================================================
+SYSTEM TYPES
+================================================================
+
+- Friendly System: any Exploited, Fortified or Stronghold of your Power.
+- Unfriendly System: any Exploited, Fortified or Stronghold of any
+  other Power.
+- Target System: the system being affected.
+- Supporting System: a Fortified system within 20 LY of an Acquisition
+  System, or a Stronghold system within 30 LY.
+- Reinforcement System: any friendly system EXCEPT the capital/HQ
+  system.
+- Undermining System: any unfriendly system EXCEPT the capital/HQ
+  system.
+- Acquisition System: any neutral system within range of one of your
+  Supporting Systems.
+- Unoccupied System: any neutral system, whether in range or not.
+- Acquisition Conflict System: a neutral system in which two or more
+  Powers (including yours) have reached the Conflict threshold.
+
+================================================================
+ACTIVITY TYPES
+================================================================
+
+Format per row:
+  Activity | Acquisition? | Reinforcement? | Undermining? | Passive? |
+  Odyssey? | Legal? | Details | Pickup/Activity Location |
+  Hand-in Location | Notes | BGS effect?
+
+Suffixes A / R / U distinguish the same base activity carried out in
+different system states. (+SC) means works with a Stronghold Carrier
+present; (-SC) means blocked by a Stronghold Carrier.
+
+Bounty Hunting | Yes | Yes | Only versus Delaine (+SC) | High | No | Yes
+| Merit proportional to bounty claim, awarded on kill | In Target
+System | n/a | Cashing in the bounties at a friendly system Power
+Contact afterwards gives a bonus | Positive, generally for system
+controller
+
+Collect Escape Pods (Acquisition) | Yes | No | No | No | No | Yes |
+Power Signal Sources are a good place to look | In Target System |
+Supporting System Power Contact | Certain megaships and other POIs can
+give a higher rate of escape pods. Unavailable at Anarchy stations. |
+Mildly positive for hand-in station owner
+
+Holoscreen Hacking | Yes | Yes | Yes (+SC) | No | No | Reinforcement
+Only (Fine elsewhere) | Requires Recon Limpet | Orbital Starports | n/a
+| In Acquisition and Undermining, rapidly damages reputation with
+station owner. In Reinforcement may not be available away from front
+lines. | None
+
+Power Kills | Yes | Yes | Yes (+SC) | No | Some | Reinforcement Only |
+In Undermining systems, killing ships or soldiers belonging to another
+Undermining Power does nothing | In Target System | n/a | In Acquisition
+and Undermining, kills are illegal but do not increase notoriety | None
+
+Retrieve Power Goods (Acquisition) | Yes | No | No | Low | Yes | If not
+caught | Goods are in locked containers, ebreach or combination to open
+| Surface settlements in target system | Supporting System Power Contact
+| None | None
+
+Scan Datalinks | Yes | Yes | Yes (-SC) | No | No | Yes | Scan "Ship Log
+Uplink" with Data Link Scanner | Non-dockable megaships | n/a | Only
+once per megaship per fortnight, requires ship log uplink to contain a
+message | None (unless combined with a mission to scan the same ship)
+
+Sell for large profits (Acquisition) | Yes | No | No | Moderate | No |
+Yes | Any cargo worth 40% or more profit | Station in supporting system
+| Station in target system | Once profit threshold met, more expensive
+goods are better. Undocumented location requirement. | Positive for
+station owner
+
+Sell for large profits (Reinforcement) | No | Yes | No | Moderate | No |
+Yes | Any cargo worth 40% or more profit | Station in any system |
+Station in target system | Once profit threshold met, more expensive
+goods are better | Positive for station owner
+
+Sell mined resources (Acquisition) | Yes | No | No | Low | No | Yes |
+Sell any actually mined goods, note location requirements | Mining sites
+in Supporting System | Station in target system | Location requirement
+is unusually harsh, and not documented | Positive for station owner
+
+Sell rare goods | Yes | Yes | No | Low | No | Usually (Fine only) | Sell
+rare goods | Any rare goods producer outside target system | Station in
+target system | Rares must be legal in target system. Must not be
+transported by Fleet Carrier. | Positive for station owner
+
+Transfer Power Data (Acquisition) | Yes | No | No | Low | Yes | If not
+caught | Downloadable from data ports | Odyssey settlements | Supporting
+System Power Contact | Each Power has preferred types of data which give
+better merits. Data type chances related to data port type. | None
+
+Transport Power Commodity (Acquisition) | Yes | No | No | No | No |
+Yes, but other Power agents may attack | Location is crucial | Power
+Contact in Supporting System | Power Contact in Target System | Limited
+allocation per half hour, 15-250 dependent on rank. Cargo disappears at
+end of cycle if not delivered. | None
+
+Upload Power Malware (Acquisition) | Yes | No | No | No | Yes | If not
+caught | Upload Power Injection Malware to data ports | Any Power
+contact | Odyssey settlements in target system | Only one item can be
+uploaded per port. Long upload time. | None
+
+Complete Support Missions | Conflict only | Yes | Yes (-SC) | Moderate |
+No | Yes | Any ship mission in the "Support" category | Station in
+target system | n/a | Merit gain proportional to donation size for
+those missions, with cargo donations much more effective. | Positive
+for mission faction
+
+Complete Restore/Reactivate Missions | Yes | Yes | No | Moderate | Yes |
+Yes | Any Odyssey mission in the "Support" category | Station in target
+system | via Odyssey base in target system | Static merit value
+regardless of reward choice. | Positive for mission faction
+
+Flood markets with low value goods (Acquisition) | Conflict only | No |
+No | Low | No | Yes | Goods must sell for 500 cr or less, and be on the
+station market as supply or demand | Station in Supporting system |
+Station in target system | The cheaper the better. Hydrogen Fuel is
+usually a safe bet, Limpets also work well. | Variable but small for
+station owner
+
+Flood markets with low value goods (Undermining) | No | No | Yes (-SC) |
+Low | No | Yes | Goods must sell for 500 cr or less, and be on the
+station market as supply or demand | Station in any system | Station in
+target system | The cheaper the better. Hydrogen Fuel is usually a safe
+bet, Limpets also work well. | Variable but small for station owner
+
+Scan ships and wakes | Conflict only | Yes | No | High | No | Yes |
+Normal scan of ships | In Target System | n/a | Autoscans count
+(including your own SLF, though the merit count is far too small to be
+exploitable) | None
+
+Collect Escape Pods (Reinforcement) | No | Yes | No | Low | No | Yes |
+Damaged or Occupied Escape Pods | In Target System | Target System
+Power Contact | Unavailable at Anarchy stations. S&R payout bonuses
+help with this | None
+
+Exobiology | No | Yes | No | High | Yes | Yes | Anywhere | Station in
+target system | n/a | Data collected after 7 Nov 3310 only | None
+
+Exploration Data | No | Yes | No | High | No | Yes | Merits per system,
+not per page | Anywhere >20LY | Station in target system | Data
+collected after 7 Nov 3310 only | Positive for station owner
+
+Collect Salvage (Reinforcement) | No | Yes | No | Low | No | Yes | Black
+boxes, Personal Effects, Wreckage Components | In Target System | Power
+Contact in Target System | Unavailable at Anarchy stations | Positive
+for station owner
+
+Sell mined resources (Reinforcement/Undermining) | No | Yes | Yes |
+Moderate | No | Yes | Sell any actually mined goods, note location
+requirements | Mining sites in Target System | Station in target system
+| Location requirement is unusually harsh, and not documented. Merits
+proportional to sale price. | Positive for station owner
+
+Transport Power Commodity (Reinforcement) | No | Yes | No | No | No |
+Yes, but other Power agents may attack | - | Power Contact in Stronghold
+System | Power Contact in Target System | Limited allocation per half
+hour, 15-250 dependent on rank. Can't reinforce a system with its own
+supplies. Cargo disappears at end of cycle if not delivered. | None
+
+Collect Escape Pods (Undermining) | No | No | Yes (-SC?) | No | No | Yes
+| Power Signal Sources are a good place to look | In Target System |
+Friendly System Power Contact | Unavailable at Anarchy stations.
+Certain megaships and other POIs can give a higher rate of escape pods
+| Mildly positive for hand-in station owner
+
+Commit Crimes | No | No | Yes (-SC) | Very Low | No | No | Murder of
+Power or minor faction ships or personnel | In Target System | n/a |
+System authority appear not to count. Bounty value applied before
+notoriety multipliers. | Negative for ship owner (irrelevant for Power
+ships)
+
+Collect Salvage (Undermining) | No | No | Yes (-SC) | Low | No | Yes |
+Black boxes, Personal Effects, Wreckage Components | In Target System |
+Friendly System Power Contact | Unavailable at Anarchy stations |
+Positive for station owner
+
+Transfer Power Data (Undermining) | No | No | Yes (-SC) | Low | Yes | If
+not caught | Downloadable from data ports | Odyssey settlements |
+Friendly System Power Contact | Each Power has preferred types of data
+which give better merits. Data types chances related to data port type.
+| None
+
+Transfer Power Data (Reinforcement) | No | Some Types | No | Low | Yes |
+If not caught | Downloadable from data ports | Odyssey settlements |
+Same System Power Contact | Research and Industrial data do not work in
+Reinforcement | None
+
+Retrieve Power Goods (Undermining) | No | No | Yes (-SC) | Low | Yes |
+If not caught | Goods are in locked containers, ebreach or combination
+to open | Surface settlements in target system | Friendly System Power
+Contact | None | None
+
+Transport Power Commodity (Undermining) | No | No | Yes (-SC) | No | No
+| Yes, but other Power agents can legally attack | - | Power Contact in
+Stronghold System | Power Contact in Target System | Limited allocation
+per half hour, 15-250 dependent on rank. Cargo disappears at end of
+cycle if not delivered. | None
+
+Upload Power Malware (Undermining) | No | No | Yes (-SC) | No | Yes | If
+not caught | Upload Power Tracker Malware to data ports | Any Power
+contact | Odyssey settlements in target system | Only one item can be
+uploaded per port. Long upload time. | None
+
+================================================================
+STRONGHOLD CARRIERS
+================================================================
+
+Most Undermining methods do not work at all in systems containing a
+Stronghold Carrier. This is noted with a "-SC" (doesn't work) or "+SC"
+(works) entry in the Undermining column above.
+
+================================================================
+MERIT AND CONTROL POINT BONUSES AND PENALTIES
+================================================================
+
+There are a very large number of bonuses and penalties to both Control
+Points and Merits, some of which are at least somewhat documented. All
+of them stack together.
+
+Format per row:
+  Name | Documented? | Affects | System Type | Direction | Magnitude |
+  Description
+
+Ethos Bonus | Yes | CPs and Merits | All | Bonus | +50% | Benefits doing
+the preferred activities of your Power. Each Power and each Activity has
+a different list of these.
+
+System Strength Penalty | Minimally | CPs and Merits | Undermining |
+Penalty | variable by system, up to -50%? | Makes system more resilient,
+descriptor likely covering a wider range stated on map.
+
+Beyond Frontline Penalty | Minimally | CPs and Merits | Undermining |
+Penalty | variable by system, up to -50%? | For systems far from your
+own territory, worsens with distance, descriptor likely covering a wider
+range stated on map.
+
+System Rank Penalty | No | CPs and Merits | Undermining | Penalty | Very
+uncertain (could be around -30%?) | Fortified and Stronghold systems
+are harder to Undermine than the same system in Exploited form. Unclear
+if this is a multiplier to System Strength Penalty or an entirely
+separate modifier.
+
+Stronghold Carrier Nullification | No | CPs and Merits | Undermining |
+Penalty | -100%! | Most Undermining methods do not work at all if a
+Stronghold Carrier is present (see above).
+
+General Undermining Bonus | Yes | Merits only | Undermining | Bonus |
++15% | Granted for Undermining any system.
+
+Focused Undermining Bonus | Inconsistently | Merits only | Undermining |
+Bonus | +25% | Granted for Undermining daily target systems (blue
+crosshair icon). Always stacked with the General Bonus for +40% total.
+
+General Reinforcement Penalty | Yes | Merits only | Reinforcement |
+Penalty | -35% | Granted for Reinforcing any system.
+
+Resistance Reinforcement Modifier | Only in patch notes | Merits only |
+Reinforcement | Varies | Varies from -20% to +30% | Further
+supplement/cancellation of General Reinforcement Penalty depending on
+recent enemy Undermining in the system.
+
+Overkill Reinforcement Penalty | No | Merits only | Reinforcement |
+Penalty | -20% | Further penalty for Reinforcing a system already above
+the next threshold (or a maxed Stronghold). So -75% stacked with the
+General and Resistance modifiers.
+
+Emergency Defence Bonus | Inconsistently | Merits only | Reinforcement |
+Bonus | +35% | Cancels the General Reinforcement Penalty in systems
+which are net Undermined to the next state down (red ! icon). As these
+will often have a Resistance Modifier too the net effect is likely to
+be a bonus.
+
+Acquisition Follow-through Bonus | Patch notes only | Merits Only |
+Acquisition | Bonus | 5,000-20,000 merits | Personal merits awarded at
+the end of the week for significant contributions to Acquiring a system
+lost by another Power in the previous week due at least in part to
+actions by this Power.
+
+Assignment Completion Bonus | Yes | Merits Only | All | Bonus |
+2,000-4,000 merits | Personal merits granted in addition to the
+intrinsic value of the task for completing weekly assignments.
+
+Exploration Data Exchange Rate | Patch notes only | Merits Only |
+Reinforcement | Bonus | +50% | Exploration data pays out at a baseline
+of 6 merits/CP rather than the typical 4.
+
+================================================================
+WORKED EXAMPLES
+================================================================
+
+Example 1: Ship scan as a Kaine pledge in a Reinforcement system in the
+HIP enclave that has recently been Undermined below the threshold:
+
+  Baseline value: 3 control points
+  - Control point modifier: ethos bonus at +50%
+  - Control points earned: 4.5, rounded up to 5
+  - Merits modifier: -35% for reinforcement
+  - Merits modifier: +35% for emergency defence
+  - Merits modifier: +30% for system having had recent heavy undermining
+  - Standard merits multiplier: 4x
+  - Total merits multiplier: 5.2x → 26 Merits earned
+
+Example 2: Antal pledge carrying out a 1 million credit donation
+mission to an enemy Fortified system:
+
+  Baseline value: 27 control points
+  - Control point modifiers: System Strength Penalty, System Rank
+    Penalty and Beyond Frontline Penalty apply. Total effect highly
+    system specific. Assuming a total of -50% for this example.
+  - Control points earned: 14
+  - Merits modifier: +15% for standard undermining
+  - Standard merits multiplier: 4x
+  - Total merits multiplier: 4.6x → 64 Merits earned
+
+================================================================
+SUMMARY
+================================================================
+
+In general:
+- Reinforcement gets MERIT (but not control point) penalties.
+- Undermining usually gets CONTROL POINT penalties which are often
+  substantially larger than its merit bonuses.
+- Acquisition is a neutral "baseline" with no inherent merit/CP modifier.
+
+================================================================
+END OF REFERENCE CARD
+================================================================
