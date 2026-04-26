@@ -1,3 +1,5 @@
+//go:build ignore
+
 // Package discord provides Discord bot functionality.
 // This file implements the /cg command for querying Col 359 sector powerplay status.
 package discord
