@@ -154,6 +154,22 @@ func (s *PostgresStore) RecordPollCycle(ctx context.Context, c PollCycle) error 
 	return nil
 }
 
+func (s *PostgresStore) LatestSuccessAt(ctx context.Context, bindingID string) (time.Time, error) {
+	var ticked time.Time
+	err := s.pool.QueryRow(ctx, `
+		SELECT COALESCE(MAX(ticked_at), TIMESTAMPTZ '1970-01-01')
+		FROM discord.poll_cycles
+		WHERE binding_id = $1 AND status IN ('success', 'event')`,
+		bindingID).Scan(&ticked)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("query latest_success_at: %w", err)
+	}
+	if ticked.Year() <= 1970 {
+		return time.Time{}, nil
+	}
+	return ticked, nil
+}
+
 func (s *PostgresStore) RecordDiagnoseReport(ctx context.Context, r DiagnoseReport) error {
 	_, err := s.pool.Exec(ctx, `
 		INSERT INTO discord.diagnose_reports

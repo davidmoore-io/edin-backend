@@ -243,3 +243,55 @@ func TestPostgresStore_RecordDiagnoseReport_RoundTrip(t *testing.T) {
 	require.NotNil(t, posted)
 	require.Equal(t, "9999", *posted)
 }
+
+func TestPostgresStore_LatestSuccessAt_ReturnsZeroWhenNoCycles(t *testing.T) {
+	s, ctx := newStore(t)
+	got, err := s.LatestSuccessAt(ctx, "never-polled")
+	require.NoError(t, err)
+	require.True(t, got.IsZero(), "no cycles → zero time")
+}
+
+func TestPostgresStore_LatestSuccessAt_IgnoresFailedCycles(t *testing.T) {
+	s, ctx := newStore(t)
+	t1 := time.Date(2026, 4, 26, 12, 0, 0, 0, time.UTC)
+	t2 := time.Date(2026, 4, 26, 12, 15, 0, 0, time.UTC)
+	t3 := time.Date(2026, 4, 26, 12, 30, 0, 0, time.UTC)
+
+	require.NoError(t, s.RecordPollCycle(ctx, store.PollCycle{
+		TickedAt: t1, BindingID: "b", Status: "success", Attempts: 1, ItemCount: 5, DurationMs: 100,
+	}))
+	require.NoError(t, s.RecordPollCycle(ctx, store.PollCycle{
+		TickedAt: t2, BindingID: "b", Status: "failed", Attempts: 4, ItemCount: 0, DurationMs: 30000,
+	}))
+	require.NoError(t, s.RecordPollCycle(ctx, store.PollCycle{
+		TickedAt: t3, BindingID: "b", Status: "success", Attempts: 1, ItemCount: 7, DurationMs: 120,
+	}))
+
+	got, err := s.LatestSuccessAt(ctx, "b")
+	require.NoError(t, err)
+	require.True(t, t3.Equal(got), "must return the latest success, ignoring intervening failure")
+}
+
+func TestPostgresStore_LatestSuccessAt_AcceptsEventStatus(t *testing.T) {
+	s, ctx := newStore(t)
+	t1 := time.Date(2026, 4, 26, 12, 0, 0, 0, time.UTC)
+	require.NoError(t, s.RecordPollCycle(ctx, store.PollCycle{
+		TickedAt: t1, BindingID: "b", Status: "event", Attempts: 1, ItemCount: 1, DurationMs: 0,
+	}))
+
+	got, err := s.LatestSuccessAt(ctx, "b")
+	require.NoError(t, err)
+	require.True(t, t1.Equal(got), "'event' status counts as success for healthcheck purposes")
+}
+
+func TestPostgresStore_LatestSuccessAt_BindingIsolation(t *testing.T) {
+	s, ctx := newStore(t)
+	t1 := time.Date(2026, 4, 26, 12, 0, 0, 0, time.UTC)
+	require.NoError(t, s.RecordPollCycle(ctx, store.PollCycle{
+		TickedAt: t1, BindingID: "a", Status: "success", Attempts: 1, ItemCount: 1, DurationMs: 100,
+	}))
+
+	got, err := s.LatestSuccessAt(ctx, "b")
+	require.NoError(t, err)
+	require.True(t, got.IsZero(), "binding b has no cycles → zero")
+}

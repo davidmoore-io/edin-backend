@@ -136,6 +136,18 @@ func (m *memStore) RecordDiagnoseReport(ctx context.Context, r store.DiagnoseRep
 	return nil
 }
 
+func (m *memStore) LatestSuccessAt(ctx context.Context, bid string) (time.Time, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var latest time.Time
+	for _, c := range m.cycles {
+		if c.BindingID == bid && (c.Status == "success" || c.Status == "event") && c.TickedAt.After(latest) {
+			latest = c.TickedAt
+		}
+	}
+	return latest, nil
+}
+
 func bnd() bindings.Binding {
 	return bindings.Binding{
 		ID:        "test-binding",

@@ -14,7 +14,6 @@ import (
 	"os"
 	"os/signal"
 	"strings"
-	"sync"
 	"syscall"
 	"time"
 
@@ -252,21 +251,33 @@ func loadBindings(path string) ([]bindings.Binding, error) {
 	return bindings.Load(f)
 }
 
-// healthOracle implements httpserver.HealthOracle by querying poll_cycles for
-// recent successful cycles per binding.
+// healthOracle implements httpserver.HealthOracle by querying
+// discord.poll_cycles for recent successful cycles per binding.
 //
-// MVP placeholder: returns all-true. Phase 14 (or a follow-up) wires a real
-// Store.LatestSuccessAt lookup; until then the bot's container healthcheck is
-// a connectivity probe rather than a binding-status oracle. The TODO is
-// tracked in the plan's open issues.
+// A binding is "healthy" when its most-recent ticked_at where status IN
+// ('success', 'event') is within:
+//   - 2 × PollInterval for PollFeature bindings
+//   - eventHealthWindow (default 6h) for EventDrivenFeature bindings
+//
+// The startupGrace covers the first few minutes of bot lifetime where no
+// poll has yet completed: any binding younger than startupGrace at process
+// boot reports healthy unconditionally.
 type healthOracle struct {
-	st       store.Store
-	bindings []bindings.Binding
-	mu       sync.Mutex
+	st           store.Store
+	bindings     []bindings.Binding
+	startedAt    time.Time
+	startupGrace time.Duration
+	eventWindow  time.Duration
 }
 
 func newHealthOracle(st store.Store, bs []bindings.Binding) *healthOracle {
-	return &healthOracle{st: st, bindings: bs}
+	return &healthOracle{
+		st:           st,
+		bindings:     bs,
+		startedAt:    time.Now(),
+		startupGrace: 2 * time.Minute,
+		eventWindow:  6 * time.Hour,
+	}
 }
 
 func (h *healthOracle) AllBindingsHealthy() bool {
@@ -279,14 +290,38 @@ func (h *healthOracle) AllBindingsHealthy() bool {
 }
 
 func (h *healthOracle) PerBindingHealth() map[string]bool {
-	// PLACEHOLDER (per plan open issue): returns all-true. A real implementation
-	// queries discord.poll_cycles for the latest success per binding and
-	// checks it's within 2 × poll_interval (or 6h for EventDrivenFeature).
-	h.mu.Lock()
-	defer h.mu.Unlock()
 	out := map[string]bool{}
+	now := time.Now()
+	stillStarting := now.Sub(h.startedAt) < h.startupGrace
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
 	for _, b := range h.bindings {
-		out[b.ID] = true
+		if stillStarting {
+			out[b.ID] = true
+			continue
+		}
+		latest, err := h.st.LatestSuccessAt(ctx, b.ID)
+		if err != nil {
+			// Treat query errors as unhealthy — Discord operators should
+			// know the bot can't even ask the DB.
+			out[b.ID] = false
+			continue
+		}
+		if latest.IsZero() {
+			// Never had a successful cycle past the startup grace window —
+			// definitely unhealthy.
+			out[b.ID] = false
+			continue
+		}
+		var window time.Duration
+		if b.IsPoll {
+			window = 2 * b.PollInterval
+		} else {
+			window = h.eventWindow
+		}
+		out[b.ID] = now.Sub(latest) <= window
 	}
 	return out
 }

@@ -50,4 +50,10 @@ type Store interface {
 	// RecordDiagnoseReport inserts one row into discord.diagnose_reports.
 	// Called by the ops-health-alerts feature after escalation.
 	RecordDiagnoseReport(ctx context.Context, r DiagnoseReport) error
+
+	// LatestSuccessAt returns the most-recent ticked_at where status='success'
+	// or 'event' for the given binding. Returns the zero time if no successful
+	// cycle has been recorded yet (the caller distinguishes new-binding from
+	// stale-binding via the IsZero check). Used by the bot's /healthz oracle.
+	LatestSuccessAt(ctx context.Context, bindingID string) (time.Time, error)
 }
