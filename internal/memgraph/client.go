@@ -71,6 +71,23 @@ func (c *Client) NewSession(ctx context.Context, config neo4j.SessionConfig) neo
 	return c.driver.NewSession(ctx, config)
 }
 
+// ProbeMemgraph runs a cheap cypher probe used by /admin/diagnose. Matches
+// the memgraphProber interface in internal/httpapi. Returns the underlying
+// driver error on failure so the diagnose response can surface it.
+func (c *Client) ProbeMemgraph(ctx context.Context) error {
+	session := c.driver.NewSession(ctx, neo4j.SessionConfig{AccessMode: neo4j.AccessModeRead})
+	defer session.Close(ctx)
+	_, err := session.ExecuteRead(ctx, func(tx neo4j.ManagedTransaction) (any, error) {
+		result, err := tx.Run(ctx, "MATCH (s:System) RETURN s LIMIT 1", nil)
+		if err != nil {
+			return nil, err
+		}
+		_, _ = result.Consume(ctx)
+		return nil, nil
+	})
+	return err
+}
+
 // CGSystemData represents a CG system with full powerplay data from Memgraph.
 // Aligned with eddn-listener/MEMGRAPH-SCHEMA.md v3 (2026-01-06)
 type CGSystemData struct {

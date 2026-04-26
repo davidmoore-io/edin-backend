@@ -722,3 +722,10 @@ func (s *SystemIntelStore) GetSoftwareStats(ctx context.Context, systemName stri
 
 	return stats, rows.Err()
 }
+
+// Pool exposes the underlying pgxpool for read-only use by callers that
+// need to ping the database directly (e.g. /admin/diagnose). NEVER USE FOR
+// WRITES — that's what the typed methods are for.
+func (s *SystemIntelStore) Pool() *pgxpool.Pool {
+	return s.pool
+}

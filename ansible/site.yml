@@ -19,7 +19,5 @@
       tags: [access_list, control_api]
     - role: control_api
       tags: [control_api]
-    - role: discord_bot
-      tags: [discord_bot]
     - role: galaxy_exporter
       tags: [galaxy_exporter]
