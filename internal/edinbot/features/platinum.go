@@ -213,7 +213,7 @@ func (p *platinumItem) Render() *discordgo.MessageEmbed {
 	if state != "" {
 		fmt.Fprintf(&desc, "%s · ", state)
 	}
-	fmt.Fprintf(&desc, "Kaine %.1f%% · %d station(s)\n", kainePct, len(p.buyers))
+	fmt.Fprintf(&desc, "Kaine %.1f%%\n\n", kainePct)
 
 	// Drop buyers whose price AND demand are both zero — even if fresh, they're
 	// uninformative noise. Keep buyers where either has a non-zero value (e.g.

@@ -197,7 +197,10 @@ func TestPublisher_FirstSnapshot_PostsEverything(t *testing.T) {
 	require.NotEmpty(t, posted["system:Sol"].MessageID)
 }
 
-func TestPublisher_UnchangedHash_Noop(t *testing.T) {
+// New model: every cycle wipes and rebuilds. Same input two cycles in a row =
+// double the deletes + double the posts (no edit/noop optimization). The
+// channel ends up identical but Discord traffic is uniform per cycle.
+func TestPublisher_RebuildsEveryCycle(t *testing.T) {
 	st := newMemStore()
 	dc := discordclient.NewFakeDiscordClient()
 	p := publisher.New(st, dc)
@@ -205,32 +208,19 @@ func TestPublisher_UnchangedHash_Noop(t *testing.T) {
 	item := mkItem("system:Sol", "Sol")
 	_, err := p.Apply(context.Background(), bnd(), snap(item))
 	require.NoError(t, err)
+	require.Len(t, dc.PostCalls(), 1)
+	require.Empty(t, dc.DeleteCalls(), "first cycle has nothing to delete")
 	dc.Reset()
 
-	res, err := p.Apply(context.Background(), bnd(), snap(item))
+	_, err = p.Apply(context.Background(), bnd(), snap(item))
 	require.NoError(t, err)
-	require.Equal(t, 1, res.Noop)
-	require.Empty(t, dc.PostCalls())
-	require.Empty(t, dc.EditCalls(), "noop must NOT call Discord")
+	require.Len(t, dc.DeleteCalls(), 1, "second cycle wipes prior message")
+	require.Len(t, dc.PostCalls(), 1, "and posts the same item fresh")
 }
 
-func TestPublisher_ChangedHash_Edits(t *testing.T) {
-	st := newMemStore()
-	dc := discordclient.NewFakeDiscordClient()
-	p := publisher.New(st, dc)
-
-	_, err := p.Apply(context.Background(), bnd(), snap(mkItem("system:Sol", "Sol-v1")))
-	require.NoError(t, err)
-	dc.Reset()
-
-	res, err := p.Apply(context.Background(), bnd(), snap(mkItem("system:Sol", "Sol-v2")))
-	require.NoError(t, err)
-	require.Equal(t, 1, res.Edited)
-	require.Len(t, dc.EditCalls(), 1)
-	require.Empty(t, dc.PostCalls())
-}
-
-func TestPublisher_DisappearedItem_Strikes(t *testing.T) {
+// New model: an item that disappears from the snapshot is DELETED, not
+// converted to a spoiler. The channel reflects only current state.
+func TestPublisher_DisappearedItem_Deleted(t *testing.T) {
 	st := newMemStore()
 	dc := discordclient.NewFakeDiscordClient()
 	p := publisher.New(st, dc)
@@ -241,53 +231,41 @@ func TestPublisher_DisappearedItem_Strikes(t *testing.T) {
 	require.NoError(t, err)
 	dc.Reset()
 
-	// B disappears.
+	// B disappears; only A remains.
 	res, err := p.Apply(context.Background(), bnd(), snap(a))
 	require.NoError(t, err)
-	require.Equal(t, 1, res.Struck)
-	require.Equal(t, 1, res.Noop, "A should noop")
-	// Strike is now a content-replacement (drop embed, set spoiler text).
-	require.Len(t, dc.ReplaceTextCalls(), 1, "strike replaces embed with spoiler text")
-	require.Empty(t, dc.EditCalls(), "embed-edit path is no longer used by strike")
-	require.Contains(t, dc.ReplaceTextCalls()[0].Content, "||🏁 COMPLETED")
+	require.Empty(t, dc.ReplaceTextCalls(), "no spoiler conversion in the new model")
+	require.Len(t, dc.DeleteCalls(), 2, "both prior messages deleted")
+	require.Len(t, dc.PostCalls(), 1, "only A reposts")
+	require.Equal(t, 1, res.Posted)
 
 	posted, _ := st.GetPosted(context.Background(), "test-binding")
-	require.NotNil(t, posted["system:B"].StruckAt)
+	_, hasB := posted["system:B"]
+	require.False(t, hasB, "disappeared item is gone from the table too")
 }
 
-func TestPublisher_ReappearedItem_RepostsFresh(t *testing.T) {
-	// With reorder-every-cycle, a reappearing item never goes through the
-	// "edit-in-place unstrike" path: struck rows are excluded from the
-	// chronological list, so the divergence algorithm sees the item as "out
-	// of order" and reposts it fresh. The new posted_at reflects THIS
-	// appearance, not the months-old original — fixes the bug where a system
-	// returning after a long absence would display "Posted 6 months ago".
+func TestPublisher_ReappearedItem_FreshPostedAt(t *testing.T) {
+	// A system that disappeared then reappeared months later must show the
+	// fresh PostedAt — wipe-and-rebuild gives this for free since every cycle
+	// reposts and writes PostedAt = snapshot.GeneratedAt.
 	st := newMemStore()
 	dc := discordclient.NewFakeDiscordClient()
 	p := publisher.New(st, dc)
 
 	item := mkItem("system:A", "A")
 	_, _ = p.Apply(context.Background(), bnd(), snap(item))
-	_, _ = p.Apply(context.Background(), bnd(), snap()) // disappears, struck
-
-	originalPostedAt := time.Now() // cliff approximating "ages ago"
+	_, _ = p.Apply(context.Background(), bnd(), snap()) // disappears
 	dc.Reset()
 
-	freshSnap := features.Snapshot{
-		Items:       []features.Item{item},
-		Healthy:     true,
-		GeneratedAt: originalPostedAt.Add(180 * 24 * time.Hour),
-	}
+	t1 := time.Date(2027, 1, 1, 12, 0, 0, 0, time.UTC) // months later
+	freshSnap := features.Snapshot{Items: []features.Item{item}, Healthy: true, GeneratedAt: t1}
 	res, err := p.Apply(context.Background(), bnd(), freshSnap)
 	require.NoError(t, err)
-	require.Equal(t, 1, res.Posted, "reappearance is a fresh post in the new model")
-	require.Len(t, dc.PostCalls(), 1)
-	require.Len(t, dc.DeleteCalls(), 1, "old struck/spoiler message is deleted before repost")
+	require.Equal(t, 1, res.Posted)
 
 	posted, _ := st.GetPosted(context.Background(), "test-binding")
-	require.WithinDuration(t, freshSnap.GeneratedAt, posted["system:A"].PostedAt, time.Second,
-		"posted_at must reset to current cycle, not the months-old original")
-	require.Nil(t, posted["system:A"].StruckAt)
+	require.WithinDuration(t, t1, posted["system:A"].PostedAt, time.Second,
+		"posted_at reflects this cycle, not the original months-old post")
 }
 
 func TestPublisher_PartialFailure_DoesNotAbortOthers(t *testing.T) {
@@ -300,13 +278,12 @@ func TestPublisher_PartialFailure_DoesNotAbortOthers(t *testing.T) {
 	_, _ = p.Apply(context.Background(), bnd(), snap(a, b))
 	dc.Reset()
 
-	dc.EditErr = errors.New("temporary 500")
-
-	a2 := mkItem("system:A", "A-v2")
-	b2 := mkItem("system:B", "B-v2")
-	res, err := p.Apply(context.Background(), bnd(), snap(a2, b2))
+	// PostErr fires for every post in this cycle; both items fail to post
+	// after the prior wipe, but neither aborts the loop.
+	dc.PostErr = errors.New("temporary 500")
+	res, err := p.Apply(context.Background(), bnd(), snap(a, b))
 	require.NoError(t, err, "partial failure does NOT abort the cycle")
-	require.Equal(t, 2, res.Failed, "both edits failed because the fake fails ALL edits")
+	require.Equal(t, 2, res.Failed, "both posts failed")
 
 	identities := []string{}
 	for _, it := range res.Items {
@@ -322,9 +299,8 @@ func TestPublisher_ChannelGoneError_DisablesBinding(t *testing.T) {
 	dc.PostErr = discordclient.ErrChannelGone
 	p := publisher.New(st, dc)
 
-	res, err := p.Apply(context.Background(), bnd(), snap(mkItem("system:A", "A")))
+	_, err := p.Apply(context.Background(), bnd(), snap(mkItem("system:A", "A")))
 	require.NoError(t, err)
-	require.Equal(t, 1, res.Failed)
 
 	disabled, _ := st.IsBindingDisabled(context.Background(), "test-binding")
 	require.True(t, disabled, "ErrChannelGone must trigger DisableBinding")
@@ -342,24 +318,6 @@ func TestPublisher_DisabledBinding_SkipsAllDiscordCalls(t *testing.T) {
 	require.Empty(t, dc.PostCalls(), "no Discord calls allowed for a disabled binding")
 }
 
-func TestPublisher_UsesSnapshotGeneratedAtForTimestamps(t *testing.T) {
-	st := newMemStore()
-	dc := discordclient.NewFakeDiscordClient()
-	p := publisher.New(st, dc)
-
-	item := mkItem("system:A", "A")
-	_, _ = p.Apply(context.Background(), bnd(), snap(item))
-
-	frozenTime := time.Date(2030, 1, 1, 12, 34, 0, 0, time.UTC)
-	strikeSnap := features.Snapshot{Items: nil, Healthy: true, GeneratedAt: frozenTime}
-	_, _ = p.Apply(context.Background(), bnd(), strikeSnap)
-
-	// Strike now replaces with spoiler text; the timestamp is embedded in the
-	// content as <t:UNIX:R>. Frozen time is 2030-01-01 12:34 UTC = 1893501240.
-	require.Len(t, dc.ReplaceTextCalls(), 1)
-	require.Contains(t, dc.ReplaceTextCalls()[0].Content, "<t:1893501240:R>",
-		"strike spoiler must encode Snapshot.GeneratedAt via Discord <t:N:R>")
-}
 
 func TestPublisher_PersistsLastRender(t *testing.T) {
 	st := newMemStore()
@@ -376,9 +334,11 @@ func TestPublisher_PersistsLastRender(t *testing.T) {
 	require.Equal(t, "A", roundtrip.Title)
 }
 
-// Phase 10.3: Restart safety — pre-existing posted_messages row continues to
-// be edited in place after a (simulated) bot restart. No double-posts.
-func TestPublisher_RestartScenario_ContinuesEditingExistingMessages(t *testing.T) {
+// Restart safety in the new model: pre-existing posted_messages row gets
+// deleted (its prior Discord message was wiped or will be after restart)
+// and the system reposts fresh. Continuity of message-ID is gone — the
+// embed content is the same, but it's a new message in the channel.
+func TestPublisher_RestartScenario_DeletesPriorAndReposts(t *testing.T) {
 	st := newMemStore()
 	dc := discordclient.NewFakeDiscordClient()
 	p := publisher.New(st, dc)
@@ -398,11 +358,10 @@ func TestPublisher_RestartScenario_ContinuesEditingExistingMessages(t *testing.T
 
 	res, err := p.Apply(context.Background(), bnd(), snap(mkItem("system:Sol", "Sol-new")))
 	require.NoError(t, err)
-	require.Equal(t, 1, res.Edited, "must edit, NOT post — message_id preserved across restart")
-
-	require.Empty(t, dc.PostCalls(), "no new post — recovery uses existing message_id")
-	require.Len(t, dc.EditCalls(), 1)
-	require.Equal(t, "pre-existing-msg-42", dc.EditCalls()[0].MessageID)
+	require.Equal(t, 1, res.Posted)
+	require.Len(t, dc.DeleteCalls(), 1, "prior row's message must be deleted before repost")
+	require.Equal(t, "pre-existing-msg-42", dc.DeleteCalls()[0].MessageID)
+	require.Len(t, dc.PostCalls(), 1, "fresh post after the wipe")
 }
 
 func TestClearHistory_DeletesMessagesAndRows(t *testing.T) {
@@ -490,7 +449,32 @@ func mkSortable(id, title string, key int64) *sortableItem {
 	return &sortableItem{stubItem: mkItem(id, title), key: key}
 }
 
-func TestPublisher_ReorderOnRankChange(t *testing.T) {
+func TestPublisher_PostsInPriceAscendingOrder(t *testing.T) {
+	// Items A=100, B=200, C=300. After Apply, the Discord posts must arrive
+	// in that ascending order — that's how the channel ends up cheapest-at-
+	// top, priciest-at-bottom.
+	st := newMemStore()
+	dc := discordclient.NewFakeDiscordClient()
+	p := publisher.New(st, dc)
+
+	a := mkSortable("system:A", "A", 100)
+	b := mkSortable("system:B", "B", 200)
+	c := mkSortable("system:C", "C", 300)
+
+	t0 := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+	_, err := p.Apply(context.Background(), bnd(), features.Snapshot{
+		Items: []features.Item{c, a, b}, Healthy: true, GeneratedAt: t0,
+	})
+	require.NoError(t, err)
+
+	posts := dc.PostCalls()
+	require.Len(t, posts, 3)
+	require.Equal(t, "A", posts[0].Embed.Title, "cheapest posted first (oldest in channel)")
+	require.Equal(t, "B", posts[1].Embed.Title)
+	require.Equal(t, "C", posts[2].Embed.Title, "priciest posted last (newest in channel)")
+}
+
+func TestPublisher_RebuildAlwaysReorders(t *testing.T) {
 	// Three systems with prices 100 / 200 / 300 — channel order should be
 	// A (cheapest, oldest message) → B → C (priciest, newest). Then A's
 	// price jumps to 500. New order: B → C → A. Algorithm should:
@@ -517,47 +501,21 @@ func TestPublisher_ReorderOnRankChange(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, dc.PostCalls(), 3, "first cycle posts all three")
 
-	// All three share PostedAt (Snapshot.GeneratedAt), but FakeDiscordClient
-	// hands out incrementing message IDs ("fake-msg-1", "-2", "-3") which
-	// the publisher uses as the chronological-order key. Cycle 1 posted in
-	// price-asc order, so message IDs land in price-asc order too.
-	posted, _ := st.GetPosted(context.Background(), "test-binding")
-	require.Less(t, posted["system:A"].MessageID, posted["system:B"].MessageID)
-	require.Less(t, posted["system:B"].MessageID, posted["system:C"].MessageID)
-
+	require.Len(t, dc.PostCalls(), 3, "first cycle posts all three in price-ascending order")
 	dc.Reset()
 
-	// A's price jumps to 500 → new order B / C / A.
+	// A's price jumps to 500 → new order is B / C / A. Wipe-and-rebuild
+	// always issues N deletes + N posts regardless of how the rank moved.
 	a.key = 500
 	t1 := t0.Add(time.Hour)
 	_, err = p.Apply(context.Background(), bnd(), features.Snapshot{
 		Items: []features.Item{a, b, c}, Healthy: true, GeneratedAt: t1,
 	})
 	require.NoError(t, err)
-	// All three repost (divergeAt=0 because slot 0 was A, now B).
-	require.Len(t, dc.PostCalls(), 3, "all three reposted because rank changed at index 0")
-	require.Len(t, dc.DeleteCalls(), 3, "old messages deleted before repost")
-}
-
-func TestPublisher_NoReorder_WhenOrderStable(t *testing.T) {
-	// Same prices both cycles → no reposts, only edits / noops.
-	st := newMemStore()
-	dc := discordclient.NewFakeDiscordClient()
-	p := publisher.New(st, dc)
-
-	a := mkSortable("system:A", "A", 100)
-	b := mkSortable("system:B", "B", 200)
-
-	t0 := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
-	_, _ = p.Apply(context.Background(), bnd(), features.Snapshot{
-		Items: []features.Item{a, b}, Healthy: true, GeneratedAt: t0,
-	})
-	dc.Reset()
-
-	t1 := t0.Add(time.Hour)
-	_, _ = p.Apply(context.Background(), bnd(), features.Snapshot{
-		Items: []features.Item{a, b}, Healthy: true, GeneratedAt: t1,
-	})
-	require.Empty(t, dc.PostCalls(), "stable order — no reposts")
-	require.Empty(t, dc.DeleteCalls(), "stable order — no deletes")
+	require.Len(t, dc.DeleteCalls(), 3, "all three prior messages wiped")
+	posts := dc.PostCalls()
+	require.Len(t, posts, 3, "all three reposted in the new order")
+	require.Equal(t, "B", posts[0].Embed.Title)
+	require.Equal(t, "C", posts[1].Embed.Title)
+	require.Equal(t, "A", posts[2].Embed.Title, "A is now priciest, posted last")
 }

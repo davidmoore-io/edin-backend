@@ -196,7 +196,7 @@ func (l *ltdItem) Render() *discordgo.MessageEmbed {
 	if state != "" {
 		fmt.Fprintf(&desc, "%s · ", state)
 	}
-	fmt.Fprintf(&desc, "Kaine %.1f%% · %d station(s)\n", kainePct, len(l.buyers))
+	fmt.Fprintf(&desc, "Kaine %.1f%%\n\n", kainePct)
 
 	// Drop 0c/0t buyers — fresh but uninformative.
 	usable := make([]controlclient.Buyer, 0, len(l.buyers))
