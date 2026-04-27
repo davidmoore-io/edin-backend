@@ -51,6 +51,17 @@ type Store interface {
 	// Called by the ops-health-alerts feature after escalation.
 	RecordDiagnoseReport(ctx context.Context, r DiagnoseReport) error
 
+	// DeletePostedForBinding removes every posted_messages row for one binding.
+	// Used by the /admin/clear endpoint AFTER the corresponding Discord
+	// messages have been deleted; before this call the rows still represent
+	// real Discord state. Returns the number of rows deleted.
+	DeletePostedForBinding(ctx context.Context, bindingID string) (int, error)
+
+	// EnableBinding clears any disabled_bindings tombstone for the binding,
+	// re-allowing the scheduler to call Poll on the next tick. Idempotent;
+	// removing a row that doesn't exist is a no-op.
+	EnableBinding(ctx context.Context, bindingID string) error
+
 	// LatestSuccessAt returns the most-recent ticked_at where status='success'
 	// or 'event' for the given binding. Returns the zero time if no successful
 	// cycle has been recorded yet (the caller distinguishes new-binding from

@@ -125,6 +125,21 @@ func (m *memStore) IsBindingDisabled(ctx context.Context, bid string) (bool, err
 	return ok, nil
 }
 
+func (m *memStore) DeletePostedForBinding(ctx context.Context, bid string) (int, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	n := len(m.posted[bid])
+	delete(m.posted, bid)
+	return n, nil
+}
+
+func (m *memStore) EnableBinding(ctx context.Context, bid string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	delete(m.disabled, bid)
+	return nil
+}
+
 func (m *memStore) RecordPollCycle(ctx context.Context, c store.PollCycle) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -231,7 +246,10 @@ func TestPublisher_DisappearedItem_Strikes(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, 1, res.Struck)
 	require.Equal(t, 1, res.Noop, "A should noop")
-	require.Len(t, dc.EditCalls(), 1, "strike is implemented as an edit")
+	// Strike is now a content-replacement (drop embed, set spoiler text).
+	require.Len(t, dc.ReplaceTextCalls(), 1, "strike replaces embed with spoiler text")
+	require.Empty(t, dc.EditCalls(), "embed-edit path is no longer used by strike")
+	require.Contains(t, dc.ReplaceTextCalls()[0].Content, "||🏁 COMPLETED")
 
 	posted, _ := st.GetPosted(context.Background(), "test-binding")
 	require.NotNil(t, posted["system:B"].StruckAt)
@@ -321,9 +339,11 @@ func TestPublisher_UsesSnapshotGeneratedAtForTimestamps(t *testing.T) {
 	strikeSnap := features.Snapshot{Items: nil, Healthy: true, GeneratedAt: frozenTime}
 	_, _ = p.Apply(context.Background(), bnd(), strikeSnap)
 
-	require.Len(t, dc.EditCalls(), 1)
-	require.Contains(t, dc.EditCalls()[0].Embed.Footer.Text, "12:34 UTC",
-		"strike footer must use Snapshot.GeneratedAt, not wall clock")
+	// Strike now replaces with spoiler text; the timestamp is embedded in the
+	// content as <t:UNIX:R>. Frozen time is 2030-01-01 12:34 UTC = 1893501240.
+	require.Len(t, dc.ReplaceTextCalls(), 1)
+	require.Contains(t, dc.ReplaceTextCalls()[0].Content, "<t:1893501240:R>",
+		"strike spoiler must encode Snapshot.GeneratedAt via Discord <t:N:R>")
 }
 
 func TestPublisher_PersistsLastRender(t *testing.T) {
@@ -368,4 +388,76 @@ func TestPublisher_RestartScenario_ContinuesEditingExistingMessages(t *testing.T
 	require.Empty(t, dc.PostCalls(), "no new post — recovery uses existing message_id")
 	require.Len(t, dc.EditCalls(), 1)
 	require.Equal(t, "pre-existing-msg-42", dc.EditCalls()[0].MessageID)
+}
+
+func TestClearHistory_DeletesMessagesAndRows(t *testing.T) {
+	at := time.Date(2026, 4, 27, 12, 0, 0, 0, time.UTC)
+	st := &memStore{posted: map[string]map[string]store.PostedMessage{}, disabled: map[string]time.Time{}}
+	dc := discordclient.NewFakeDiscordClient()
+	p := publisher.New(st, dc)
+
+	require.NoError(t, st.UpsertPosted(context.Background(), store.PostedMessage{
+		BindingID: "b", Identity: "sol", ChannelID: "c1", MessageID: "m1",
+		StateHash: "h1", PostedAt: at, LastSeenAt: at,
+	}))
+	require.NoError(t, st.UpsertPosted(context.Background(), store.PostedMessage{
+		BindingID: "b", Identity: "wolf", ChannelID: "c1", MessageID: "m2",
+		StateHash: "h2", PostedAt: at, LastSeenAt: at,
+	}))
+	require.NoError(t, st.DisableBinding(context.Background(), "b", at))
+
+	res, err := p.ClearHistory(context.Background(), "b")
+	require.NoError(t, err)
+	require.Equal(t, 2, res.DiscordDeleted)
+	require.Equal(t, 0, res.DiscordFailed)
+	require.Equal(t, 2, res.RowsPurged)
+	require.True(t, res.BindingEnabled)
+
+	require.Len(t, dc.DeleteCalls(), 2)
+
+	rows, _ := st.GetPosted(context.Background(), "b")
+	require.Empty(t, rows, "rows purged after successful deletes")
+
+	disabled, _ := st.IsBindingDisabled(context.Background(), "b")
+	require.False(t, disabled, "disabled tombstone cleared")
+}
+
+func TestClearHistory_404TreatedAsAlreadyGone(t *testing.T) {
+	at := time.Date(2026, 4, 27, 12, 0, 0, 0, time.UTC)
+	st := &memStore{posted: map[string]map[string]store.PostedMessage{}, disabled: map[string]time.Time{}}
+	dc := discordclient.NewFakeDiscordClient()
+	dc.DeleteErr = discordclient.ErrMessageNotFound
+	p := publisher.New(st, dc)
+
+	require.NoError(t, st.UpsertPosted(context.Background(), store.PostedMessage{
+		BindingID: "b", Identity: "sol", ChannelID: "c1", MessageID: "m1",
+		StateHash: "h1", PostedAt: at, LastSeenAt: at,
+	}))
+
+	res, err := p.ClearHistory(context.Background(), "b")
+	require.NoError(t, err)
+	require.Equal(t, 0, res.DiscordDeleted)
+	require.Equal(t, 1, res.DiscordMissing)
+	require.Equal(t, 0, res.DiscordFailed)
+	require.Equal(t, 1, res.RowsPurged, "missing-from-discord still purges row")
+}
+
+func TestClearHistory_HardFailurePreservesRows(t *testing.T) {
+	at := time.Date(2026, 4, 27, 12, 0, 0, 0, time.UTC)
+	st := &memStore{posted: map[string]map[string]store.PostedMessage{}, disabled: map[string]time.Time{}}
+	dc := discordclient.NewFakeDiscordClient()
+	dc.DeleteErr = errors.New("network is on fire")
+	p := publisher.New(st, dc)
+
+	require.NoError(t, st.UpsertPosted(context.Background(), store.PostedMessage{
+		BindingID: "b", Identity: "sol", ChannelID: "c1", MessageID: "m1",
+		StateHash: "h1", PostedAt: at, LastSeenAt: at,
+	}))
+
+	res, err := p.ClearHistory(context.Background(), "b")
+	require.NoError(t, err)
+	require.Equal(t, 0, res.RowsPurged, "rows preserved when Discord deletes fail")
+	rows, _ := st.GetPosted(context.Background(), "b")
+	require.Len(t, rows, 1)
+	require.True(t, res.BindingEnabled, "disabled tombstone is still cleared independently")
 }

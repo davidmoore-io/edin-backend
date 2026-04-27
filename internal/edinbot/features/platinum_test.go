@@ -48,9 +48,6 @@ func TestPlatinumBoomAlerts_HappyPath_BuildsItemsFromBuyers(t *testing.T) {
 	embed := snap.Items[0].Render()
 	require.Contains(t, embed.Title, "Sol")
 	bodyText := embed.Description
-	for _, f := range embed.Fields {
-		bodyText += " " + f.Name + " " + f.Value
-	}
 	require.Contains(t, bodyText, "Galileo")
 	require.Contains(t, bodyText, "Daedalus")
 	require.Contains(t, bodyText, "1,500") // demand formatted
@@ -89,16 +86,26 @@ func TestPlatinumBoomAlerts_DedupExcludeOCSAndSortByScore(t *testing.T) {
 	require.Len(t, snap.Items, 1)
 
 	embed := snap.Items[0].Render()
-	require.Len(t, embed.Fields, 2, "two real stations expected after dedup + OCS exclusion")
+	body := embed.Description
+	require.Contains(t, body, "Top Tier")
+	require.Contains(t, body, "Leeuwenhoek")
+	require.NotContains(t, body, "Orbital Construction Site",
+		"OCS must be excluded from the rendered description")
 
-	// Highest score first.
-	require.Contains(t, embed.Fields[0].Value, "Top Tier",
+	// Highest score first: "Top Tier" line must appear before "Leeuwenhoek".
+	require.Less(t, indexOf(body, "Top Tier"), indexOf(body, "Leeuwenhoek"),
 		"highest-score station must appear first")
-	require.Contains(t, embed.Fields[1].Value, "Leeuwenhoek")
+}
 
-	for _, f := range embed.Fields {
-		require.NotContains(t, f.Value, "Orbital Construction Site")
+// indexOf is strings.Index re-exposed inline so tests don't import strings
+// solely for this single assertion.
+func indexOf(haystack, needle string) int {
+	for i := 0; i+len(needle) <= len(haystack); i++ {
+		if haystack[i:i+len(needle)] == needle {
+			return i
+		}
 	}
+	return -1
 }
 
 func TestPlatinumBoomAlerts_RendersLastSeenStamp(t *testing.T) {
@@ -127,14 +134,13 @@ func TestPlatinumBoomAlerts_RendersLastSeenStamp(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, snap.Items, 1, "no pricing filter — both buyers in Sol survive")
 
-	var body string
-	for _, f := range snap.Items[0].Render().Fields {
-		body += " " + f.Value
-	}
+	body := snap.Items[0].Render().Description
 	require.Contains(t, body, "Galileo")
 	require.Contains(t, body, "Bayliss", "buyer without pricing should still appear")
-	require.Contains(t, body, "<t:1777212000:R>", "Galileo MarketUpdatedAt rendered as live timestamp")
-	require.Contains(t, body, "<t:1777208400:R> (BGS)", "Bayliss falls back to BGS timestamp with annotation")
+	// Code-block table uses static "5h" / "12h*" markers (timestamp tokens
+	// don't render inside ```code blocks```). The "*" suffix flags that the
+	// freshness came from BGS, not market.
+	require.Regexp(t, `Bayliss\s+.*\*`, body, "Bayliss row carries BGS-suffix marker")
 }
 
 func TestPlatinumBoomAlerts_StructurallyInvalidResponse_ReturnsError(t *testing.T) {

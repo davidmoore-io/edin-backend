@@ -161,26 +161,101 @@ func (p *Publisher) applyOne(ctx context.Context, b bindings.Binding, item featu
 	return ItemResult{Identity: identity, Action: ActionEdit}
 }
 
-// strike wraps the previously-rendered embed in strikethrough markdown and
-// edits it in place.
+// strike replaces the previously-posted embed with a one-line spoiler-wrapped
+// "COMPLETED" message. Why not strikethrough? Strikethrough leaves a full-
+// height greyed-out embed in the channel, which clutters the live feed.
+// Spoilers collapse to a single black bar; the original render is preserved
+// INSIDE the spoiler so a click-to-reveal still shows what the alert was.
+//
+// On un-strike, applyOne calls EditMessage with a fresh embed; that path uses
+// ChannelMessageEditComplex to explicitly clear Content, so leftover spoiler
+// text doesn't sit alongside the new embed.
 func (p *Publisher) strike(ctx context.Context, b bindings.Binding, prev store.PostedMessage, at time.Time) ItemResult {
-	var embed discordgo.MessageEmbed
-	if err := json.Unmarshal(prev.LastRender, &embed); err != nil {
-		return ItemResult{Identity: prev.Identity, Action: ActionStrike, Err: fmt.Errorf("decode last_render: %w", err)}
+	var prior discordgo.MessageEmbed
+	_ = json.Unmarshal(prev.LastRender, &prior) // best-effort; empty struct is fine for spoiler
+	identity := prev.Identity
+	systemName := identity
+	if prior.Title != "" {
+		systemName = prior.Title
 	}
-	struck := RenderStruckThrough(&embed, at)
+	spoiler := CompletedSpoiler(systemName, &prior, at.Unix())
 
-	if err := p.dc.EditMessage(ctx, b.ChannelID, prev.MessageID, struck); err != nil {
-		return ItemResult{Identity: prev.Identity, Action: ActionStrike, Err: err}
+	if err := p.dc.ReplaceWithText(ctx, b.ChannelID, prev.MessageID, spoiler); err != nil {
+		return ItemResult{Identity: identity, Action: ActionStrike, Err: err}
 	}
 
-	raw, _ := json.Marshal(struck)
+	// Persist the spoiler as the row's LastRender so we still have a record of
+	// what's in Discord. Stored as a JSON envelope (not raw text) so the
+	// existing []byte schema doesn't need changing.
+	raw, _ := json.Marshal(map[string]string{"spoiler": spoiler})
 	row := prev
 	row.LastRender = raw
 	row.LastEditedAt = &at
 	row.StruckAt = &at
 	if err := p.store.UpsertPosted(ctx, row); err != nil {
-		return ItemResult{Identity: prev.Identity, Action: ActionStrike, Err: fmt.Errorf("upsert after strike: %w", err)}
+		return ItemResult{Identity: identity, Action: ActionStrike, Err: fmt.Errorf("upsert after strike: %w", err)}
 	}
-	return ItemResult{Identity: prev.Identity, Action: ActionStrike}
+	return ItemResult{Identity: identity, Action: ActionStrike}
+}
+
+// ClearResult summarises a /admin/clear operation.
+type ClearResult struct {
+	BindingID      string `json:"binding_id"`
+	DiscordDeleted int    `json:"discord_deleted"`     // 200 OK
+	DiscordMissing int    `json:"discord_missing"`     // 404 — already gone, treated as success
+	DiscordFailed  int    `json:"discord_failed"`      // any other error → row preserved
+	RowsPurged     int    `json:"rows_purged"`         // posted_messages rows deleted from DB
+	BindingEnabled bool   `json:"binding_enabled"`     // disabled_bindings entry was cleared
+	Errors         []string `json:"errors,omitempty"`
+}
+
+// ClearHistory wipes Discord messages and DB rows for a binding so the next
+// poll posts fresh. Iterates posted_messages rows, deletes each Discord
+// message (404 treated as already-gone, 403 logged as a hard failure), then
+// purges all rows for the binding ONLY IF every Discord delete succeeded
+// (or was already missing) — partial deletes leave the bot's state matching
+// reality. Always clears any disabled_bindings tombstone at the end so the
+// scheduler will Poll again.
+//
+// Idempotent: calling twice on an empty binding is a no-op.
+func (p *Publisher) ClearHistory(ctx context.Context, bindingID string) (ClearResult, error) {
+	res := ClearResult{BindingID: bindingID}
+
+	rows, err := p.store.GetPosted(ctx, bindingID)
+	if err != nil {
+		return res, fmt.Errorf("list posted: %w", err)
+	}
+
+	for _, row := range rows {
+		err := p.dc.DeleteMessage(ctx, row.ChannelID, row.MessageID)
+		switch {
+		case err == nil:
+			res.DiscordDeleted++
+		case errors.Is(err, discordclient.ErrMessageNotFound):
+			res.DiscordMissing++
+		default:
+			res.DiscordFailed++
+			res.Errors = append(res.Errors,
+				fmt.Sprintf("%s/%s: %v", row.ChannelID, row.MessageID, err))
+		}
+	}
+
+	// Only purge rows if every Discord delete succeeded (or was already 404).
+	// Otherwise the table would lie about state — there'd be live messages
+	// in Discord with no row tracking them, and the next poll would create
+	// duplicates.
+	if res.DiscordFailed == 0 {
+		n, err := p.store.DeletePostedForBinding(ctx, bindingID)
+		if err != nil {
+			return res, fmt.Errorf("delete posted_messages: %w", err)
+		}
+		res.RowsPurged = n
+	}
+
+	if err := p.store.EnableBinding(ctx, bindingID); err != nil {
+		return res, fmt.Errorf("enable binding: %w", err)
+	}
+	res.BindingEnabled = true
+
+	return res, nil
 }

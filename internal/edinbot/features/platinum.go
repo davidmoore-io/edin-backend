@@ -64,6 +64,7 @@ func (p *PlatinumBoomAlerts) Poll(ctx context.Context, c Config) (Snapshot, erro
 	// "Orbital Construction Site: …" stations — they show up in the raw feed
 	// but aren't actionable trade targets (cargo can't be delivered there).
 	bySys := map[string][]controlclient.Buyer{}
+	mapURLBySys := map[string][]string{} // first-non-empty wins; preserve order so dedup is deterministic
 	seen := map[string]bool{}
 	for _, m := range resp.Maps {
 		for _, b := range m.Buyers {
@@ -76,12 +77,13 @@ func (p *PlatinumBoomAlerts) Poll(ctx context.Context, c Config) (Snapshot, erro
 			}
 			seen[key] = true
 			bySys[b.SystemName] = append(bySys[b.SystemName], b)
+			mapURLBySys[b.SystemName] = append(mapURLBySys[b.SystemName], m.Map1)
 		}
 	}
 
 	items := make([]Item, 0, len(bySys))
 	for sys, buyers := range bySys {
-		items = append(items, buildPlatinumItem(sys, buyers))
+		items = append(items, buildPlatinumItem(sys, buyers, firstMapURL(mapURLBySys[sys])))
 	}
 	sort.Slice(items, func(i, j int) bool { return items[i].Identity() < items[j].Identity() })
 
@@ -122,12 +124,13 @@ func (p *PlatinumBoomAlerts) fetchWithRetry(ctx context.Context) (*controlclient
 
 // platinumItem is the Item implementation for one buyer system.
 type platinumItem struct {
-	system string
-	buyers []controlclient.Buyer
-	hash   string
+	system  string
+	buyers  []controlclient.Buyer
+	mapURL  string
+	hash    string
 }
 
-func buildPlatinumItem(system string, buyers []controlclient.Buyer) *platinumItem {
+func buildPlatinumItem(system string, buyers []controlclient.Buyer, mapURL string) *platinumItem {
 	// Highest score first; alphabetical station name as a stable tiebreaker.
 	sort.Slice(buyers, func(i, j int) bool {
 		if buyers[i].Score != buyers[j].Score {
@@ -137,7 +140,7 @@ func buildPlatinumItem(system string, buyers []controlclient.Buyer) *platinumIte
 	})
 
 	h := sha256.New()
-	fmt.Fprintf(h, "system=%s\n", system)
+	fmt.Fprintf(h, "system=%s|map=%s\n", system, mapURL)
 	for _, b := range buyers {
 		var kp float64
 		if b.KaineProgress != nil {
@@ -150,47 +153,76 @@ func buildPlatinumItem(system string, buyers []controlclient.Buyer) *platinumIte
 	return &platinumItem{
 		system: system,
 		buyers: buyers,
+		mapURL: mapURL,
 		hash:   hex.EncodeToString(h.Sum(nil)),
 	}
 }
 
 // BuildPlatinumItemForTest is exposed so tests can construct items directly.
 func BuildPlatinumItemForTest(system string, buyers []controlclient.Buyer) Item {
-	return buildPlatinumItem(system, buyers)
+	return buildPlatinumItem(system, buyers, "")
 }
 
 func (p *platinumItem) Identity() string  { return "system:" + p.system }
 func (p *platinumItem) StateHash() string { return p.hash }
 
 func (p *platinumItem) Render() *discordgo.MessageEmbed {
-	embed := &discordgo.MessageEmbed{
-		Title:       p.system,
-		Description: fmt.Sprintf("**Platinum buyers** — %d station(s) in Boom", len(p.buyers)),
-		URL:         "https://www.edsm.net/en/system?systemName=" + strings.ReplaceAll(p.system, " ", "+"),
-		Color:       0x9CA3AF, // slate
+	tier := topTier(p.buyers)
+
+	// System-level header. Faction state and Kaine % are properties of the
+	// system, not per-buyer, so they live in the description once. Kaine %
+	// is taken from the top buyer (all buyers in a system share the same
+	// progress value the API attaches per-buyer).
+	state := ""
+	var kainePct float64
+	if len(p.buyers) > 0 {
+		state = p.buyers[0].FactionState
+		if kp := p.buyers[0].KaineProgress; kp != nil {
+			kainePct = *kp * 100
+		}
 	}
-	for _, b := range p.buyers {
-		val := strings.Builder{}
-		fmt.Fprintf(&val, "**%s** — %s · score %.0f", b.StationName, b.FactionState, b.Score)
-		if seen := lastSeenStamp(b); seen != "" {
-			fmt.Fprintf(&val, " · last seen %s", seen)
-		}
-		if b.PlatinumDemand > 0 {
-			fmt.Fprintf(&val, "\n• Pt: %s t @ %sk", commaInt(b.PlatinumDemand), kInt(b.PlatinumPrice))
-		}
-		if b.OsmiumDemand > 0 {
-			fmt.Fprintf(&val, "\n• Os: %s t @ %sk", commaInt(b.OsmiumDemand), kInt(b.OsmiumPrice))
-		}
-		var kp float64
-		if b.KaineProgress != nil {
-			kp = *b.KaineProgress * 100 // stored as 0..1; render as percent
-		}
-		embed.Fields = append(embed.Fields, &discordgo.MessageEmbedField{
-			Name:  fmt.Sprintf("Kaine %.1f%%", kp),
-			Value: val.String(),
-		})
+
+	var desc strings.Builder
+	if state != "" {
+		fmt.Fprintf(&desc, "%s · ", state)
 	}
-	return embed
+	fmt.Fprintf(&desc, "Kaine %.1f%% · %d station(s)", kainePct, len(p.buyers))
+	desc.WriteString("\n")
+	if p.mapURL != "" {
+		fmt.Fprintf(&desc, "-# [Map](%s)\n", p.mapURL)
+	}
+
+	rows := make([]renderRow, len(p.buyers))
+	for i, b := range p.buyers {
+		var pt, os string
+		if b.PlatinumDemand > 0 && b.PlatinumPrice > 0 {
+			pt = fmt.Sprintf("Pt %st @%sk", commaInt(b.PlatinumDemand), kInt(b.PlatinumPrice))
+		} else if b.PlatinumDemand > 0 {
+			pt = fmt.Sprintf("Pt %st", commaInt(b.PlatinumDemand))
+		}
+		if b.OsmiumDemand > 0 && b.OsmiumPrice > 0 {
+			os = fmt.Sprintf("Os %st @%sk", commaInt(b.OsmiumDemand), kInt(b.OsmiumPrice))
+		} else if b.OsmiumDemand > 0 {
+			os = fmt.Sprintf("Os %st", commaInt(b.OsmiumDemand))
+		}
+		rows[i] = renderRow{
+			Station: b.StationName,
+			Cells:   []string{pt, os},
+			Seen:    seenShort(b),
+		}
+	}
+	table, truncated := renderTable(rows, 5)
+	desc.WriteString(table)
+	if truncated > 0 {
+		fmt.Fprintf(&desc, "\n+ %d more — open in [Kaine](%s)", truncated, edsmURL(p.system))
+	}
+
+	return &discordgo.MessageEmbed{
+		Title:       tierEmoji(tier) + " " + p.system,
+		Description: desc.String(),
+		URL:         edsmURL(p.system),
+		Color:       tierColor(tier),
+	}
 }
 
 // lastSeenStamp picks the most-relevant freshness timestamp for a buyer and
@@ -212,6 +244,40 @@ func unixOrZero(t *time.Time) int64 {
 		return 0
 	}
 	return t.Unix()
+}
+
+// seenShort returns a compact human-readable freshness label like "5m", "2h",
+// "3d", "2w" computed against the snapshot's time. Code blocks (which we use
+// for the buyer table for alignment) don't render Discord's <t:N:R> token,
+// so this is the static-text fallback. Outside the code block we still use
+// <t:N:R> for live-updating timestamps.
+//
+// The snapshot's GeneratedAt would be a more correct anchor than time.Now()
+// — TODO if drift becomes visible. For a 15-min poll cadence the difference
+// is sub-perceptible.
+func seenShort(b controlclient.Buyer) string {
+	t := b.MarketUpdatedAt
+	suffix := ""
+	if t == nil || t.IsZero() {
+		t = b.BGSUpdatedAt
+		suffix = "*" // BGS-derived freshness, marked so operators know it isn't market data
+	}
+	if t == nil || t.IsZero() {
+		return ""
+	}
+	d := time.Since(*t)
+	switch {
+	case d < time.Minute:
+		return "now" + suffix
+	case d < time.Hour:
+		return fmt.Sprintf("%dm%s", int(d.Minutes()), suffix)
+	case d < 24*time.Hour:
+		return fmt.Sprintf("%dh%s", int(d.Hours()), suffix)
+	case d < 7*24*time.Hour:
+		return fmt.Sprintf("%dd%s", int(d.Hours()/24), suffix)
+	default:
+		return fmt.Sprintf("%dw%s", int(d.Hours()/(24*7)), suffix)
+	}
 }
 
 func lastSeenStamp(b controlclient.Buyer) string {

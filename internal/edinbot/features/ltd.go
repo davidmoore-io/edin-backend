@@ -57,6 +57,7 @@ func (l *LTDAlerts) Poll(ctx context.Context, c Config) (Snapshot, error) {
 	// "Orbital Construction Site: …" stations — they show up in the raw feed
 	// but aren't actionable trade targets (cargo can't be delivered there).
 	bySys := map[string][]controlclient.Buyer{}
+	mapURLBySys := map[string][]string{}
 	seen := map[string]bool{}
 	for _, m := range resp.Maps {
 		for _, b := range m.Buyers {
@@ -69,12 +70,13 @@ func (l *LTDAlerts) Poll(ctx context.Context, c Config) (Snapshot, error) {
 			}
 			seen[key] = true
 			bySys[b.SystemName] = append(bySys[b.SystemName], b)
+			mapURLBySys[b.SystemName] = append(mapURLBySys[b.SystemName], m.Map1)
 		}
 	}
 
 	items := make([]Item, 0, len(bySys))
 	for sys, buyers := range bySys {
-		items = append(items, buildLTDItem(sys, buyers))
+		items = append(items, buildLTDItem(sys, buyers, firstMapURL(mapURLBySys[sys])))
 	}
 	sort.Slice(items, func(i, j int) bool { return items[i].Identity() < items[j].Identity() })
 
@@ -116,10 +118,11 @@ func (l *LTDAlerts) fetchWithRetry(ctx context.Context) (*controlclient.LTDBuyer
 type ltdItem struct {
 	system string
 	buyers []controlclient.Buyer
+	mapURL string
 	hash   string
 }
 
-func buildLTDItem(system string, buyers []controlclient.Buyer) *ltdItem {
+func buildLTDItem(system string, buyers []controlclient.Buyer, mapURL string) *ltdItem {
 	// Highest score first; alphabetical station name as a stable tiebreaker.
 	sort.Slice(buyers, func(i, j int) bool {
 		if buyers[i].Score != buyers[j].Score {
@@ -129,7 +132,7 @@ func buildLTDItem(system string, buyers []controlclient.Buyer) *ltdItem {
 	})
 
 	h := sha256.New()
-	fmt.Fprintf(h, "system=%s\n", system)
+	fmt.Fprintf(h, "system=%s|map=%s\n", system, mapURL)
 	for _, b := range buyers {
 		var kp float64
 		if b.KaineProgress != nil {
@@ -142,42 +145,65 @@ func buildLTDItem(system string, buyers []controlclient.Buyer) *ltdItem {
 	return &ltdItem{
 		system: system,
 		buyers: buyers,
+		mapURL: mapURL,
 		hash:   hex.EncodeToString(h.Sum(nil)),
 	}
 }
 
 // BuildLTDItemForTest is exposed so tests can construct items directly.
 func BuildLTDItemForTest(system string, buyers []controlclient.Buyer) Item {
-	return buildLTDItem(system, buyers)
+	return buildLTDItem(system, buyers, "")
 }
 
 func (l *ltdItem) Identity() string  { return "system:" + l.system }
 func (l *ltdItem) StateHash() string { return l.hash }
 
 func (l *ltdItem) Render() *discordgo.MessageEmbed {
-	embed := &discordgo.MessageEmbed{
-		Title:       l.system,
-		Description: fmt.Sprintf("**LTD buyers** — %d station(s) in Expansion", len(l.buyers)),
-		URL:         "https://www.edsm.net/en/system?systemName=" + strings.ReplaceAll(l.system, " ", "+"),
-		Color:       0x06B6D4, // cyan (LTD theme color from frontend)
+	tier := topTier(l.buyers)
+
+	state := ""
+	var kainePct float64
+	if len(l.buyers) > 0 {
+		state = l.buyers[0].FactionState
+		if kp := l.buyers[0].KaineProgress; kp != nil {
+			kainePct = *kp * 100
+		}
 	}
-	for _, b := range l.buyers {
-		val := strings.Builder{}
-		fmt.Fprintf(&val, "**%s** — %s · score %.0f", b.StationName, b.FactionState, b.Score)
-		if seen := lastSeenStamp(b); seen != "" {
-			fmt.Fprintf(&val, " · last seen %s", seen)
-		}
-		if b.LTDDemand > 0 {
-			fmt.Fprintf(&val, "\n• LTD: %s t @ %sk", commaInt(b.LTDDemand), kInt(b.LTDPrice))
-		}
-		var kp float64
-		if b.KaineProgress != nil {
-			kp = *b.KaineProgress * 100
-		}
-		embed.Fields = append(embed.Fields, &discordgo.MessageEmbedField{
-			Name:  fmt.Sprintf("Kaine %.1f%%", kp),
-			Value: val.String(),
-		})
+
+	var desc strings.Builder
+	if state != "" {
+		fmt.Fprintf(&desc, "%s · ", state)
 	}
-	return embed
+	fmt.Fprintf(&desc, "Kaine %.1f%% · %d station(s)", kainePct, len(l.buyers))
+	desc.WriteString("\n")
+	if l.mapURL != "" {
+		fmt.Fprintf(&desc, "-# [Map](%s)\n", l.mapURL)
+	}
+
+	rows := make([]renderRow, len(l.buyers))
+	for i, b := range l.buyers {
+		var ltd string
+		if b.LTDDemand > 0 && b.LTDPrice > 0 {
+			ltd = fmt.Sprintf("LTD %st @%sk", commaInt(b.LTDDemand), kInt(b.LTDPrice))
+		} else if b.LTDDemand > 0 {
+			ltd = fmt.Sprintf("LTD %st", commaInt(b.LTDDemand))
+		}
+		rows[i] = renderRow{
+			Station: b.StationName,
+			Cells:   []string{ltd},
+			Seen:    seenShort(b),
+		}
+	}
+	table, truncated := renderTable(rows, 5)
+	desc.WriteString(table)
+	if truncated > 0 {
+		fmt.Fprintf(&desc, "\n+ %d more — open in [Kaine](%s)", truncated, edsmURL(l.system))
+	}
+
+	return &discordgo.MessageEmbed{
+		Title:       tierEmoji(tier) + " " + l.system,
+		Description: desc.String(),
+		URL:         edsmURL(l.system),
+		Color:       tierColor(tier),
+	}
 }

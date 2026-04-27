@@ -77,6 +77,39 @@ func RenderUnstruckThrough(in *discordgo.MessageEmbed, at time.Time) *discordgo.
 	return &out
 }
 
+// CompletedSpoiler builds the one-line collapsed message used when an alert
+// resolves. Replaces strikethrough: instead of leaving a greyed-out embed in
+// the channel, the bot edits the message to drop the embed entirely and
+// post this spoiler-wrapped text. Result: completed entries collapse to a
+// black click-to-reveal bar so the live channel decongests itself.
+//
+// originalRender is the embed at completion time; its content is preserved
+// INSIDE the spoiler so a click-to-reveal still shows the historical record.
+func CompletedSpoiler(systemName string, originalRender *discordgo.MessageEmbed, endedAtUnix int64) string {
+	var preserved strings.Builder
+	if originalRender != nil {
+		if originalRender.Title != "" {
+			preserved.WriteString(originalRender.Title)
+			preserved.WriteByte('\n')
+		}
+		if originalRender.Description != "" {
+			preserved.WriteString(originalRender.Description)
+			preserved.WriteByte('\n')
+		}
+		for _, f := range originalRender.Fields {
+			preserved.WriteString(f.Name)
+			preserved.WriteString(": ")
+			preserved.WriteString(f.Value)
+			preserved.WriteByte('\n')
+		}
+	}
+	header := fmt.Sprintf("🏁 COMPLETED · %s · ended <t:%d:R>", systemName, endedAtUnix)
+	if preserved.Len() == 0 {
+		return "||" + header + "||"
+	}
+	return "||" + header + "\n\n" + strings.TrimRight(preserved.String(), "\n") + "||"
+}
+
 func wrapStrike(s string) string {
 	if s == "" {
 		return ""

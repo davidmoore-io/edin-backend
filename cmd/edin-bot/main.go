@@ -103,10 +103,12 @@ func run() error {
 
 	// 8. http server (separate goroutine)
 	srv := httpserver.New(httpserver.Config{
-		Addr:    ":8080",
-		Health:  newHealthOracle(st, bs),
-		Trigger: sch,
-		Version: version,
+		Addr:       ":8080",
+		Health:     newHealthOracle(st, bs),
+		Trigger:    sch,
+		Cleaner:    pub,
+		AdminToken: cfg.AdminToken,
+		Version:    version,
 	})
 	go func() {
 		if err := srv.Start(ctx); err != nil {
@@ -135,6 +137,7 @@ type envConfig struct {
 	ControlAPIURL     string
 	PostgresURL       string
 	BindingsPath      string
+	AdminToken        string
 }
 
 func loadEnv() (envConfig, error) {
@@ -147,6 +150,7 @@ func loadEnv() (envConfig, error) {
 		ControlAPIURL:     os.Getenv("CONTROL_API_URL"),
 		PostgresURL:       os.Getenv("POSTGRES_URL"),
 		BindingsPath:      os.Getenv("BINDINGS_PATH"),
+		AdminToken:        os.Getenv("ADMIN_TOKEN"),
 	}
 	if c.BindingsPath == "" {
 		c.BindingsPath = "/etc/edin-bot/bindings.yml"

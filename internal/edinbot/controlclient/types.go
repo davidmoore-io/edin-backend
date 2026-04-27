@@ -49,6 +49,13 @@ type MiningMap struct {
 	LivePowerState string   `json:"live_power_state,omitempty"`
 	SearchRadiusLy int      `json:"search_radius_ly,omitempty"`
 	Buyers         []Buyer  `json:"buyers"`
+
+	// Map1 is the operator-curated URL for this bubble's primary mining map
+	// page (e.g. ring screenshots, in-game tooling). Surfaced in the bot's
+	// Discord embed as the "Map" link. The kaine API response also exposes
+	// Map2/Map3 + titles + commodity tags; we only consume Map1 today —
+	// "first available link wins" keeps the bot embed clean.
+	Map1 string `json:"map_1,omitempty"`
 }
 
 // PlasmiumBuyersResponse mirrors kaine.PlasmiumBuyersResponse.

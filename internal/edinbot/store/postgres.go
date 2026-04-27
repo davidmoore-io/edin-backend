@@ -144,6 +144,25 @@ func (s *PostgresStore) DisableBinding(ctx context.Context, bindingID string, at
 	return tx.Commit(ctx)
 }
 
+func (s *PostgresStore) DeletePostedForBinding(ctx context.Context, bindingID string) (int, error) {
+	tag, err := s.pool.Exec(ctx,
+		`DELETE FROM discord.posted_messages WHERE binding_id = $1`,
+		bindingID)
+	if err != nil {
+		return 0, fmt.Errorf("delete posted_messages for %s: %w", bindingID, err)
+	}
+	return int(tag.RowsAffected()), nil
+}
+
+func (s *PostgresStore) EnableBinding(ctx context.Context, bindingID string) error {
+	if _, err := s.pool.Exec(ctx,
+		`DELETE FROM discord.disabled_bindings WHERE binding_id = $1`,
+		bindingID); err != nil {
+		return fmt.Errorf("enable binding %s: %w", bindingID, err)
+	}
+	return nil
+}
+
 func (s *PostgresStore) IsBindingDisabled(ctx context.Context, bindingID string) (bool, error) {
 	var n int
 	err := s.pool.QueryRow(ctx,

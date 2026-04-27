@@ -69,6 +69,10 @@ func (m *memStore) IsBindingDisabled(ctx context.Context, bid string) (bool, err
 	_, ok := m.disabled[bid]
 	return ok, nil
 }
+func (m *memStore) DeletePostedForBinding(ctx context.Context, bid string) (int, error) {
+	return 0, nil
+}
+func (m *memStore) EnableBinding(ctx context.Context, bid string) error { return nil }
 func (m *memStore) RecordPollCycle(ctx context.Context, c store.PollCycle) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()

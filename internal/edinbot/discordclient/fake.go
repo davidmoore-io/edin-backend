@@ -13,13 +13,23 @@ import (
 // publisher_test, scheduler_test, and integration_test. Tests can inject errors
 // via PostErr / EditErr.
 type FakeDiscordClient struct {
-	PostErr error
-	EditErr error
+	PostErr        error
+	EditErr        error
+	ReplaceTextErr error
+	DeleteErr      error
 
-	mu        sync.Mutex
-	postCalls []FakePostCall
-	editCalls []FakeEditCall
-	nextID    atomic.Int64
+	mu               sync.Mutex
+	postCalls        []FakePostCall
+	editCalls        []FakeEditCall
+	replaceTextCalls []FakeReplaceTextCall
+	deleteCalls      []FakeDeleteCall
+	nextID           atomic.Int64
+}
+
+type FakeReplaceTextCall struct {
+	ChannelID string
+	MessageID string
+	Content   string
 }
 
 type FakePostCall struct {
@@ -31,6 +41,11 @@ type FakeEditCall struct {
 	ChannelID string
 	MessageID string
 	Embed     *discordgo.MessageEmbed
+}
+
+type FakeDeleteCall struct {
+	ChannelID string
+	MessageID string
 }
 
 func NewFakeDiscordClient() *FakeDiscordClient {
@@ -66,6 +81,42 @@ func (f *FakeDiscordClient) PostCalls() []FakePostCall {
 	return out
 }
 
+func (f *FakeDiscordClient) ReplaceWithText(ctx context.Context, channelID, messageID, content string) error {
+	if f.ReplaceTextErr != nil {
+		return f.ReplaceTextErr
+	}
+	f.mu.Lock()
+	f.replaceTextCalls = append(f.replaceTextCalls, FakeReplaceTextCall{ChannelID: channelID, MessageID: messageID, Content: content})
+	f.mu.Unlock()
+	return nil
+}
+
+func (f *FakeDiscordClient) ReplaceTextCalls() []FakeReplaceTextCall {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([]FakeReplaceTextCall, len(f.replaceTextCalls))
+	copy(out, f.replaceTextCalls)
+	return out
+}
+
+func (f *FakeDiscordClient) DeleteMessage(ctx context.Context, channelID, messageID string) error {
+	if f.DeleteErr != nil {
+		return f.DeleteErr
+	}
+	f.mu.Lock()
+	f.deleteCalls = append(f.deleteCalls, FakeDeleteCall{ChannelID: channelID, MessageID: messageID})
+	f.mu.Unlock()
+	return nil
+}
+
+func (f *FakeDiscordClient) DeleteCalls() []FakeDeleteCall {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([]FakeDeleteCall, len(f.deleteCalls))
+	copy(out, f.deleteCalls)
+	return out
+}
+
 func (f *FakeDiscordClient) EditCalls() []FakeEditCall {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -81,6 +132,10 @@ func (f *FakeDiscordClient) Reset() {
 	defer f.mu.Unlock()
 	f.postCalls = nil
 	f.editCalls = nil
+	f.replaceTextCalls = nil
+	f.deleteCalls = nil
 	f.PostErr = nil
 	f.EditErr = nil
+	f.ReplaceTextErr = nil
+	f.DeleteErr = nil
 }

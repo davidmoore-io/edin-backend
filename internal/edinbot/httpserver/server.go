@@ -5,11 +5,14 @@ package httpserver
 
 import (
 	"context"
+	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
 	"time"
+
+	"github.com/edin-space/edin-backend/internal/edinbot/publisher"
 )
 
 // HealthOracle is satisfied by the scheduler. Allows /healthz to make a
@@ -27,11 +30,21 @@ type PollTrigger interface {
 	BindingIDs() []string
 }
 
+// HistoryCleaner is satisfied by *publisher.Publisher. Powers the /admin/clear
+// endpoint, which deletes every Discord message + posted_messages row for a
+// binding so the next poll re-posts from scratch. Returns a typed result the
+// handler renders as JSON.
+type HistoryCleaner interface {
+	ClearHistory(ctx context.Context, bindingID string) (publisher.ClearResult, error)
+}
+
 type Config struct {
-	Addr    string
-	Health  HealthOracle
-	Trigger PollTrigger
-	Version string
+	Addr       string
+	Health     HealthOracle
+	Trigger    PollTrigger
+	Cleaner    HistoryCleaner
+	AdminToken string // shared secret required on /admin/* endpoints; if empty, those endpoints fail-closed (503)
+	Version    string
 }
 
 type Server struct {
@@ -105,6 +118,53 @@ func (s *Server) Handler() http.Handler {
 		default:
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		}
+	})
+
+	// /admin/clear/{binding_id}?confirm=true — destructive: deletes every
+	// Discord message the bot posted for this binding and purges the
+	// corresponding posted_messages rows + any disabled_bindings tombstone.
+	// Requires both ?confirm=true (anti-fat-finger) and a matching
+	// X-Admin-Token header (anti-other-container-on-the-net). Network-internal
+	// only — :8080 is never published outside edin-app-net.
+	mux.HandleFunc("/admin/clear/", func(w http.ResponseWriter, r *http.Request) {
+		if s.cfg.Cleaner == nil {
+			http.Error(w, "cleaner not configured", http.StatusServiceUnavailable)
+			return
+		}
+		if s.cfg.AdminToken == "" {
+			// Fail closed: empty token is never the "any-token-works" mode.
+			http.Error(w, "admin endpoints disabled (ADMIN_TOKEN unset)", http.StatusServiceUnavailable)
+			return
+		}
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		// Constant-time compare to make timing attacks against the secret a
+		// non-issue (paranoid for an internal endpoint, free to do).
+		got := r.Header.Get("X-Admin-Token")
+		if subtle.ConstantTimeCompare([]byte(got), []byte(s.cfg.AdminToken)) != 1 {
+			http.Error(w, "invalid admin token", http.StatusUnauthorized)
+			return
+		}
+		if r.URL.Query().Get("confirm") != "true" {
+			http.Error(w, "missing ?confirm=true (destructive operation)", http.StatusBadRequest)
+			return
+		}
+		bindingID := r.URL.Path[len("/admin/clear/"):]
+		if bindingID == "" {
+			http.Error(w, "binding id required: POST /admin/clear/{binding_id}?confirm=true", http.StatusBadRequest)
+			return
+		}
+
+		res, err := s.cfg.Cleaner.ClearHistory(r.Context(), bindingID)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(res)
 	})
 
 	mux.HandleFunc("/metrics", func(w http.ResponseWriter, r *http.Request) {
