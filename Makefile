@@ -1,7 +1,8 @@
-.PHONY: build test lint build-api build-exporter
+.PHONY: build test test-integration lint build-api build-exporter
 .PHONY: build-edin-bot build-docker-inspect-sidecar
 .PHONY: test-edin-bot test-edin-bot-integration test-edin-bot-all test-edin-bot-cover lint-edin-bot
 .PHONY: quick-dev dev-setup dev-keys dev-redis dev-ngrok dev-run dev-stop
+.PHONY: memgraph-local memgraph-local-down memgraph-local-seed memgraph-local-logs
 
 # =============================================================================
 # BUILD
@@ -48,8 +49,46 @@ test-edin-bot-e2e:
 test:
 	go test ./...
 
+# Integration tests across the whole backend (testcontainers-backed).
+# Currently exercises Memgraph via internal/testutil/memgraph.go.
+#
+# `integration_search` is a separate, narrower tag used by the kaine search
+# tests so they aren't dragged into the unrelated breakage in
+# kaine_integration_test.go (anthropic.NewClient / memgraph.Close signature).
+# Once that file is repaired, fold integration_search back into integration.
+test-integration:
+	go test -tags 'integration integration_search' ./...
+
 lint:
 	golangci-lint run ./...
+
+# =============================================================================
+# LOCAL MEMGRAPH (manual end-to-end loop only — tests use testcontainers)
+# =============================================================================
+
+memgraph-local:
+	@bash docker/memgraph/render-init.sh
+	@docker compose -f docker-compose.local.yml up -d memgraph
+	@echo "  Waiting for Memgraph bolt to accept connections..."
+	@for i in $$(seq 1 30); do \
+		if docker exec edin-dev-memgraph bash -c 'echo "RETURN 1;" | mgconsole --use-ssl=false' >/dev/null 2>&1; then break; fi; \
+		sleep 1; \
+	done
+	@echo "  Applying init schema (indexes, constraints, seed Powers)..."
+	@docker cp docker/memgraph/init.cypher edin-dev-memgraph:/tmp/init.cypher >/dev/null
+	@docker exec edin-dev-memgraph bash -c 'mgconsole --use-ssl=false --import-mode=serial < /tmp/init.cypher' >/dev/null
+	@echo "  Memgraph: bolt://127.0.0.1:7688 (no auth — host port 7688 to avoid 7687 clash)"
+
+memgraph-local-down:
+	@docker compose -f docker-compose.local.yml down
+
+memgraph-local-logs:
+	@docker compose -f docker-compose.local.yml logs -f memgraph
+
+# Loads the dev-subset (extracted from production by edin-data/scripts/dev/).
+# Run `edin-data/scripts/dev/extract-dev-subset.sh` first if the fixture is missing.
+memgraph-local-seed:
+	@bash ../edin-data/scripts/dev/load-dev-subset.sh
 
 # =============================================================================
 # LOCAL DEV
