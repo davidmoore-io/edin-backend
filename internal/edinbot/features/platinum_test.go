@@ -57,6 +57,50 @@ func TestPlatinumBoomAlerts_HappyPath_BuildsItemsFromBuyers(t *testing.T) {
 	require.Contains(t, bodyText, "280k")  // price formatted
 }
 
+func TestPlatinumBoomAlerts_DedupExcludeOCSAndSortByScore(t *testing.T) {
+	// HIP 61332 sits inside several mining bubbles → same buyer arrives via
+	// multiple maps. Plus an "Orbital Construction Site" entry that must be
+	// dropped (cargo can't dock there). Two real stations remain, and they
+	// should be ordered by descending score.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"maps": [
+				{"system_name":"Bubble1","buyers":[
+					{"system_name":"HIP 61332","station_name":"Leeuwenhoek","faction_state":"Boom","platinum_demand":554,"platinum_price":193000,"score":2}
+				]},
+				{"system_name":"Bubble2","buyers":[
+					{"system_name":"HIP 61332","station_name":"Leeuwenhoek","faction_state":"Boom","platinum_demand":554,"platinum_price":193000,"score":2},
+					{"system_name":"HIP 61332","station_name":"Orbital Construction Site: Galeen City","faction_state":"Boom","platinum_demand":0,"score":40}
+				]},
+				{"system_name":"Bubble3","buyers":[
+					{"system_name":"HIP 61332","station_name":"Top Tier","faction_state":"Boom","platinum_demand":1000,"platinum_price":250000,"score":100}
+				]}
+			],
+			"generated_at": "2026-04-26T14:23:01Z","total_maps":3,"total_buyers":4
+		}`))
+	}))
+	defer srv.Close()
+
+	feat := features.NewPlatinumBoomAlerts(controlclient.New(srv.URL, &fakeTokenSource{}))
+	feat.SetRetryIntervals([]time.Duration{10 * time.Millisecond})
+	snap, err := feat.Poll(context.Background(), feat.DefaultConfig())
+	require.NoError(t, err)
+	require.Len(t, snap.Items, 1)
+
+	embed := snap.Items[0].Render()
+	require.Len(t, embed.Fields, 2, "two real stations expected after dedup + OCS exclusion")
+
+	// Highest score first.
+	require.Contains(t, embed.Fields[0].Value, "Top Tier",
+		"highest-score station must appear first")
+	require.Contains(t, embed.Fields[1].Value, "Leeuwenhoek")
+
+	for _, f := range embed.Fields {
+		require.NotContains(t, f.Value, "Orbital Construction Site")
+	}
+}
+
 func TestPlatinumBoomAlerts_RendersLastSeenStamp(t *testing.T) {
 	// Buyer with MarketUpdatedAt → renders Discord <t:N:R> token. The pricing
 	// filter that briefly existed has been removed; we surface every buyer the

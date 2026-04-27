@@ -51,9 +51,23 @@ func (l *LTDAlerts) Poll(ctx context.Context, c Config) (Snapshot, error) {
 		now = time.Now().UTC()
 	}
 
+	// A station can appear in several MiningMap entries because mining bubbles
+	// from different Fortified/Stronghold systems overlap. Dedup by
+	// (system, station) so we don't render the same line N times. Also drop
+	// "Orbital Construction Site: …" stations — they show up in the raw feed
+	// but aren't actionable trade targets (cargo can't be delivered there).
 	bySys := map[string][]controlclient.Buyer{}
+	seen := map[string]bool{}
 	for _, m := range resp.Maps {
 		for _, b := range m.Buyers {
+			if isExcludedStation(b.StationName) {
+				continue
+			}
+			key := b.SystemName + "\x00" + b.StationName
+			if seen[key] {
+				continue
+			}
+			seen[key] = true
 			bySys[b.SystemName] = append(bySys[b.SystemName], b)
 		}
 	}
@@ -106,7 +120,11 @@ type ltdItem struct {
 }
 
 func buildLTDItem(system string, buyers []controlclient.Buyer) *ltdItem {
+	// Highest score first; alphabetical station name as a stable tiebreaker.
 	sort.Slice(buyers, func(i, j int) bool {
+		if buyers[i].Score != buyers[j].Score {
+			return buyers[i].Score > buyers[j].Score
+		}
 		return buyers[i].StationName < buyers[j].StationName
 	})
 

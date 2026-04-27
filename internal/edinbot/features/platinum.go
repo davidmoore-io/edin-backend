@@ -58,9 +58,23 @@ func (p *PlatinumBoomAlerts) Poll(ctx context.Context, c Config) (Snapshot, erro
 	}
 
 	// Group buyers by buyer-SYSTEM (per spec decision 2).
+	// A station can appear in several MiningMap entries because mining bubbles
+	// from different Fortified/Stronghold systems overlap. Dedup by
+	// (system, station) so we don't render the same line N times. Also drop
+	// "Orbital Construction Site: …" stations — they show up in the raw feed
+	// but aren't actionable trade targets (cargo can't be delivered there).
 	bySys := map[string][]controlclient.Buyer{}
+	seen := map[string]bool{}
 	for _, m := range resp.Maps {
 		for _, b := range m.Buyers {
+			if isExcludedStation(b.StationName) {
+				continue
+			}
+			key := b.SystemName + "\x00" + b.StationName
+			if seen[key] {
+				continue
+			}
+			seen[key] = true
 			bySys[b.SystemName] = append(bySys[b.SystemName], b)
 		}
 	}
@@ -114,7 +128,11 @@ type platinumItem struct {
 }
 
 func buildPlatinumItem(system string, buyers []controlclient.Buyer) *platinumItem {
+	// Highest score first; alphabetical station name as a stable tiebreaker.
 	sort.Slice(buyers, func(i, j int) bool {
+		if buyers[i].Score != buyers[j].Score {
+			return buyers[i].Score > buyers[j].Score
+		}
 		return buyers[i].StationName < buyers[j].StationName
 	})
 
@@ -181,6 +199,14 @@ func (p *platinumItem) Render() *discordgo.MessageEmbed {
 // pricing — operators want to know how stale the price feed is. If market
 // data is missing, BGSUpdatedAt is shown as a fallback (still useful: tells
 // you when faction state was last refreshed). Returns "" when neither is set.
+// isExcludedStation returns true for station-name patterns that the bot
+// should never surface as alerts. Orbital Construction Sites in particular
+// appear in the kaine API response but cargo can't be delivered to them —
+// listing them is purely noise.
+func isExcludedStation(name string) bool {
+	return strings.HasPrefix(name, "Orbital Construction Site")
+}
+
 func unixOrZero(t *time.Time) int64 {
 	if t == nil || t.IsZero() {
 		return 0
