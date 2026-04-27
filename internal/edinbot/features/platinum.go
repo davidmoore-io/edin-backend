@@ -71,6 +71,11 @@ func (p *PlatinumBoomAlerts) Poll(ctx context.Context, c Config) (Snapshot, erro
 			if isExcludedStation(b.StationName) {
 				continue
 			}
+			if !isFresh(b, now) {
+				// Stale or never-seen market data — drop. Operators don't
+				// want to chase alerts whose price feed has lapsed > 24h.
+				continue
+			}
 			key := b.SystemName + "\x00" + b.StationName
 			if seen[key] {
 				continue
@@ -169,10 +174,6 @@ func (p *platinumItem) StateHash() string { return p.hash }
 func (p *platinumItem) Render() *discordgo.MessageEmbed {
 	tier := topTier(p.buyers)
 
-	// System-level header. Faction state and Kaine % are properties of the
-	// system, not per-buyer, so they live in the description once. Kaine %
-	// is taken from the top buyer (all buyers in a system share the same
-	// progress value the API attaches per-buyer).
 	state := ""
 	var kainePct float64
 	if len(p.buyers) > 0 {
@@ -182,45 +183,46 @@ func (p *platinumItem) Render() *discordgo.MessageEmbed {
 		}
 	}
 
+	// Description-line-1 carries the title row: 🟢 SystemName · [Map].
+	// Embed.title is left empty because Discord titles don't render masked
+	// links — we want the [Map] to be clickable inline. ### makes the line
+	// render at heading size on clients that support embed-headings.
 	var desc strings.Builder
+	fmt.Fprintf(&desc, "### %s [%s](%s)", tierEmoji(tier), p.system, edsmURL(p.system))
+	if p.mapURL != "" {
+		fmt.Fprintf(&desc, " · [Map](%s)", p.mapURL)
+	}
+	desc.WriteString("\n")
 	if state != "" {
 		fmt.Fprintf(&desc, "%s · ", state)
 	}
-	fmt.Fprintf(&desc, "Kaine %.1f%% · %d station(s)", kainePct, len(p.buyers))
-	desc.WriteString("\n")
-	if p.mapURL != "" {
-		fmt.Fprintf(&desc, "-# [Map](%s)\n", p.mapURL)
-	}
+	fmt.Fprintf(&desc, "Kaine %.1f%% · %d station(s)\n", kainePct, len(p.buyers))
 
-	rows := make([]renderRow, len(p.buyers))
+	blocks := make([]stationBlock, len(p.buyers))
 	for i, b := range p.buyers {
-		var pt, os string
-		if b.PlatinumDemand > 0 && b.PlatinumPrice > 0 {
-			pt = fmt.Sprintf("Pt %st @%sk", commaInt(b.PlatinumDemand), kInt(b.PlatinumPrice))
-		} else if b.PlatinumDemand > 0 {
-			pt = fmt.Sprintf("Pt %st", commaInt(b.PlatinumDemand))
+		var body []string
+		if b.PlatinumDemand > 0 || b.PlatinumPrice > 0 {
+			body = append(body, fmt.Sprintf("Pt — Price: %s / Demand: %s",
+				fullPrice(b.PlatinumPrice), fullDemand(b.PlatinumDemand)))
 		}
-		if b.OsmiumDemand > 0 && b.OsmiumPrice > 0 {
-			os = fmt.Sprintf("Os %st @%sk", commaInt(b.OsmiumDemand), kInt(b.OsmiumPrice))
-		} else if b.OsmiumDemand > 0 {
-			os = fmt.Sprintf("Os %st", commaInt(b.OsmiumDemand))
+		if b.OsmiumDemand > 0 || b.OsmiumPrice > 0 {
+			body = append(body, fmt.Sprintf("Os — Price: %s / Demand: %s",
+				fullPrice(b.OsmiumPrice), fullDemand(b.OsmiumDemand)))
 		}
-		rows[i] = renderRow{
-			Station: b.StationName,
-			Cells:   []string{pt, os},
-			Seen:    seenShort(b),
+		blocks[i] = stationBlock{
+			Header:     b.StationName,
+			Body:       body,
+			SeenAtUnix: unixOrZero(b.MarketUpdatedAt),
 		}
 	}
-	table, truncated := renderTable(rows, 5)
+	table, truncated := renderStationBlocks(blocks, 5)
 	desc.WriteString(table)
 	if truncated > 0 {
-		fmt.Fprintf(&desc, "\n+ %d more — open in [Kaine](%s)", truncated, edsmURL(p.system))
+		fmt.Fprintf(&desc, "\n+ %d more", truncated)
 	}
 
 	return &discordgo.MessageEmbed{
-		Title:       tierEmoji(tier) + " " + p.system,
 		Description: desc.String(),
-		URL:         edsmURL(p.system),
 		Color:       tierColor(tier),
 	}
 }

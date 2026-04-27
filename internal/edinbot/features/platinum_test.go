@@ -24,8 +24,8 @@ func TestPlatinumBoomAlerts_HappyPath_BuildsItemsFromBuyers(t *testing.T) {
 			"maps": [{
 				"system_name": "MapSystem",
 				"buyers": [
-					{"system_name":"Sol","station_name":"Galileo","faction":"FedX","faction_state":"Boom","platinum_demand":1500,"platinum_price":280000,"score":175},
-					{"system_name":"Sol","station_name":"Daedalus","faction":"FedX","faction_state":"Boom","platinum_demand":800,"platinum_price":250000,"score":110}
+					{"system_name":"Sol","station_name":"Galileo","faction":"FedX","faction_state":"Boom","platinum_demand":1500,"platinum_price":280000,"score":175,"market_updated_at":"2026-04-26T13:00:00Z"},
+					{"system_name":"Sol","station_name":"Daedalus","faction":"FedX","faction_state":"Boom","platinum_demand":800,"platinum_price":250000,"score":110,"market_updated_at":"2026-04-26T13:00:00Z"}
 				]
 			}],
 			"generated_at": "2026-04-26T14:23:01Z",
@@ -46,12 +46,12 @@ func TestPlatinumBoomAlerts_HappyPath_BuildsItemsFromBuyers(t *testing.T) {
 	require.Equal(t, "system:Sol", snap.Items[0].Identity())
 
 	embed := snap.Items[0].Render()
-	require.Contains(t, embed.Title, "Sol")
 	bodyText := embed.Description
+	require.Contains(t, bodyText, "Sol", "system name appears in description heading")
 	require.Contains(t, bodyText, "Galileo")
 	require.Contains(t, bodyText, "Daedalus")
-	require.Contains(t, bodyText, "1,500") // demand formatted
-	require.Contains(t, bodyText, "280k")  // price formatted
+	require.Contains(t, bodyText, "1,500t", "demand formatted with comma + t")
+	require.Contains(t, bodyText, "280,000c", "price formatted with comma + c")
 }
 
 func TestPlatinumBoomAlerts_DedupExcludeOCSAndSortByScore(t *testing.T) {
@@ -64,14 +64,14 @@ func TestPlatinumBoomAlerts_DedupExcludeOCSAndSortByScore(t *testing.T) {
 		_, _ = w.Write([]byte(`{
 			"maps": [
 				{"system_name":"Bubble1","buyers":[
-					{"system_name":"HIP 61332","station_name":"Leeuwenhoek","faction_state":"Boom","platinum_demand":554,"platinum_price":193000,"score":2}
+					{"system_name":"HIP 61332","station_name":"Leeuwenhoek","faction_state":"Boom","platinum_demand":554,"platinum_price":193000,"score":2,"market_updated_at":"2026-04-26T13:00:00Z"}
 				]},
 				{"system_name":"Bubble2","buyers":[
-					{"system_name":"HIP 61332","station_name":"Leeuwenhoek","faction_state":"Boom","platinum_demand":554,"platinum_price":193000,"score":2},
-					{"system_name":"HIP 61332","station_name":"Orbital Construction Site: Galeen City","faction_state":"Boom","platinum_demand":0,"score":40}
+					{"system_name":"HIP 61332","station_name":"Leeuwenhoek","faction_state":"Boom","platinum_demand":554,"platinum_price":193000,"score":2,"market_updated_at":"2026-04-26T13:00:00Z"},
+					{"system_name":"HIP 61332","station_name":"Orbital Construction Site: Galeen City","faction_state":"Boom","platinum_demand":0,"score":40,"market_updated_at":"2026-04-26T13:00:00Z"}
 				]},
 				{"system_name":"Bubble3","buyers":[
-					{"system_name":"HIP 61332","station_name":"Top Tier","faction_state":"Boom","platinum_demand":1000,"platinum_price":250000,"score":100}
+					{"system_name":"HIP 61332","station_name":"Top Tier","faction_state":"Boom","platinum_demand":1000,"platinum_price":250000,"score":100,"market_updated_at":"2026-04-26T13:00:00Z"}
 				]}
 			],
 			"generated_at": "2026-04-26T14:23:01Z","total_maps":3,"total_buyers":4
@@ -108,22 +108,22 @@ func indexOf(haystack, needle string) int {
 	return -1
 }
 
-func TestPlatinumBoomAlerts_RendersLastSeenStamp(t *testing.T) {
-	// Buyer with MarketUpdatedAt → renders Discord <t:N:R> token. The pricing
-	// filter that briefly existed has been removed; we surface every buyer the
-	// kaine API returns, with freshness indicated via "last seen".
+func TestPlatinumBoomAlerts_FreshnessFilter(t *testing.T) {
+	// MaxFreshness=24h. Three buyers: one fresh, one stale, one with no
+	// market timestamp at all. Only the fresh one should survive.
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{
 			"maps": [{
 				"system_name": "M",
 				"buyers": [
-					{"system_name":"Sol","station_name":"Galileo","faction_state":"Boom","platinum_demand":1500,"platinum_price":280000,"score":40,"market_updated_at":"2026-04-26T14:00:00Z"},
-					{"system_name":"Sol","station_name":"Bayliss","faction_state":"Boom","platinum_demand":0,"platinum_price":0,"score":40,"bgs_updated_at":"2026-04-26T13:00:00Z"}
+					{"system_name":"Sol","station_name":"Galileo","faction_state":"Boom","platinum_demand":1500,"platinum_price":280000,"score":40,"market_updated_at":"2026-04-26T13:00:00Z"},
+					{"system_name":"Sol","station_name":"AncientPort","faction_state":"Boom","platinum_demand":1000,"platinum_price":280000,"score":40,"market_updated_at":"2026-04-20T14:00:00Z"},
+					{"system_name":"Sol","station_name":"Bayliss","faction_state":"Boom","platinum_demand":500,"platinum_price":0,"score":40,"bgs_updated_at":"2026-04-26T13:00:00Z"}
 				]
 			}],
 			"generated_at": "2026-04-26T14:23:01Z",
-			"total_maps": 1, "total_buyers": 2
+			"total_maps": 1, "total_buyers": 3
 		}`))
 	}))
 	defer srv.Close()
@@ -132,15 +132,12 @@ func TestPlatinumBoomAlerts_RendersLastSeenStamp(t *testing.T) {
 	feat.SetRetryIntervals([]time.Duration{10 * time.Millisecond})
 	snap, err := feat.Poll(context.Background(), feat.DefaultConfig())
 	require.NoError(t, err)
-	require.Len(t, snap.Items, 1, "no pricing filter — both buyers in Sol survive")
+	require.Len(t, snap.Items, 1, "Sol survives because Galileo is fresh")
 
 	body := snap.Items[0].Render().Description
 	require.Contains(t, body, "Galileo")
-	require.Contains(t, body, "Bayliss", "buyer without pricing should still appear")
-	// Code-block table uses static "5h" / "12h*" markers (timestamp tokens
-	// don't render inside ```code blocks```). The "*" suffix flags that the
-	// freshness came from BGS, not market.
-	require.Regexp(t, `Bayliss\s+.*\*`, body, "Bayliss row carries BGS-suffix marker")
+	require.NotContains(t, body, "AncientPort", "stale (>24h) buyer must be dropped")
+	require.NotContains(t, body, "Bayliss", "buyer with no MarketUpdatedAt must be dropped")
 }
 
 func TestPlatinumBoomAlerts_StructurallyInvalidResponse_ReturnsError(t *testing.T) {
@@ -226,7 +223,7 @@ func TestLTDAlerts_HappyPath_BuildsItemsFromBuyers(t *testing.T) {
 		_, _ = w.Write([]byte(`{
 			"maps": [{
 				"system_name": "MapSystem",
-				"buyers": [{"system_name":"Sol","station_name":"Galileo","faction":"FedX","faction_state":"Expansion","ltd_demand":1300,"ltd_price":950000,"score":165}]
+				"buyers": [{"system_name":"Sol","station_name":"Galileo","faction":"FedX","faction_state":"Expansion","ltd_demand":1300,"ltd_price":950000,"score":165,"market_updated_at":"2026-04-26T13:00:00Z"}]
 			}],
 			"generated_at": "2026-04-26T14:23:01Z",
 			"total_maps": 1,
@@ -244,11 +241,9 @@ func TestLTDAlerts_HappyPath_BuildsItemsFromBuyers(t *testing.T) {
 
 	embed := snap.Items[0].Render()
 	bodyText := embed.Description
-	for _, f := range embed.Fields {
-		bodyText += " " + f.Name + " " + f.Value
-	}
 	require.Contains(t, bodyText, "Galileo")
 	require.Contains(t, bodyText, "Expansion")
+	require.Contains(t, bodyText, "Seen: <t:", "freshness rendered as live <t:N:R>")
 }
 
 func TestLTDAlerts_EmptyResponseIsHealthy(t *testing.T) {

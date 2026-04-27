@@ -1,7 +1,9 @@
 package features
 
 import (
+	"fmt"
 	"strings"
+	"time"
 
 	"github.com/edin-space/edin-backend/internal/edinbot/controlclient"
 )
@@ -74,6 +76,24 @@ func edsmURL(systemName string) string {
 	return "https://www.edsm.net/en/system?systemName=" + strings.ReplaceAll(systemName, " ", "+")
 }
 
+// MaxFreshness is the maximum age of MarketUpdatedAt for a buyer to qualify
+// for posting. Any buyer whose price feed has been silent for longer is
+// dropped before the snapshot is built — operators don't want to chase
+// alerts whose underlying data hasn't ticked in over a day. Buyers with
+// no MarketUpdatedAt at all are also dropped (no freshness signal at all).
+const MaxFreshness = 24 * time.Hour
+
+// isFresh returns true if the buyer's market data was seen within MaxFreshness.
+// Used by both plat and LTD features to gate which buyers reach the rendered
+// snapshot. The "now" anchor is the snapshot's GeneratedAt to keep the
+// decision deterministic across the cycle.
+func isFresh(b controlclient.Buyer, now time.Time) bool {
+	if b.MarketUpdatedAt == nil || b.MarketUpdatedAt.IsZero() {
+		return false
+	}
+	return now.Sub(*b.MarketUpdatedAt) <= MaxFreshness
+}
+
 // firstMapURL returns the first non-empty Map1 URL the API returned for any
 // bubble whose buyers landed in this system. There can be several overlapping
 // bubbles per system; we deliberately pick whichever the API listed first
@@ -88,92 +108,128 @@ func firstMapURL(urls []string) string {
 	return ""
 }
 
-// renderRow describes one buyer row inside the code-block table. Captured
-// per commodity so plat (Pt+Os) and LTD (one column) share the same
-// alignment machinery.
-type renderRow struct {
-	Station string
-	// Cells is rendered left-to-right inside fixed columns; an empty string
-	// renders as blank padding so columns stay aligned with rows that DO
-	// carry the data. Order is feature-defined (plat: ["Pt …", "Os …"]).
-	Cells []string
-	Seen  string // "5m", "2h" — rendered right-aligned for vertical scanning
+// stationBlock is one buyer rendered as a multi-line block inside the code
+// block. Each Line is exactly one rendered line; the renderer joins them with
+// "\n" and separates blocks with one blank line.
+//
+// Layout the bot ships today:
+//   StationName · 5m
+//   Price: 245,000c / Demand: 38,209t           (LTD — single line)
+//
+// or for plat (two commodities):
+//   StationName · 5m
+//   Pt — Price: 245,000c / Demand: 38,209t
+//   Os — Price: 199,000c / Demand: 439,390t
+//
+// Per-station block layout favours readability over horizontal column
+// alignment: each station stands on its own, repeated structure across
+// stations is what creates the visual rhythm of the channel.
+type stationBlock struct {
+	// Header is rendered bold. Just the station name now — freshness moved
+	// to its own line so the <t:N:R> token can live-update.
+	Header string
+	// One body line per commodity. Empty body is allowed.
+	Body []string
+	// SeenAtUnix drives the "Seen: <t:N:R>" line. 0 omits the line.
+	SeenAtUnix int64
 }
 
-// renderTable builds a Discord code-block formatted ASCII table. Width-stable
-// across messages because every column is padded to its widest cell. Code
-// blocks force monospace + truncation rules on mobile — we accept losing
-// markdown bolding inside the block in exchange for the visual rhythm of
-// aligned columns down a stream of similar-shaped messages (Tufte: "show
-// the data, eliminate non-data ink").
+// renderStationBlocks emits a markdown-formatted string containing the given
+// per-station blocks, capped to maxBlocks. Returns the rendered string plus
+// the count of stations that didn't fit.
 //
-// maxRows caps how many buyers are shown; surplus is reported as "+ N more"
-// in the trailing line (returned separately so the caller can append it
-// outside the code block, where masked links render).
-func renderTable(rows []renderRow, maxRows int) (block string, truncated int) {
-	if len(rows) == 0 {
+// Markdown (not code-block) so Discord's <t:N:R> live-relative timestamps
+// render — operators see "Seen: 5 minutes ago" updating client-side without
+// the bot ever having to edit the message. Tradeoff: lose monospace
+// alignment, but per-station blocks don't need column alignment between
+// stations anyway (each block stands alone).
+//
+// Block layout produced:
+//   **StationName**
+//   <each Body line — typically Price/Demand>
+//   Seen: <t:N:R>
+//
+// Separated by a blank line between stations.
+func renderStationBlocks(blocks []stationBlock, maxBlocks int) (string, int) {
+	if len(blocks) == 0 {
 		return "", 0
 	}
-	if maxRows <= 0 || maxRows > len(rows) {
-		maxRows = len(rows)
+	if maxBlocks <= 0 || maxBlocks > len(blocks) {
+		maxBlocks = len(blocks)
 	}
-	visible := rows[:maxRows]
-	truncated = len(rows) - maxRows
-
-	// Determine column widths.
-	stationW := 0
-	cellsW := make([]int, len(visible[0].Cells))
-	seenW := 0
-	for _, r := range visible {
-		if l := runeLen(r.Station); l > stationW {
-			stationW = l
-		}
-		for i, c := range r.Cells {
-			if l := runeLen(c); l > cellsW[i] {
-				cellsW[i] = l
-			}
-		}
-		if l := runeLen(r.Seen); l > seenW {
-			seenW = l
-		}
-	}
+	visible := blocks[:maxBlocks]
+	truncated := len(blocks) - maxBlocks
 
 	var b strings.Builder
-	b.WriteString("```\n")
-	for _, r := range visible {
-		b.WriteString(padRight(r.Station, stationW))
-		for i, c := range r.Cells {
-			b.WriteString("  ")
-			b.WriteString(padRight(c, cellsW[i]))
+	for i, blk := range visible {
+		if i > 0 {
+			b.WriteString("\n\n")
 		}
-		if seenW > 0 {
-			b.WriteString("  ")
-			b.WriteString(padLeft(r.Seen, seenW))
+		b.WriteString("**")
+		b.WriteString(blk.Header)
+		b.WriteString("**")
+		for _, line := range blk.Body {
+			b.WriteByte('\n')
+			b.WriteString(line)
 		}
-		b.WriteByte('\n')
+		if blk.SeenAtUnix > 0 {
+			fmt.Fprintf(&b, "\nSeen: <t:%d:R>", blk.SeenAtUnix)
+		}
 	}
-	b.WriteString("```")
 	return b.String(), truncated
 }
 
-func runeLen(s string) int {
-	n := 0
-	for range s {
-		n++
-	}
-	return n
+// fullPrice formats a credit value with thousands separators and a trailing
+// "c" suffix — e.g. 245000 → "245,000c". Used inside the code block where
+// monospace makes wide numerals legible.
+func fullPrice(n int64) string {
+	return commaInt64(n) + "c"
 }
 
-func padRight(s string, w int) string {
-	if l := runeLen(s); l < w {
-		return s + strings.Repeat(" ", w-l)
+// fullDemand formats a tonnage with thousands separators and a "t" suffix.
+func fullDemand(n int64) string {
+	return commaInt64(n) + "t"
+}
+
+// commaInt64 is the local copy of the existing commaInt — defined here to
+// avoid a forward dependency on the platinum.go-defined helper from
+// shared render code.
+func commaInt64(n int64) string {
+	neg := n < 0
+	if neg {
+		n = -n
+	}
+	s := ""
+	for {
+		if n < 1000 {
+			s = itoa(n) + s
+			break
+		}
+		s = "," + pad3(n%1000) + s
+		n /= 1000
+	}
+	if neg {
+		s = "-" + s
 	}
 	return s
 }
 
-func padLeft(s string, w int) string {
-	if l := runeLen(s); l < w {
-		return strings.Repeat(" ", w-l) + s
+func itoa(n int64) string {
+	if n == 0 {
+		return "0"
+	}
+	digits := []byte{}
+	for n > 0 {
+		digits = append([]byte{byte('0' + n%10)}, digits...)
+		n /= 10
+	}
+	return string(digits)
+}
+
+func pad3(n int64) string {
+	s := itoa(n)
+	for len(s) < 3 {
+		s = "0" + s
 	}
 	return s
 }

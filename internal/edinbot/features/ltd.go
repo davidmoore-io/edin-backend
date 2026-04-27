@@ -64,6 +64,11 @@ func (l *LTDAlerts) Poll(ctx context.Context, c Config) (Snapshot, error) {
 			if isExcludedStation(b.StationName) {
 				continue
 			}
+			if !isFresh(b, now) {
+				// Stale or never-seen market data — drop. Same threshold
+				// as plat-boom (24h); see features/render.go MaxFreshness.
+				continue
+			}
 			key := b.SystemName + "\x00" + b.StationName
 			if seen[key] {
 				continue
@@ -171,39 +176,35 @@ func (l *ltdItem) Render() *discordgo.MessageEmbed {
 	}
 
 	var desc strings.Builder
+	fmt.Fprintf(&desc, "### %s [%s](%s)", tierEmoji(tier), l.system, edsmURL(l.system))
+	if l.mapURL != "" {
+		fmt.Fprintf(&desc, " · [Map](%s)", l.mapURL)
+	}
+	desc.WriteString("\n")
 	if state != "" {
 		fmt.Fprintf(&desc, "%s · ", state)
 	}
-	fmt.Fprintf(&desc, "Kaine %.1f%% · %d station(s)", kainePct, len(l.buyers))
-	desc.WriteString("\n")
-	if l.mapURL != "" {
-		fmt.Fprintf(&desc, "-# [Map](%s)\n", l.mapURL)
-	}
+	fmt.Fprintf(&desc, "Kaine %.1f%% · %d station(s)\n", kainePct, len(l.buyers))
 
-	rows := make([]renderRow, len(l.buyers))
+	blocks := make([]stationBlock, len(l.buyers))
 	for i, b := range l.buyers {
-		var ltd string
-		if b.LTDDemand > 0 && b.LTDPrice > 0 {
-			ltd = fmt.Sprintf("LTD %st @%sk", commaInt(b.LTDDemand), kInt(b.LTDPrice))
-		} else if b.LTDDemand > 0 {
-			ltd = fmt.Sprintf("LTD %st", commaInt(b.LTDDemand))
+		body := []string{
+			fmt.Sprintf("Price: %s / Demand: %s", fullPrice(b.LTDPrice), fullDemand(b.LTDDemand)),
 		}
-		rows[i] = renderRow{
-			Station: b.StationName,
-			Cells:   []string{ltd},
-			Seen:    seenShort(b),
+		blocks[i] = stationBlock{
+			Header:     b.StationName,
+			Body:       body,
+			SeenAtUnix: unixOrZero(b.MarketUpdatedAt),
 		}
 	}
-	table, truncated := renderTable(rows, 5)
+	table, truncated := renderStationBlocks(blocks, 5)
 	desc.WriteString(table)
 	if truncated > 0 {
-		fmt.Fprintf(&desc, "\n+ %d more — open in [Kaine](%s)", truncated, edsmURL(l.system))
+		fmt.Fprintf(&desc, "\n+ %d more", truncated)
 	}
 
 	return &discordgo.MessageEmbed{
-		Title:       tierEmoji(tier) + " " + l.system,
 		Description: desc.String(),
-		URL:         edsmURL(l.system),
 		Color:       tierColor(tier),
 	}
 }
