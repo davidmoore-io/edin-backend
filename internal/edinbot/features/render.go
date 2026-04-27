@@ -125,12 +125,15 @@ func firstMapURL(urls []string) string {
 // alignment: each station stands on its own, repeated structure across
 // stations is what creates the visual rhythm of the channel.
 type stationBlock struct {
-	// Header is rendered bold. Just the station name now — freshness moved
-	// to its own line so the <t:N:R> token can live-update.
+	// Header is rendered bold. Just the station name.
 	Header string
+	// HeaderSuffix is appended AFTER the bold-closing `**`, intended for
+	// e.g. " - **245,000c**" where the station-and-price share a logical line
+	// but each gets its own bold span. Empty for plat (per-commodity body lines).
+	HeaderSuffix string
 	// One body line per commodity. Empty body is allowed.
 	Body []string
-	// SeenAtUnix drives the "Seen: <t:N:R>" line. 0 omits the line.
+	// SeenAtUnix drives the "Data updated: <t:N:R>" line. 0 omits the line.
 	SeenAtUnix int64
 }
 
@@ -139,15 +142,15 @@ type stationBlock struct {
 // the count of stations that didn't fit.
 //
 // Markdown (not code-block) so Discord's <t:N:R> live-relative timestamps
-// render — operators see "Seen: 5 minutes ago" updating client-side without
-// the bot ever having to edit the message. Tradeoff: lose monospace
+// render — operators see "Data updated: 5 minutes ago" updating client-side
+// without the bot ever having to edit the message. Tradeoff: lose monospace
 // alignment, but per-station blocks don't need column alignment between
 // stations anyway (each block stands alone).
 //
 // Block layout produced:
-//   **StationName**
-//   <each Body line — typically Price/Demand>
-//   Seen: <t:N:R>
+//   **StationName** - **NNN,NNNc**     (LTD: header carries headline price)
+//   <body lines>                       (LTD: demand etc; plat: per-commodity)
+//   Data updated: <t:N:R>
 //
 // Separated by a blank line between stations.
 func renderStationBlocks(blocks []stationBlock, maxBlocks int) (string, int) {
@@ -168,12 +171,13 @@ func renderStationBlocks(blocks []stationBlock, maxBlocks int) (string, int) {
 		b.WriteString("**")
 		b.WriteString(blk.Header)
 		b.WriteString("**")
+		b.WriteString(blk.HeaderSuffix)
 		for _, line := range blk.Body {
 			b.WriteByte('\n')
 			b.WriteString(line)
 		}
 		if blk.SeenAtUnix > 0 {
-			fmt.Fprintf(&b, "\nSeen: <t:%d:R>", blk.SeenAtUnix)
+			fmt.Fprintf(&b, "\nData updated: <t:%d:R>", blk.SeenAtUnix)
 		}
 	}
 	return b.String(), truncated

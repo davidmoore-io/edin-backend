@@ -89,3 +89,18 @@ type Item interface {
 	// from the enclosing Snapshot.GeneratedAt, never from time.Now().
 	Render() *discordgo.MessageEmbed
 }
+
+// Sortable is an OPTIONAL extension Items may implement to drive cross-channel
+// ordering. The publisher sorts items ASCENDING by SortKey before applying.
+// In Discord, posting later puts a message lower in chronological order — so
+// ascending sort + post-in-order means lowest SortKey appears at the top of
+// the channel and highest SortKey at the bottom.
+//
+// Items that don't implement Sortable fall back to alphabetical Identity sort.
+//
+// Convention: SortKey returns the system's "headline price" — the highest
+// price across its buyers. Operators wanted "most recent message = highest
+// price"; with ascending sort + later-post-is-newer, that maps cleanly.
+type Sortable interface {
+	SortKey() int64
+}

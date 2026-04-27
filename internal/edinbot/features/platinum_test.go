@@ -243,7 +243,7 @@ func TestLTDAlerts_HappyPath_BuildsItemsFromBuyers(t *testing.T) {
 	bodyText := embed.Description
 	require.Contains(t, bodyText, "Galileo")
 	require.Contains(t, bodyText, "Expansion")
-	require.Contains(t, bodyText, "Seen: <t:", "freshness rendered as live <t:N:R>")
+	require.Contains(t, bodyText, "Data updated: <t:", "freshness rendered as live <t:N:R>")
 }
 
 func TestLTDAlerts_EmptyResponseIsHealthy(t *testing.T) {

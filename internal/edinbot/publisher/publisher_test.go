@@ -255,7 +255,13 @@ func TestPublisher_DisappearedItem_Strikes(t *testing.T) {
 	require.NotNil(t, posted["system:B"].StruckAt)
 }
 
-func TestPublisher_ReappearedItem_Unstrikes(t *testing.T) {
+func TestPublisher_ReappearedItem_RepostsFresh(t *testing.T) {
+	// With reorder-every-cycle, a reappearing item never goes through the
+	// "edit-in-place unstrike" path: struck rows are excluded from the
+	// chronological list, so the divergence algorithm sees the item as "out
+	// of order" and reposts it fresh. The new posted_at reflects THIS
+	// appearance, not the months-old original — fixes the bug where a system
+	// returning after a long absence would display "Posted 6 months ago".
 	st := newMemStore()
 	dc := discordclient.NewFakeDiscordClient()
 	p := publisher.New(st, dc)
@@ -263,16 +269,25 @@ func TestPublisher_ReappearedItem_Unstrikes(t *testing.T) {
 	item := mkItem("system:A", "A")
 	_, _ = p.Apply(context.Background(), bnd(), snap(item))
 	_, _ = p.Apply(context.Background(), bnd(), snap()) // disappears, struck
+
+	originalPostedAt := time.Now() // cliff approximating "ages ago"
 	dc.Reset()
 
-	res, err := p.Apply(context.Background(), bnd(), snap(item))
+	freshSnap := features.Snapshot{
+		Items:       []features.Item{item},
+		Healthy:     true,
+		GeneratedAt: originalPostedAt.Add(180 * 24 * time.Hour),
+	}
+	res, err := p.Apply(context.Background(), bnd(), freshSnap)
 	require.NoError(t, err)
-	require.Equal(t, 1, res.Unstruck)
-	require.Len(t, dc.EditCalls(), 1)
+	require.Equal(t, 1, res.Posted, "reappearance is a fresh post in the new model")
+	require.Len(t, dc.PostCalls(), 1)
+	require.Len(t, dc.DeleteCalls(), 1, "old struck/spoiler message is deleted before repost")
 
 	posted, _ := st.GetPosted(context.Background(), "test-binding")
-	require.Nil(t, posted["system:A"].StruckAt, "struck_at must clear after unstrike")
-	require.NotNil(t, posted["system:A"].UnstruckAt)
+	require.WithinDuration(t, freshSnap.GeneratedAt, posted["system:A"].PostedAt, time.Second,
+		"posted_at must reset to current cycle, not the months-old original")
+	require.Nil(t, posted["system:A"].StruckAt)
 }
 
 func TestPublisher_PartialFailure_DoesNotAbortOthers(t *testing.T) {
@@ -460,4 +475,89 @@ func TestClearHistory_HardFailurePreservesRows(t *testing.T) {
 	rows, _ := st.GetPosted(context.Background(), "b")
 	require.Len(t, rows, 1)
 	require.True(t, res.BindingEnabled, "disabled tombstone is still cleared independently")
+}
+
+// sortableItem is a stub Item that implements features.Sortable. Used by the
+// reorder-on-rank-change test below.
+type sortableItem struct {
+	*stubItem
+	key int64
+}
+
+func (s *sortableItem) SortKey() int64 { return s.key }
+
+func mkSortable(id, title string, key int64) *sortableItem {
+	return &sortableItem{stubItem: mkItem(id, title), key: key}
+}
+
+func TestPublisher_ReorderOnRankChange(t *testing.T) {
+	// Three systems with prices 100 / 200 / 300 — channel order should be
+	// A (cheapest, oldest message) → B → C (priciest, newest). Then A's
+	// price jumps to 500. New order: B → C → A. Algorithm should:
+	//   - Edit-in-place B and C (still at the front of desired order, in same
+	//     relative position).
+	// Wait — actually B was second, now first; C was third, now second; A
+	// was first, now third. So divergeAt is 0 (first slot was A, now B).
+	// → all three reposted.
+	//
+	// But if instead A → 50 (still cheapest), nothing moves; all three are
+	// edits/noops.
+	st := newMemStore()
+	dc := discordclient.NewFakeDiscordClient()
+	p := publisher.New(st, dc)
+
+	a := mkSortable("system:A", "A", 100)
+	b := mkSortable("system:B", "B", 200)
+	c := mkSortable("system:C", "C", 300)
+
+	t0 := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+	_, err := p.Apply(context.Background(), bnd(), features.Snapshot{
+		Items: []features.Item{c, a, b}, Healthy: true, GeneratedAt: t0,
+	})
+	require.NoError(t, err)
+	require.Len(t, dc.PostCalls(), 3, "first cycle posts all three")
+
+	// All three share PostedAt (Snapshot.GeneratedAt), but FakeDiscordClient
+	// hands out incrementing message IDs ("fake-msg-1", "-2", "-3") which
+	// the publisher uses as the chronological-order key. Cycle 1 posted in
+	// price-asc order, so message IDs land in price-asc order too.
+	posted, _ := st.GetPosted(context.Background(), "test-binding")
+	require.Less(t, posted["system:A"].MessageID, posted["system:B"].MessageID)
+	require.Less(t, posted["system:B"].MessageID, posted["system:C"].MessageID)
+
+	dc.Reset()
+
+	// A's price jumps to 500 → new order B / C / A.
+	a.key = 500
+	t1 := t0.Add(time.Hour)
+	_, err = p.Apply(context.Background(), bnd(), features.Snapshot{
+		Items: []features.Item{a, b, c}, Healthy: true, GeneratedAt: t1,
+	})
+	require.NoError(t, err)
+	// All three repost (divergeAt=0 because slot 0 was A, now B).
+	require.Len(t, dc.PostCalls(), 3, "all three reposted because rank changed at index 0")
+	require.Len(t, dc.DeleteCalls(), 3, "old messages deleted before repost")
+}
+
+func TestPublisher_NoReorder_WhenOrderStable(t *testing.T) {
+	// Same prices both cycles → no reposts, only edits / noops.
+	st := newMemStore()
+	dc := discordclient.NewFakeDiscordClient()
+	p := publisher.New(st, dc)
+
+	a := mkSortable("system:A", "A", 100)
+	b := mkSortable("system:B", "B", 200)
+
+	t0 := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+	_, _ = p.Apply(context.Background(), bnd(), features.Snapshot{
+		Items: []features.Item{a, b}, Healthy: true, GeneratedAt: t0,
+	})
+	dc.Reset()
+
+	t1 := t0.Add(time.Hour)
+	_, _ = p.Apply(context.Background(), bnd(), features.Snapshot{
+		Items: []features.Item{a, b}, Healthy: true, GeneratedAt: t1,
+	})
+	require.Empty(t, dc.PostCalls(), "stable order — no reposts")
+	require.Empty(t, dc.DeleteCalls(), "stable order — no deletes")
 }

@@ -171,6 +171,21 @@ func BuildPlatinumItemForTest(system string, buyers []controlclient.Buyer) Item 
 func (p *platinumItem) Identity() string  { return "system:" + p.system }
 func (p *platinumItem) StateHash() string { return p.hash }
 
+// SortKey returns the maximum price across this system's buyers (Pt or Os).
+// Drives channel ordering: cheapest at top, priciest at bottom.
+func (p *platinumItem) SortKey() int64 {
+	var max int64
+	for _, b := range p.buyers {
+		if b.PlatinumPrice > max {
+			max = b.PlatinumPrice
+		}
+		if b.OsmiumPrice > max {
+			max = b.OsmiumPrice
+		}
+	}
+	return max
+}
+
 func (p *platinumItem) Render() *discordgo.MessageEmbed {
 	tier := topTier(p.buyers)
 
@@ -183,14 +198,16 @@ func (p *platinumItem) Render() *discordgo.MessageEmbed {
 		}
 	}
 
-	// Description-line-1 carries the title row: 🟢 SystemName · [Map].
+	// Description-line-1 carries the title row: 🟢 SystemName - [Map].
 	// Embed.title is left empty because Discord titles don't render masked
 	// links — we want the [Map] to be clickable inline. ### makes the line
 	// render at heading size on clients that support embed-headings.
+	// Map link uses escaped square brackets so "[Map]" renders literally
+	// AROUND the clickable Map text, matching the operator's brand request.
 	var desc strings.Builder
 	fmt.Fprintf(&desc, "### %s [%s](%s)", tierEmoji(tier), p.system, edsmURL(p.system))
 	if p.mapURL != "" {
-		fmt.Fprintf(&desc, " · [Map](%s)", p.mapURL)
+		fmt.Fprintf(&desc, " - \\[[Map](%s)\\]", p.mapURL)
 	}
 	desc.WriteString("\n")
 	if state != "" {
@@ -198,15 +215,26 @@ func (p *platinumItem) Render() *discordgo.MessageEmbed {
 	}
 	fmt.Fprintf(&desc, "Kaine %.1f%% · %d station(s)\n", kainePct, len(p.buyers))
 
-	blocks := make([]stationBlock, len(p.buyers))
-	for i, b := range p.buyers {
+	// Drop buyers whose price AND demand are both zero — even if fresh, they're
+	// uninformative noise. Keep buyers where either has a non-zero value (e.g.
+	// price quoted but demand momentarily zero is still actionable info).
+	usable := make([]controlclient.Buyer, 0, len(p.buyers))
+	for _, b := range p.buyers {
+		if b.PlatinumPrice == 0 && b.PlatinumDemand == 0 && b.OsmiumPrice == 0 && b.OsmiumDemand == 0 {
+			continue
+		}
+		usable = append(usable, b)
+	}
+
+	blocks := make([]stationBlock, len(usable))
+	for i, b := range usable {
 		var body []string
 		if b.PlatinumDemand > 0 || b.PlatinumPrice > 0 {
-			body = append(body, fmt.Sprintf("Pt — Price: %s / Demand: %s",
+			body = append(body, fmt.Sprintf("Pt — **%s** / Demand: %s",
 				fullPrice(b.PlatinumPrice), fullDemand(b.PlatinumDemand)))
 		}
 		if b.OsmiumDemand > 0 || b.OsmiumPrice > 0 {
-			body = append(body, fmt.Sprintf("Os — Price: %s / Demand: %s",
+			body = append(body, fmt.Sprintf("Os — **%s** / Demand: %s",
 				fullPrice(b.OsmiumPrice), fullDemand(b.OsmiumDemand)))
 		}
 		blocks[i] = stationBlock{

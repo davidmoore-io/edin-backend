@@ -10,6 +10,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
+	"strconv"
 	"time"
 
 	"github.com/bwmarrin/discordgo"
@@ -33,6 +35,25 @@ func New(s store.Store, dc discordclient.Client) *Publisher {
 // actions. Each successful Discord call is committed in its own transaction
 // immediately. Failures of one item do not abort the cycle. ErrChannelGone is
 // fatal — it triggers DisableBinding and stops processing.
+//
+// Items that implement features.Sortable are sorted ASCENDING by SortKey before
+// processing. The channel's chronological order then reflects price order:
+// the oldest message is the cheapest, the newest is the priciest. To make
+// that order true after each cycle, the publisher uses a divergence-detect
+// algorithm: it walks the desired ordering against the existing chronological
+// ordering, finds the first index where they differ, edits-in-place for items
+// before that index, and DELETES + REPOSTS items from that index onward. A
+// repost lands at the end of the channel; processing in desired-order means
+// each repost lands in the correct relative slot.
+//
+// TODO(scale): Reorder-every-cycle is correct but unbounded in churn. With N
+// systems, a single low-rank change can trigger up to N-1 delete+repost pairs.
+// Discord rate-limits message ops at 5 per 5s per channel, so a full reshuffle
+// of N=100 takes ~100 seconds. Tolerable today (typical N ≤ 25). If we ever
+// approach those limits we should consider:
+//   - Threshold-based reorder (only repost if rank-slot moved by ≥ K),
+//   - Bucketing (post in price-tier groups, only reorder within tier),
+//   - Manual-only reorder mode + edit-in-place between manual triggers.
 func (p *Publisher) Apply(ctx context.Context, b bindings.Binding, s features.Snapshot) (Result, error) {
 	res := Result{}
 
@@ -49,9 +70,90 @@ func (p *Publisher) Apply(ctx context.Context, b bindings.Binding, s features.Sn
 		return res, fmt.Errorf("get posted: %w", err)
 	}
 
+	// Sort the desired order. Stable sort so identity is the secondary key
+	// (ties on price → alphabetical, matching the per-system buyer sort).
+	items := make([]features.Item, len(s.Items))
+	copy(items, s.Items)
+	sort.SliceStable(items, func(i, j int) bool {
+		ki, oki := items[i].(features.Sortable)
+		kj, okj := items[j].(features.Sortable)
+		if oki && okj {
+			if ki.SortKey() != kj.SortKey() {
+				return ki.SortKey() < kj.SortKey()
+			}
+		}
+		return items[i].Identity() < items[j].Identity()
+	})
+
 	currentIdentities := map[string]bool{}
-	for _, item := range s.Items {
+	for _, item := range items {
 		currentIdentities[item.Identity()] = true
+	}
+
+	// Strike disappeared items first so the chronological list excludes them.
+	for identity, prevRow := range prev {
+		if currentIdentities[identity] {
+			continue
+		}
+		if prevRow.StruckAt != nil {
+			continue
+		}
+		ir := p.strike(ctx, b, prevRow, s.GeneratedAt)
+		res.Items = append(res.Items, ir)
+		if errors.Is(ir.Err, discordclient.ErrChannelGone) {
+			_ = p.store.DisableBinding(ctx, b.ID, s.GeneratedAt)
+			res.Tally()
+			return res, nil
+		}
+	}
+
+	// Build the chronological order of currently-live messages (in-snapshot,
+	// not struck). This is what's actually visible in Discord right now.
+	type chronoEntry struct {
+		identity string
+		row      store.PostedMessage
+	}
+	chronological := make([]chronoEntry, 0, len(items))
+	for _, item := range items {
+		row, ok := prev[item.Identity()]
+		if !ok || row.StruckAt != nil || row.MessageID == "" {
+			continue
+		}
+		chronological = append(chronological, chronoEntry{item.Identity(), row})
+	}
+	// Sort by MessageID parsed as int64. Discord IDs are snowflakes (64-bit
+	// timestamp-based, monotonically increasing) — much more reliable than
+	// PostedAt for chronological order, because all messages posted in one
+	// Apply() call share the same Snapshot.GeneratedAt timestamp and would
+	// otherwise compare equal. Parse failures fall back to string compare,
+	// which is fine for fakes/tests where message IDs are "fake-msg-1" etc.
+	sort.SliceStable(chronological, func(i, j int) bool {
+		ai, aerr := strconv.ParseInt(chronological[i].row.MessageID, 10, 64)
+		bi, berr := strconv.ParseInt(chronological[j].row.MessageID, 10, 64)
+		if aerr == nil && berr == nil {
+			return ai < bi
+		}
+		return chronological[i].row.MessageID < chronological[j].row.MessageID
+	})
+
+	// Find the first divergence between desired (items) and current
+	// (chronological). Everything before this index is correctly positioned
+	// → edit-in-place. Everything from this index onward needs to be
+	// (re)posted in the desired order so chronological order matches.
+	divergeAt := len(items)
+	for i := 0; i < len(items) && i < len(chronological); i++ {
+		if items[i].Identity() != chronological[i].identity {
+			divergeAt = i
+			break
+		}
+	}
+	if len(chronological) < len(items) && divergeAt > len(chronological) {
+		divergeAt = len(chronological)
+	}
+
+	// [0, divergeAt) — stable position. Apply edits / unstrike fresh / noop.
+	for i := 0; i < divergeAt; i++ {
+		item := items[i]
 		ir := p.applyOne(ctx, b, item, prev[item.Identity()], s.GeneratedAt)
 		res.Items = append(res.Items, ir)
 		if errors.Is(ir.Err, discordclient.ErrChannelGone) {
@@ -61,14 +163,12 @@ func (p *Publisher) Apply(ctx context.Context, b bindings.Binding, s features.Sn
 		}
 	}
 
-	for identity, prevRow := range prev {
-		if currentIdentities[identity] {
-			continue
-		}
-		if prevRow.StruckAt != nil {
-			continue
-		}
-		ir := p.strike(ctx, b, prevRow, s.GeneratedAt)
+	// [divergeAt, end) — repost in desired order. Each iteration: if a prior
+	// row exists for this identity, delete its Discord message; then post
+	// fresh and upsert. This is what makes the channel's chronological order
+	// match the desired (price) order.
+	for i := divergeAt; i < len(items); i++ {
+		ir := p.repost(ctx, b, items[i], prev[items[i].Identity()], s.GeneratedAt)
 		res.Items = append(res.Items, ir)
 		if errors.Is(ir.Err, discordclient.ErrChannelGone) {
 			_ = p.store.DisableBinding(ctx, b.ID, s.GeneratedAt)
@@ -87,6 +187,48 @@ func (p *Publisher) Apply(ctx context.Context, b bindings.Binding, s features.Sn
 
 	res.Tally()
 	return res, nil
+}
+
+// repost deletes the existing Discord message (if any) and posts a fresh one.
+// Used by Apply when an item's rank slot has changed and an edit-in-place
+// would leave the channel out of order. PostedAt is set to `at` — important
+// for the reappear-after-months case so the displayed "Posted X ago" reflects
+// THIS appearance rather than a months-old original post.
+//
+// 404 / ErrMessageNotFound on the delete is treated as success (someone may
+// have deleted the message manually). Any other delete error short-circuits
+// before posting: we'd rather leave a stale message than risk duplicating.
+func (p *Publisher) repost(ctx context.Context, b bindings.Binding, item features.Item, prev store.PostedMessage, at time.Time) ItemResult {
+	identity := item.Identity()
+
+	if prev.MessageID != "" {
+		err := p.dc.DeleteMessage(ctx, b.ChannelID, prev.MessageID)
+		if err != nil && !errors.Is(err, discordclient.ErrMessageNotFound) {
+			return ItemResult{Identity: identity, Action: ActionPost, Err: fmt.Errorf("delete before repost: %w", err)}
+		}
+	}
+
+	embed := AnnotateTimestamps(item.Render(), at, at)
+	msgID, err := p.dc.PostMessage(ctx, b.ChannelID, embed)
+	if err != nil {
+		return ItemResult{Identity: identity, Action: ActionPost, Err: err}
+	}
+	raw, _ := json.Marshal(embed)
+	row := store.PostedMessage{
+		BindingID:  b.ID,
+		Identity:   identity,
+		GuildID:    b.GuildID,
+		ChannelID:  b.ChannelID,
+		MessageID:  msgID,
+		StateHash:  item.StateHash(),
+		LastRender: raw,
+		PostedAt:   at,
+		LastSeenAt: at,
+	}
+	if err := p.store.UpsertPosted(ctx, row); err != nil {
+		return ItemResult{Identity: identity, Action: ActionPost, Err: fmt.Errorf("upsert after repost: %w", err)}
+	}
+	return ItemResult{Identity: identity, Action: ActionPost}
 }
 
 // applyOne handles one item: post (new), edit (changed), unstrike (returning),

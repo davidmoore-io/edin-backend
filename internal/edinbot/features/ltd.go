@@ -163,6 +163,18 @@ func BuildLTDItemForTest(system string, buyers []controlclient.Buyer) Item {
 func (l *ltdItem) Identity() string  { return "system:" + l.system }
 func (l *ltdItem) StateHash() string { return l.hash }
 
+// SortKey returns the maximum LTD price across this system's buyers. Drives
+// channel ordering: cheapest at top, priciest at bottom.
+func (l *ltdItem) SortKey() int64 {
+	var max int64
+	for _, b := range l.buyers {
+		if b.LTDPrice > max {
+			max = b.LTDPrice
+		}
+	}
+	return max
+}
+
 func (l *ltdItem) Render() *discordgo.MessageEmbed {
 	tier := topTier(l.buyers)
 
@@ -178,7 +190,7 @@ func (l *ltdItem) Render() *discordgo.MessageEmbed {
 	var desc strings.Builder
 	fmt.Fprintf(&desc, "### %s [%s](%s)", tierEmoji(tier), l.system, edsmURL(l.system))
 	if l.mapURL != "" {
-		fmt.Fprintf(&desc, " · [Map](%s)", l.mapURL)
+		fmt.Fprintf(&desc, " - \\[[Map](%s)\\]", l.mapURL)
 	}
 	desc.WriteString("\n")
 	if state != "" {
@@ -186,15 +198,24 @@ func (l *ltdItem) Render() *discordgo.MessageEmbed {
 	}
 	fmt.Fprintf(&desc, "Kaine %.1f%% · %d station(s)\n", kainePct, len(l.buyers))
 
-	blocks := make([]stationBlock, len(l.buyers))
-	for i, b := range l.buyers {
-		body := []string{
-			fmt.Sprintf("Price: %s / Demand: %s", fullPrice(b.LTDPrice), fullDemand(b.LTDDemand)),
+	// Drop 0c/0t buyers — fresh but uninformative.
+	usable := make([]controlclient.Buyer, 0, len(l.buyers))
+	for _, b := range l.buyers {
+		if b.LTDPrice == 0 && b.LTDDemand == 0 {
+			continue
 		}
+		usable = append(usable, b)
+	}
+
+	blocks := make([]stationBlock, len(usable))
+	for i, b := range usable {
+		// LTD has a single commodity, so the headline price moves up to the
+		// header next to the station name. Demand drops to a body line.
 		blocks[i] = stationBlock{
-			Header:     b.StationName,
-			Body:       body,
-			SeenAtUnix: unixOrZero(b.MarketUpdatedAt),
+			Header:       b.StationName,
+			HeaderSuffix: fmt.Sprintf(" - **%s**", fullPrice(b.LTDPrice)),
+			Body:         []string{fmt.Sprintf("Demand: %s", fullDemand(b.LTDDemand))},
+			SeenAtUnix:   unixOrZero(b.MarketUpdatedAt),
 		}
 	}
 	table, truncated := renderStationBlocks(blocks, 5)
