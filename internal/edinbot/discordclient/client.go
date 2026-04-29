@@ -141,6 +141,12 @@ func (c *RealClient) DeleteMessage(ctx context.Context, channelID, messageID str
 	return err
 }
 
+// Session returns the underlying discordgo session for callers that need
+// to register slash commands or attach raw event listeners. The bot's
+// main.go is the only intended consumer; the rest of the package goes
+// through the typed Client interface.
+func (c *RealClient) Session() *discordgo.Session { return c.sess }
+
 // Close shuts down the discordgo session cleanly. Production main.go calls this
 // during graceful shutdown.
 func (c *RealClient) Close() error { return c.sess.Close() }

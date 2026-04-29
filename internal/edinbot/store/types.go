@@ -29,11 +29,29 @@ type PostedMessage struct {
 type PollCycle struct {
 	TickedAt   time.Time
 	BindingID  string
-	Status     string  // "success" | "failed" | "skipped" | "event"
-	Attempts   int     // 1 for events; 1..4 for polls
+	Status     string // "success" | "failed" | "skipped" | "event"
+	Attempts   int    // 1 for events; 1..4 for polls
 	ItemCount  int
 	DurationMs int
 	LastError  *string // nil when Status == "success" or "event"
+}
+
+// WatchedSystem is one row in discord.watched_systems. Identity is the pair
+// (ChannelID, SystemSlug) — the PRIMARY KEY enforces "one shared message
+// per system per channel" so the AddWatch handler treats unique-violation
+// as ErrAlreadyWatched. Slug is the canonical galaxy.Slugify(name) value;
+// system_name is preserved for human-readable display in the embed.
+type WatchedSystem struct {
+	GuildID       string
+	ChannelID     string
+	SystemSlug    string
+	SystemName    string
+	MessageID     string
+	CreatedBy     string // Discord user id of the /watch caller; audit only
+	WatchedAt     time.Time
+	LastUpdatedAt time.Time
+	LastStateHash string
+	LastRender    json.RawMessage
 }
 
 // DiagnoseReport is one row in discord.diagnose_reports.

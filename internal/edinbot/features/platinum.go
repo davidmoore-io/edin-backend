@@ -129,10 +129,10 @@ func (p *PlatinumBoomAlerts) fetchWithRetry(ctx context.Context) (*controlclient
 
 // platinumItem is the Item implementation for one buyer system.
 type platinumItem struct {
-	system  string
-	buyers  []controlclient.Buyer
-	mapURL  string
-	hash    string
+	system string
+	buyers []controlclient.Buyer
+	mapURL string
+	hash   string
 }
 
 func buildPlatinumItem(system string, buyers []controlclient.Buyer, mapURL string) *platinumItem {

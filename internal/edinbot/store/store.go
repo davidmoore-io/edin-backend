@@ -2,8 +2,15 @@ package store
 
 import (
 	"context"
+	"errors"
 	"time"
 )
+
+// ErrAlreadyWatched is returned by AddWatch when a row with the same
+// (channel_id, system_slug) already exists. The /watch handler turns this
+// into a polite ephemeral "this system is already being watched in this
+// channel" rather than crashing or silently overwriting.
+var ErrAlreadyWatched = errors.New("system already watched in this channel")
 
 // Store is the persistence boundary. Implementations:
 //   - PostgresStore (production)
@@ -61,6 +68,33 @@ type Store interface {
 	// re-allowing the scheduler to call Poll on the next tick. Idempotent;
 	// removing a row that doesn't exist is a no-op.
 	EnableBinding(ctx context.Context, bindingID string) error
+
+	// AddWatch inserts a new watched_systems row. Returns ErrAlreadyWatched
+	// if a row with the same (channel_id, system_slug) already exists. The
+	// uniqueness invariant is enforced by the table's PRIMARY KEY.
+	AddWatch(ctx context.Context, w WatchedSystem) error
+
+	// RemoveWatch deletes the (channel_id, system_slug) row. Returns
+	// (false, nil) when no row matched (idempotent for /unwatch).
+	RemoveWatch(ctx context.Context, channelID, systemSlug string) (deleted bool, err error)
+
+	// GetWatch returns the row for (channel_id, system_slug), if any. Used
+	// by /watch's "already watched? show link" branch.
+	GetWatch(ctx context.Context, channelID, systemSlug string) (*WatchedSystem, error)
+
+	// ListAllWatches returns every watch across every channel — the boot
+	// recovery + 120s polling loop iterates the result. Sorted by slug for
+	// stable stagger ordering.
+	ListAllWatches(ctx context.Context) ([]WatchedSystem, error)
+
+	// CountWatchesInChannel returns how many watches a channel currently
+	// has. Used by /watch to enforce the 50-per-channel cap.
+	CountWatchesInChannel(ctx context.Context, channelID string) (int, error)
+
+	// UpdateWatchState persists a fresh state-hash + render after the
+	// watcher edits the Discord message. last_updated_at must be the
+	// snapshot's freshness timestamp, not the wall clock.
+	UpdateWatchState(ctx context.Context, channelID, systemSlug, hash string, render []byte, updatedAt time.Time) error
 
 	// LatestSuccessAt returns the most-recent ticked_at where status='success'
 	// or 'event' for the given binding. Returns the zero time if no successful

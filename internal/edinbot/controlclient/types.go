@@ -1,6 +1,9 @@
 package controlclient
 
-import "time"
+import (
+	"encoding/json"
+	"time"
+)
 
 // Buyer is the union of fields the bot consumes from Plasmium and LTD
 // responses. Both backend types (kaine.PlasmiumBuyer and kaine.LTDBuyer) share
@@ -41,14 +44,14 @@ type Buyer struct {
 // this shape (the LTD-specific live_power_state and search_radius_ly are
 // included as omitempty so a Plasmium response decodes cleanly).
 type MiningMap struct {
-	SystemName     string   `json:"system_name"`
-	Body           string   `json:"body,omitempty"`
-	RingType       string   `json:"ring_type,omitempty"`
-	ReserveLevel   string   `json:"reserve_level,omitempty"`
-	PowerState     string   `json:"power_state,omitempty"`
-	LivePowerState string   `json:"live_power_state,omitempty"`
-	SearchRadiusLy int      `json:"search_radius_ly,omitempty"`
-	Buyers         []Buyer  `json:"buyers"`
+	SystemName     string  `json:"system_name"`
+	Body           string  `json:"body,omitempty"`
+	RingType       string  `json:"ring_type,omitempty"`
+	ReserveLevel   string  `json:"reserve_level,omitempty"`
+	PowerState     string  `json:"power_state,omitempty"`
+	LivePowerState string  `json:"live_power_state,omitempty"`
+	SearchRadiusLy int     `json:"search_radius_ly,omitempty"`
+	Buyers         []Buyer `json:"buyers"`
 
 	// Map1 is the operator-curated URL for this bubble's primary mining map
 	// page (e.g. ring screenshots, in-game tooling). Surfaced in the bot's
@@ -83,6 +86,32 @@ func (r *PlasmiumBuyersResponse) IsStructurallyValid() bool {
 
 func (r *LTDBuyersResponse) IsStructurallyValid() bool {
 	return r != nil && !r.GeneratedAt.IsZero() && r.Maps != nil
+}
+
+// SystemWatchSnapshot mirrors memgraph.SystemWatchSnapshot — the JSON tags
+// match exactly so the bot can decode the API response without a
+// translation layer. Kept in sync by virtue of the integration smoke
+// test in Phase 6 (an actual /api round-trip would catch any drift).
+type SystemWatchSnapshot struct {
+	Slug                      string          `json:"slug"`
+	Name                      string          `json:"name"`
+	Allegiance                string          `json:"allegiance,omitempty"`
+	ControllingFaction        string          `json:"controlling_faction,omitempty"`
+	ControllingFactionState   string          `json:"controlling_faction_state,omitempty"`
+	ControllingPower          string          `json:"controlling_power,omitempty"`
+	PowerplayState            string          `json:"powerplay_state,omitempty"`
+	Powers                    []string        `json:"powers,omitempty"`
+	ControlProgress           *float64        `json:"control_progress,omitempty"`
+	PowerplayConflictProgress json.RawMessage `json:"powerplay_conflict_progress,omitempty"`
+	Factions                  []WatchFaction  `json:"factions"`
+	LastUpdatedAt             time.Time       `json:"last_updated_at"`
+}
+
+// WatchFaction mirrors memgraph.WatchFaction — same json tags.
+type WatchFaction struct {
+	Name      string  `json:"name"`
+	State     string  `json:"state,omitempty"`
+	Influence float64 `json:"influence,omitempty"`
 }
 
 // DiagnoseReport mirrors /admin/diagnose's response shape (spec §5).

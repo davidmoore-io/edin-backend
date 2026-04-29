@@ -2,9 +2,11 @@ package store
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -217,4 +219,135 @@ func (s *PostgresStore) RecordDiagnoseReport(ctx context.Context, r DiagnoseRepo
 		return fmt.Errorf("record diagnose_report: %w", err)
 	}
 	return nil
+}
+
+// ---- watched_systems ----
+
+// AddWatch inserts a row. The (channel_id, system_slug) PRIMARY KEY surfaces
+// a unique-violation as ErrAlreadyWatched so the /watch handler can offer a
+// polite "already watched here" ephemeral.
+func (s *PostgresStore) AddWatch(ctx context.Context, w WatchedSystem) error {
+	_, err := s.pool.Exec(ctx, `
+		INSERT INTO discord.watched_systems
+		    (guild_id, channel_id, system_slug, system_name, message_id,
+		     created_by, watched_at, last_updated_at, last_state_hash, last_render)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+		w.GuildID, w.ChannelID, w.SystemSlug, w.SystemName, w.MessageID,
+		w.CreatedBy, w.WatchedAt, w.LastUpdatedAt, w.LastStateHash, w.LastRender,
+	)
+	if err != nil {
+		// pgx wraps the underlying *pgconn.PgError. We don't import pgconn
+		// here to keep the package's deps thin; SQLSTATE 23505 = unique
+		// violation is reliably present in the error message text emitted
+		// by pgx for INSERT-conflict.
+		if isUniqueViolation(err) {
+			return ErrAlreadyWatched
+		}
+		return fmt.Errorf("add watch: %w", err)
+	}
+	return nil
+}
+
+// RemoveWatch deletes the row. Returns (false, nil) when no row matched —
+// /unwatch is idempotent.
+func (s *PostgresStore) RemoveWatch(ctx context.Context, channelID, systemSlug string) (bool, error) {
+	tag, err := s.pool.Exec(ctx, `
+		DELETE FROM discord.watched_systems
+		WHERE channel_id = $1 AND system_slug = $2`,
+		channelID, systemSlug)
+	if err != nil {
+		return false, fmt.Errorf("remove watch: %w", err)
+	}
+	return tag.RowsAffected() > 0, nil
+}
+
+// GetWatch returns the single row for (channel_id, system_slug), or nil.
+func (s *PostgresStore) GetWatch(ctx context.Context, channelID, systemSlug string) (*WatchedSystem, error) {
+	var w WatchedSystem
+	err := s.pool.QueryRow(ctx, `
+		SELECT guild_id, channel_id, system_slug, system_name, message_id,
+		       created_by, watched_at, last_updated_at, last_state_hash, last_render
+		FROM discord.watched_systems
+		WHERE channel_id = $1 AND system_slug = $2`,
+		channelID, systemSlug,
+	).Scan(
+		&w.GuildID, &w.ChannelID, &w.SystemSlug, &w.SystemName, &w.MessageID,
+		&w.CreatedBy, &w.WatchedAt, &w.LastUpdatedAt, &w.LastStateHash, &w.LastRender,
+	)
+	if err != nil {
+		if err.Error() == "no rows in result set" {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("get watch: %w", err)
+	}
+	return &w, nil
+}
+
+// ListAllWatches returns every watch row across every channel, sorted by
+// system_slug for stable iteration order in the polling loop.
+func (s *PostgresStore) ListAllWatches(ctx context.Context) ([]WatchedSystem, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT guild_id, channel_id, system_slug, system_name, message_id,
+		       created_by, watched_at, last_updated_at, last_state_hash, last_render
+		FROM discord.watched_systems
+		ORDER BY system_slug`)
+	if err != nil {
+		return nil, fmt.Errorf("list watches: %w", err)
+	}
+	defer rows.Close()
+
+	var out []WatchedSystem
+	for rows.Next() {
+		var w WatchedSystem
+		if err := rows.Scan(
+			&w.GuildID, &w.ChannelID, &w.SystemSlug, &w.SystemName, &w.MessageID,
+			&w.CreatedBy, &w.WatchedAt, &w.LastUpdatedAt, &w.LastStateHash, &w.LastRender,
+		); err != nil {
+			return nil, fmt.Errorf("scan watch: %w", err)
+		}
+		out = append(out, w)
+	}
+	return out, rows.Err()
+}
+
+// CountWatchesInChannel — used by /watch to enforce the 50-per-channel cap.
+func (s *PostgresStore) CountWatchesInChannel(ctx context.Context, channelID string) (int, error) {
+	var n int
+	err := s.pool.QueryRow(ctx,
+		`SELECT count(*) FROM discord.watched_systems WHERE channel_id = $1`,
+		channelID,
+	).Scan(&n)
+	if err != nil {
+		return 0, fmt.Errorf("count watches: %w", err)
+	}
+	return n, nil
+}
+
+// UpdateWatchState persists a new state-hash + render after the watcher
+// has edited the Discord message. Touch nothing else (created_by,
+// watched_at, message_id are append-once fields per the watch lifecycle).
+func (s *PostgresStore) UpdateWatchState(ctx context.Context, channelID, systemSlug, hash string, render []byte, updatedAt time.Time) error {
+	_, err := s.pool.Exec(ctx, `
+		UPDATE discord.watched_systems
+		SET last_state_hash = $3,
+		    last_render     = $4,
+		    last_updated_at = $5
+		WHERE channel_id = $1 AND system_slug = $2`,
+		channelID, systemSlug, hash, render, updatedAt,
+	)
+	if err != nil {
+		return fmt.Errorf("update watch state: %w", err)
+	}
+	return nil
+}
+
+// isUniqueViolation returns true when err is a Postgres unique-constraint
+// violation (SQLSTATE 23505). Uses pgconn's typed error rather than the
+// rendered message string so a future pgx upgrade that reformats error
+// text won't silently break the AddWatch polite-rejection branch.
+// pgconn is already an indirect dependency via pgxpool — adding an
+// explicit import doesn't widen the dependency surface.
+func isUniqueViolation(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == "23505"
 }
