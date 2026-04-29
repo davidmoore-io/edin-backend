@@ -19,6 +19,14 @@ discord_bot_compose_file: /srv/discord-bot/docker-compose.yml
 discord_app_id: "1438245266817028169"
 
 # Galaxy Exporter
+# Set to true to run the galaxy-exporter on its timer. Currently false because
+# each run holds a 30-min snapshot read transaction over all 4.25M Systems and
+# the binary times out before completing, which (a) never produces output and
+# (b) pins Memgraph delta GC for the duration of every run, inflating
+# unreleased_delta_objects. Re-enable once the exporter is fixed to commit
+# per-batch (closing the read tx between SKIP/LIMIT pages) or its timeout is
+# raised to comfortably exceed full-galaxy runtime.
+galaxy_exporter_enabled: false
 galaxy_exporter_output_dir: /srv/galaxy
 galaxy_exporter_binary_path: /usr/local/bin/galaxy-exporter
 galaxy_exporter_timer_interval: 15min

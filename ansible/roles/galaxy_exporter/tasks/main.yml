@@ -62,4 +62,26 @@
     state: started
     enabled: true
     daemon_reload: true
+  when: galaxy_exporter_enabled
+  tags: [galaxy_exporter, service]
+
+# Disabled path: keep the binary and unit files up to date on disk (so a future
+# re-enable is just a flag flip, no rebuild) but stop and mask the timer + any
+# in-flight service run. See group_vars/all.yml for the rationale on why this
+# is currently disabled.
+- name: Stop and disable galaxy exporter timer
+  ansible.builtin.systemd:
+    name: galaxy-exporter.timer
+    state: stopped
+    enabled: false
+    daemon_reload: true
+  when: not galaxy_exporter_enabled
+  tags: [galaxy_exporter, service]
+
+- name: Stop galaxy exporter service if a run is in flight
+  ansible.builtin.systemd:
+    name: galaxy-exporter.service
+    state: stopped
+  when: not galaxy_exporter_enabled
+  failed_when: false
   tags: [galaxy_exporter, service]
