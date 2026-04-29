@@ -2,9 +2,11 @@ package store
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -339,24 +341,13 @@ func (s *PostgresStore) UpdateWatchState(ctx context.Context, channelID, systemS
 	return nil
 }
 
-// isUniqueViolation returns true when the error is a Postgres unique-
-// constraint violation. We string-match rather than depend on pgconn so
-// the store package stays a leaf in the import graph.
+// isUniqueViolation returns true when err is a Postgres unique-constraint
+// violation (SQLSTATE 23505). Uses pgconn's typed error rather than the
+// rendered message string so a future pgx upgrade that reformats error
+// text won't silently break the AddWatch polite-rejection branch.
+// pgconn is already an indirect dependency via pgxpool — adding an
+// explicit import doesn't widen the dependency surface.
 func isUniqueViolation(err error) bool {
-	return err != nil && (containsAny(err.Error(),
-		"SQLSTATE 23505",
-		"duplicate key value violates unique constraint"))
-}
-
-func containsAny(haystack string, needles ...string) bool {
-	for _, n := range needles {
-		if len(n) <= len(haystack) {
-			for i := 0; i+len(n) <= len(haystack); i++ {
-				if haystack[i:i+len(n)] == n {
-					return true
-				}
-			}
-		}
-	}
-	return false
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == "23505"
 }

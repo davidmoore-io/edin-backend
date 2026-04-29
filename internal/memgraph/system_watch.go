@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"sort"
 	"time"
 
@@ -61,6 +62,31 @@ type WatchFaction struct {
 func (c *Client) GetSystemWatchSnapshot(ctx context.Context, slug string) (*SystemWatchSnapshot, error) {
 	session := c.driver.NewSession(ctx, neo4j.SessionConfig{AccessMode: neo4j.AccessModeRead})
 	defer session.Close(ctx)
+
+	// Pre-flight count to surface slug collisions. The slug rule is
+	// "remove spaces from name", which can — vanishingly rarely — collapse
+	// two distinct system names to the same slug. When that happens the
+	// LIMIT 1 below would silently pick whichever Memgraph returned first
+	// and the other system would be permanently invisible. Emitting a
+	// log line keeps the case operationally visible; the lookup itself
+	// still returns the first match (no caller can helpfully disambiguate
+	// from a slug, by definition).
+	countQuery := `MATCH (s:System {slug: $slug}) RETURN count(s) AS n`
+	countRes, err := session.Run(ctx, countQuery, map[string]any{"slug": slug})
+	if err != nil {
+		return nil, fmt.Errorf("watch snapshot count: %w", err)
+	}
+	if countRes.Next(ctx) {
+		if v, ok := countRes.Record().Get("n"); ok && v != nil {
+			n := toInt64(v)
+			if n == 0 {
+				return nil, ErrSystemNotFound
+			}
+			if n > 1 {
+				log.Printf("[WARN] slug collision: %d systems share slug %q — returning first match arbitrarily", n, slug)
+			}
+		}
+	}
 
 	query := `
 		MATCH (s:System {slug: $slug})
