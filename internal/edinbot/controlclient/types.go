@@ -44,14 +44,14 @@ type Buyer struct {
 // this shape (the LTD-specific live_power_state and search_radius_ly are
 // included as omitempty so a Plasmium response decodes cleanly).
 type MiningMap struct {
-	SystemName     string   `json:"system_name"`
-	Body           string   `json:"body,omitempty"`
-	RingType       string   `json:"ring_type,omitempty"`
-	ReserveLevel   string   `json:"reserve_level,omitempty"`
-	PowerState     string   `json:"power_state,omitempty"`
-	LivePowerState string   `json:"live_power_state,omitempty"`
-	SearchRadiusLy int      `json:"search_radius_ly,omitempty"`
-	Buyers         []Buyer  `json:"buyers"`
+	SystemName     string  `json:"system_name"`
+	Body           string  `json:"body,omitempty"`
+	RingType       string  `json:"ring_type,omitempty"`
+	ReserveLevel   string  `json:"reserve_level,omitempty"`
+	PowerState     string  `json:"power_state,omitempty"`
+	LivePowerState string  `json:"live_power_state,omitempty"`
+	SearchRadiusLy int     `json:"search_radius_ly,omitempty"`
+	Buyers         []Buyer `json:"buyers"`
 
 	// Map1 is the operator-curated URL for this bubble's primary mining map
 	// page (e.g. ring screenshots, in-game tooling). Surfaced in the bot's

@@ -10,15 +10,15 @@
 //
 // Surface area is deliberately small:
 //
-//   r := slash.NewRouter(slash.Config{
-//       AllowedChannelIDs:    []string{"1498813935057637597"},
-//       RequirePermissions:   discordgo.PermissionAdministrator,
-//       Logger:               log.Default(),
-//   })
-//   r.Handle("watch",   watchHandler.Run)
-//   r.Handle("unwatch", unwatchHandler.Run)
+//	r := slash.NewRouter(slash.Config{
+//	    AllowedChannelIDs:    []string{"1498813935057637597"},
+//	    RequirePermissions:   discordgo.PermissionAdministrator,
+//	    Logger:               log.Default(),
+//	})
+//	r.Handle("watch",   watchHandler.Run)
+//	r.Handle("unwatch", unwatchHandler.Run)
 //
-//   sess.AddHandler(r.Dispatch)  // wire into the discordgo session
+//	sess.AddHandler(r.Dispatch)  // wire into the discordgo session
 package slash
 
 import (

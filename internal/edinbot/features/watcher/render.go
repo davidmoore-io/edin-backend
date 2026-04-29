@@ -96,24 +96,30 @@ func powerColour(powerplayState string) int {
 }
 
 // Render builds the embed for a watched system. Pure function: no side
-// effects, no clock reads — caller passes the timestamps it wants encoded.
+// effects, no clock reads — caller passes the timestamps + the user-id it
+// wants encoded.
 //
-// Layout (matches the docs/plans markdown sketch):
+// watchedBy is the Discord user-id of whoever ran /watch; rendered as
+// a `<@id>` mention so the channel feed shows who owns the watch.
+// Empty string ⇒ no "by …" suffix (e.g. boot recovery on a row whose
+// creator-id wasn't set in the original DB schema).
 //
-//   ### 👁 [HIP 61332](edin.space/kaine/systems/HIP61332)
-//   Allegiance: Federation
+// Layout:
 //
-//   **Powerplay**
-//   <power> · <state> · <progress%>
-//   Contested by: ...
+//	### 👁 [HIP 61332](edin.space/kaine/systems/HIP61332)
+//	Allegiance: Federation
 //
-//   **Factions**
-//   <faction> · <state> · <influence%>
-//   ...
+//	**Powerplay**
+//	<power> · <state> · <progress%>
+//	Contested by: ...
 //
-//   Watch started: <t:N:R>
-//   Last updated: <t:N:R>
-func Render(snap *controlclient.SystemWatchSnapshot, watchedAt int64) *discordgo.MessageEmbed {
+//	**Factions**
+//	<faction> · <state> · <influence%>
+//	...
+//
+//	Watch started: <t:N:R> by <@user>
+//	Last updated: <t:M:R>
+func Render(snap *controlclient.SystemWatchSnapshot, watchedAt int64, watchedBy string) *discordgo.MessageEmbed {
 	if snap == nil {
 		return &discordgo.MessageEmbed{Description: "*system data unavailable*"}
 	}
@@ -165,9 +171,13 @@ func Render(snap *controlclient.SystemWatchSnapshot, watchedAt int64) *discordgo
 	}
 
 	d.WriteByte('\n')
-	fmt.Fprintf(&d, "Watch started: <t:%d:R>\n", watchedAt)
+	fmt.Fprintf(&d, "Watch started: <t:%d:R>", watchedAt)
+	if watchedBy != "" {
+		fmt.Fprintf(&d, " by <@%s>", watchedBy)
+	}
+	d.WriteByte('\n')
 	if !snap.LastUpdatedAt.IsZero() {
-		fmt.Fprintf(&d, "Data updated: <t:%d:R>", snap.LastUpdatedAt.Unix())
+		fmt.Fprintf(&d, "Last updated: <t:%d:R>", snap.LastUpdatedAt.Unix())
 	}
 
 	return &discordgo.MessageEmbed{

@@ -20,9 +20,9 @@ import (
 // slug. Lets a single test simulate "snapshot 1, then snapshot 2" without
 // monkey-patching time. nil queue position → reuse the last value.
 type scriptedSnapshotter struct {
-	mu   sync.Mutex
-	next map[string][]*controlclient.SystemWatchSnapshot
-	errs map[string]error
+	mu    sync.Mutex
+	next  map[string][]*controlclient.SystemWatchSnapshot
+	errs  map[string]error
 	calls int32
 }
 
@@ -72,7 +72,7 @@ func runOnce(t *testing.T, st *fakeStore, snap watcher.Snapshotter, dc *fakeDisc
 		LogFunc: func(format string, args ...any) {},
 		NowFunc: func() time.Time { return time.Date(2026, 4, 29, 12, 0, 0, 0, time.UTC) },
 	}
-	deps.Cfg.PollInterval = 1 * time.Hour       // ticker won't fire
+	deps.Cfg.PollInterval = 1 * time.Hour           // ticker won't fire
 	deps.Cfg.PerWatchStagger = 1 * time.Microsecond // boot cycle finishes promptly
 
 	ctx, cancel := context.WithCancel(context.Background())

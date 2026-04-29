@@ -2,13 +2,13 @@
 //
 // Architecture (Phase 4 of docs/plans/system-watch-feature.md):
 //
-//   slash.Router → handler.Watch / handler.Unwatch → store + control-API + Discord
-//                                                   ↓
-//                                             watched_systems row
-//                                                   ↓
-//                       Watcher loop (120s ticker) → control-API → diff against last_state_hash
-//                                                                  ↓
-//                                                       Discord EditMessage on change
+//	slash.Router → handler.Watch / handler.Unwatch → store + control-API + Discord
+//	                                                ↓
+//	                                          watched_systems row
+//	                                                ↓
+//	                    Watcher loop (120s ticker) → control-API → diff against last_state_hash
+//	                                                               ↓
+//	                                                    Discord EditMessage on change
 //
 // The watcher is *not* a publisher.PollFeature — it has a fundamentally
 // different lifecycle (user-driven creation, per-row polling, no

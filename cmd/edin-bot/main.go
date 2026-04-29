@@ -176,10 +176,15 @@ func startSlashAndWatcher(ctx context.Context, cfg envConfig, st *store.Postgres
 	// name + signature is a no-op on Discord's side; a deploy that
 	// changes the option list propagates instantly because guild
 	// commands skip the global cache.
+	// DMPermission: false keeps the commands from appearing in DMs at all
+	// — the channel-gate would reject them anyway, but suppressing them
+	// in the DM autocomplete is gentler UX.
+	dmsBlocked := false
 	commands := []*discordgo.ApplicationCommand{
 		{
-			Name:        "watch",
-			Description: "Watch a system for powerplay/faction changes",
+			Name:         "watch",
+			Description:  "Watch a system for powerplay/faction changes",
+			DMPermission: &dmsBlocked,
 			Options: []*discordgo.ApplicationCommandOption{{
 				Type:        discordgo.ApplicationCommandOptionString,
 				Name:        "system",
@@ -188,8 +193,9 @@ func startSlashAndWatcher(ctx context.Context, cfg envConfig, st *store.Postgres
 			}},
 		},
 		{
-			Name:        "unwatch",
-			Description: "Stop watching a system",
+			Name:         "unwatch",
+			Description:  "Stop watching a system",
+			DMPermission: &dmsBlocked,
 			Options: []*discordgo.ApplicationCommandOption{{
 				Type:        discordgo.ApplicationCommandOptionString,
 				Name:        "system",

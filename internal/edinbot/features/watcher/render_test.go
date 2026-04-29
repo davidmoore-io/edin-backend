@@ -29,7 +29,7 @@ func loadSnapshot(t *testing.T, name string) *controlclient.SystemWatchSnapshot 
 
 func TestRender_HIP61332Fixture(t *testing.T) {
 	snap := loadSnapshot(t, "snapshot_HIP61332.json")
-	embed := watcher.Render(snap, 1714400000) // arbitrary fixed unix ts
+	embed := watcher.Render(snap, 1714400000, "") // arbitrary fixed unix ts
 
 	require.NotNil(t, embed)
 	desc := embed.Description
@@ -69,7 +69,7 @@ func TestRender_HIP61332Fixture(t *testing.T) {
 	// Watch metadata. Watch-started is fixed by the caller; data-updated
 	// comes from the snapshot. Both render as live-relative tokens.
 	require.Contains(t, desc, "Watch started: <t:1714400000:R>")
-	require.Contains(t, desc, "Data updated: <t:")
+	require.Contains(t, desc, "Last updated: <t:")
 
 	// Stronghold → green colour bar.
 	require.Equal(t, 0x22c55e, embed.Color)
@@ -84,7 +84,7 @@ func TestRender_NoFactionsDataPath(t *testing.T) {
 		ControllingPower: "Pranav Antal",
 		PowerplayState:   "Fortified",
 	}
-	embed := watcher.Render(snap, 1714400000)
+	embed := watcher.Render(snap, 1714400000, "")
 
 	desc := embed.Description
 	require.Contains(t, desc, "**Factions**")
@@ -102,7 +102,7 @@ func TestRender_UnoccupiedColourTier(t *testing.T) {
 		Slug: "Wregoe", Name: "Wregoe",
 		PowerplayState: "Unoccupied",
 	}
-	embed := watcher.Render(snap, 1714400000)
+	embed := watcher.Render(snap, 1714400000, "")
 	require.Equal(t, 0xef4444, embed.Color)
 	require.Contains(t, embed.Description, "*no controlling power*")
 }
@@ -142,7 +142,25 @@ func TestStateHash_Deterministic(t *testing.T) {
 // when called with nil — important for the watcher loop's recovery path
 // after a Memgraph 5xx where we fall back to the "data unavailable" stub.
 func TestRender_NilSnapshotIsSafe(t *testing.T) {
-	embed := watcher.Render(nil, 0)
+	embed := watcher.Render(nil, 0, "")
 	require.NotNil(t, embed)
 	require.NotEmpty(t, strings.TrimSpace(embed.Description))
+}
+
+// Watch-by attribution: "Watch started: <t:N:R> by <@user>" must appear
+// when watchedBy is supplied; the user-id renders as a Discord mention
+// so the channel feed shows who started the watch.
+func TestRender_WatchByAttribution(t *testing.T) {
+	snap := loadSnapshot(t, "snapshot_HIP61332.json")
+	embed := watcher.Render(snap, 1714400000, "user-12345")
+	require.Contains(t, embed.Description, "Watch started: <t:1714400000:R> by <@user-12345>")
+	require.Contains(t, embed.Description, "Last updated: <t:")
+}
+
+func TestRender_WatchByOmittedWhenEmpty(t *testing.T) {
+	snap := loadSnapshot(t, "snapshot_HIP61332.json")
+	embed := watcher.Render(snap, 1714400000, "")
+	require.Contains(t, embed.Description, "Watch started: <t:1714400000:R>")
+	require.NotContains(t, embed.Description, " by <@",
+		"empty user-id must NOT render a malformed mention")
 }

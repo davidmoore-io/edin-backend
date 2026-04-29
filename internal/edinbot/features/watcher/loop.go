@@ -50,9 +50,9 @@ func NewWatcher(deps LoopDeps) *Watcher {
 
 // Start kicks the goroutine. Behaviour:
 //
-//   1. Boot recovery: immediately run one full cycle for every persisted
-//      watch, so we don't have a 2-minute blank window after a restart.
-//   2. Then tick every Cfg.PollInterval until ctx is cancelled.
+//  1. Boot recovery: immediately run one full cycle for every persisted
+//     watch, so we don't have a 2-minute blank window after a restart.
+//  2. Then tick every Cfg.PollInterval until ctx is cancelled.
 //
 // Each cycle: list all watches, sort (already done by the store), iterate
 // with PerWatchStagger between fetches. Per-watch:
@@ -155,7 +155,7 @@ func (w *Watcher) processOne(ctx context.Context, row store.WatchedSystem) {
 	}
 
 	now := w.now()
-	embed := Render(snap, row.WatchedAt.Unix())
+	embed := Render(snap, row.WatchedAt.Unix(), row.CreatedBy)
 	if err := w.deps.Discord.EditMessage(ctx, row.ChannelID, row.MessageID, embed); err != nil {
 		if errors.Is(err, discordclient.ErrMessageNotFound) || errors.Is(err, discordclient.ErrChannelGone) {
 			// Someone manually deleted the message, or the bot lost

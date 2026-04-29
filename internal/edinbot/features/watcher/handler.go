@@ -32,13 +32,13 @@ var knownNotFoundErrors = []error{
 // production wire-up in cmd/edin-bot/main.go passes the concrete
 // PostgresStore, controlclient.Client, and discordclient.RealClient.
 type HandlerDeps struct {
-	Store    Store
-	Snap     Snapshotter
-	Discord  Discord
-	Cfg      Config
-	GuildID  string // Kaine guild — used to set guild_id on the persisted row
-	NowFunc  func() time.Time
-	LogFunc  func(format string, args ...any) // optional; defaults to log.Printf
+	Store   Store
+	Snap    Snapshotter
+	Discord Discord
+	Cfg     Config
+	GuildID string // Kaine guild — used to set guild_id on the persisted row
+	NowFunc func() time.Time
+	LogFunc func(format string, args ...any) // optional; defaults to log.Printf
 }
 
 // now returns the configured clock or wallclock if not configured. Tests
@@ -69,17 +69,34 @@ func systemOption(ic *discordgo.InteractionCreate) string {
 	return ""
 }
 
-// reply sends an ephemeral reply (visible only to the caller). Used for
-// every /watch and /unwatch result branch — even success — so the channel
-// shows only the actual watched-system message, not chatter.
-func reply(resp slash.Responder, ic *discordgo.InteractionCreate, content string) error {
+// deferEphemeral acknowledges the interaction with a "thinking..."
+// placeholder, ephemeral. Discord allows 3 seconds between receiving the
+// interaction and the bot's first response; deferring buys an additional
+// 15-minute window in which we can edit the deferred response with the
+// real reply. Without deferral a slow Memgraph or Discord post (>3s)
+// would cause Discord to drop the interaction and the operator would
+// see "interaction failed" with no recourse.
+func deferEphemeral(resp slash.Responder, ic *discordgo.InteractionCreate) error {
 	return resp.InteractionRespond(ic.Interaction, &discordgo.InteractionResponse{
-		Type: discordgo.InteractionResponseChannelMessageWithSource,
+		Type: discordgo.InteractionResponseDeferredChannelMessageWithSource,
 		Data: &discordgo.InteractionResponseData{
-			Content: content,
-			Flags:   discordgo.MessageFlagsEphemeral,
+			Flags: discordgo.MessageFlagsEphemeral,
 		},
 	})
+}
+
+// reply edits the deferred ephemeral response with the real content. Used
+// for every /watch and /unwatch result branch — even success — so the
+// channel shows only the actual watched-system message, not chatter.
+//
+// Must be called after deferEphemeral. If the defer was skipped (e.g.
+// validation rejected the interaction before any I/O), use replyImmediate
+// instead.
+func reply(resp slash.Responder, ic *discordgo.InteractionCreate, content string) error {
+	_, err := resp.InteractionResponseEdit(ic.Interaction, &discordgo.WebhookEdit{
+		Content: &content,
+	})
+	return err
 }
 
 // messageLink builds a Discord deep-link to a channel message. Used in
@@ -104,6 +121,14 @@ func messageLink(guildID, channelID, messageID string) string {
 func Watch(deps HandlerDeps) slash.Handler {
 	deps.Cfg = deps.Cfg.Defaults()
 	return func(ctx context.Context, resp slash.Responder, ic *discordgo.InteractionCreate) error {
+		// Acknowledge the interaction within Discord's 3-second window
+		// before any I/O. Every reply path below is reached via reply()
+		// which uses InteractionResponseEdit on the deferred reply.
+		if err := deferEphemeral(resp, ic); err != nil {
+			deps.logf("[ERROR] watch: defer ack failed: %v", err)
+			return err
+		}
+
 		raw := strings.TrimSpace(systemOption(ic))
 		if raw == "" {
 			return reply(resp, ic, "Please provide a system name: `/watch <system>`.")
@@ -144,7 +169,11 @@ func Watch(deps HandlerDeps) slash.Handler {
 
 		// 4. Render + post.
 		now := deps.now()
-		embed := Render(snap, now.Unix())
+		userID := ""
+		if ic.Member != nil && ic.Member.User != nil {
+			userID = ic.Member.User.ID
+		}
+		embed := Render(snap, now.Unix(), userID)
 		msgID, err := deps.Discord.PostMessage(ctx, ic.ChannelID, embed)
 		if err != nil {
 			deps.logf("[ERROR] watch: post message for %q in %s failed: %v", slug, ic.ChannelID, err)
@@ -157,10 +186,6 @@ func Watch(deps HandlerDeps) slash.Handler {
 		// roll back the just-posted Discord message to keep the table
 		// in sync with reality.
 		raw_render, _ := json.Marshal(embed)
-		userID := ""
-		if ic.Member != nil && ic.Member.User != nil {
-			userID = ic.Member.User.ID
-		}
 		err = deps.Store.AddWatch(ctx, store.WatchedSystem{
 			GuildID:       deps.GuildID,
 			ChannelID:     ic.ChannelID,
@@ -202,6 +227,11 @@ func Watch(deps HandlerDeps) slash.Handler {
 func Unwatch(deps HandlerDeps) slash.Handler {
 	deps.Cfg = deps.Cfg.Defaults()
 	return func(ctx context.Context, resp slash.Responder, ic *discordgo.InteractionCreate) error {
+		if err := deferEphemeral(resp, ic); err != nil {
+			deps.logf("[ERROR] unwatch: defer ack failed: %v", err)
+			return err
+		}
+
 		raw := strings.TrimSpace(systemOption(ic))
 		if raw == "" {
 			return reply(resp, ic, "Please provide a system name: `/unwatch <system>`.")

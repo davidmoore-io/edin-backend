@@ -170,22 +170,38 @@ func intToStr(n int) string {
 	return string(digits)
 }
 
-// recordingResp records every InteractionRespond call so tests can
-// observe the ephemeral text the handler produced.
+// recordingResp records both InteractionRespond calls (initial defer) and
+// InteractionResponseEdit calls (the actual reply content). Tests assert
+// on Last() to observe the operator-visible ephemeral text.
+//
+// We track defers separately so a test can assert deferEphemeral fired
+// before any I/O — Discord's 3s window means a missed defer is a real
+// production bug.
 type recordingResp struct {
 	mu      sync.Mutex
-	replies []string
+	defers  int
+	replies []string // each entry = the content of one InteractionResponseEdit
 }
 
 func (r *recordingResp) InteractionRespond(ic *discordgo.Interaction, resp *discordgo.InteractionResponse, _ ...discordgo.RequestOption) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if resp.Data != nil {
+	if resp.Type == discordgo.InteractionResponseDeferredChannelMessageWithSource {
+		r.defers++
+	} else if resp.Data != nil {
+		// Non-deferred reply (e.g. an immediate response — currently
+		// unused by /watch /unwatch but useful to capture if a future
+		// branch skips the defer).
 		r.replies = append(r.replies, resp.Data.Content)
 	}
 	return nil
 }
 func (r *recordingResp) InteractionResponseEdit(ic *discordgo.Interaction, edit *discordgo.WebhookEdit, _ ...discordgo.RequestOption) (*discordgo.Message, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if edit.Content != nil {
+		r.replies = append(r.replies, *edit.Content)
+	}
 	return &discordgo.Message{}, nil
 }
 func (r *recordingResp) FollowupMessageCreate(ic *discordgo.Interaction, _ bool, params *discordgo.WebhookParams, _ ...discordgo.RequestOption) (*discordgo.Message, error) {
@@ -198,6 +214,11 @@ func (r *recordingResp) Last() string {
 		return ""
 	}
 	return r.replies[len(r.replies)-1]
+}
+func (r *recordingResp) DeferCount() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.defers
 }
 
 // mkInteraction builds an InteractionCreate carrying the slash command
@@ -254,6 +275,7 @@ func TestWatch_HappyPath(t *testing.T) {
 		mkInteraction("watch-channel", "user-1", "HIP 61332")))
 
 	require.Len(t, dc.posts, 1, "exactly one Discord post on happy path")
+	require.Equal(t, 1, resp.DeferCount(), "must defer the interaction within Discord's 3s window")
 	require.Contains(t, resp.Last(), "Now watching **HIP 61332**")
 	require.Contains(t, resp.Last(), "https://discord.com/channels/")
 

@@ -113,13 +113,15 @@ func firstMapURL(urls []string) string {
 // "\n" and separates blocks with one blank line.
 //
 // Layout the bot ships today:
-//   StationName · 5m
-//   Price: 245,000c / Demand: 38,209t           (LTD — single line)
+//
+//	StationName · 5m
+//	Price: 245,000c / Demand: 38,209t           (LTD — single line)
 //
 // or for plat (two commodities):
-//   StationName · 5m
-//   Pt — Price: 245,000c / Demand: 38,209t
-//   Os — Price: 199,000c / Demand: 439,390t
+//
+//	StationName · 5m
+//	Pt — Price: 245,000c / Demand: 38,209t
+//	Os — Price: 199,000c / Demand: 439,390t
 //
 // Per-station block layout favours readability over horizontal column
 // alignment: each station stands on its own, repeated structure across
@@ -148,9 +150,10 @@ type stationBlock struct {
 // stations anyway (each block stands alone).
 //
 // Block layout produced:
-//   **StationName** - **NNN,NNNc**     (LTD: header carries headline price)
-//   <body lines>                       (LTD: demand etc; plat: per-commodity)
-//   Data updated: <t:N:R>
+//
+//	**StationName** - **NNN,NNNc**     (LTD: header carries headline price)
+//	<body lines>                       (LTD: demand etc; plat: per-commodity)
+//	Data updated: <t:N:R>
 //
 // Separated by a blank line between stations.
 func renderStationBlocks(blocks []stationBlock, maxBlocks int) (string, int) {
@@ -237,4 +240,3 @@ func pad3(n int64) string {
 	}
 	return s
 }
-

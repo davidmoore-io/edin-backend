@@ -29,8 +29,8 @@ type PostedMessage struct {
 type PollCycle struct {
 	TickedAt   time.Time
 	BindingID  string
-	Status     string  // "success" | "failed" | "skipped" | "event"
-	Attempts   int     // 1 for events; 1..4 for polls
+	Status     string // "success" | "failed" | "skipped" | "event"
+	Attempts   int    // 1 for events; 1..4 for polls
 	ItemCount  int
 	DurationMs int
 	LastError  *string // nil when Status == "success" or "event"
