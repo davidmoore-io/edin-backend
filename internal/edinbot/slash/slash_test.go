@@ -9,44 +9,53 @@ import (
 	"testing"
 
 	"github.com/bwmarrin/discordgo"
+	"github.com/stretchr/testify/require"
 
 	"github.com/edin-space/edin-backend/internal/edinbot/slash"
 )
 
-// fakeSession captures the calls slash.Router makes for assertion. We don't
-// stand up a real discordgo.Session because the network surface is wide
-// and irrelevant to the routing logic — the router only ever calls
-// InteractionRespond. Wrapping discordgo.Session in an interface would
-// invert the dependency for one test concern, so we shadow the method
-// signature on a recorder here and call it via Dispatch.
-//
-// To keep the recorder a drop-in for *discordgo.Session in the router
-// signature, we instead test by inspecting side-effects: the router should
-// fail closed (no handler call) when a gate denies, and call the handler
-// exactly once when the gates pass. The handler itself is the unit under
-// test of the dispatch decision; we don't need to inspect the ephemeral
-// reply text.
-
-func quietLogger() *log.Logger {
-	return log.New(io.Discard, "", 0)
+// recordingResponder captures the calls slash.Router makes so tests can
+// observe gate decisions without a live Discord session. Implements every
+// method of slash.Responder; production wiring is *discordgo.Session.
+type recordingResponder struct {
+	mu      sync.Mutex
+	replies []string
+	follows []string
+	edits   int
 }
 
-// noNetworkRouter wires Dispatch with a session that will fail on any
-// outbound network call (nil HTTP client). Handlers that don't need to
-// reply work fine; gate-denied paths panic-on-network-call, which we
-// catch via runDispatch's recover so we can still observe the handler
-// counter.
-func runDispatch(t *testing.T, r *slash.Router, ic *discordgo.InteractionCreate) {
-	t.Helper()
-	defer func() {
-		// Recover panics from the nil-session network call inside
-		// InteractionRespond. We're explicitly testing the route-decision
-		// branch, not the reply transport.
-		_ = recover()
-	}()
-	sess := &discordgo.Session{Client: nil}
-	r.Dispatch(sess, ic)
+func (r *recordingResponder) InteractionRespond(ic *discordgo.Interaction, resp *discordgo.InteractionResponse, _ ...discordgo.RequestOption) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if resp.Data != nil {
+		r.replies = append(r.replies, resp.Data.Content)
+	}
+	return nil
 }
+
+func (r *recordingResponder) InteractionResponseEdit(ic *discordgo.Interaction, edit *discordgo.WebhookEdit, _ ...discordgo.RequestOption) (*discordgo.Message, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.edits++
+	return &discordgo.Message{}, nil
+}
+
+func (r *recordingResponder) FollowupMessageCreate(ic *discordgo.Interaction, _ bool, params *discordgo.WebhookParams, _ ...discordgo.RequestOption) (*discordgo.Message, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.follows = append(r.follows, params.Content)
+	return &discordgo.Message{}, nil
+}
+
+func (r *recordingResponder) Replies() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out := make([]string, len(r.replies))
+	copy(out, r.replies)
+	return out
+}
+
+func quietLogger() *log.Logger { return log.New(io.Discard, "", 0) }
 
 func mkInteraction(channelID string, perms int64, command string) *discordgo.InteractionCreate {
 	return &discordgo.InteractionCreate{
@@ -71,19 +80,18 @@ func TestRouter_DispatchesToHandlerOnHappyPath(t *testing.T) {
 		RequirePermissions: discordgo.PermissionAdministrator,
 		Logger:             quietLogger(),
 	})
-	r.Handle("watch", func(ctx context.Context, sess *discordgo.Session, ic *discordgo.InteractionCreate) error {
+	r.Handle("watch", func(ctx context.Context, resp slash.Responder, ic *discordgo.InteractionCreate) error {
 		mu.Lock()
 		called++
 		mu.Unlock()
 		return nil
 	})
 
-	ic := mkInteraction("watch-channel", discordgo.PermissionAdministrator, "watch")
-	runDispatch(t, r, ic)
+	resp := &recordingResponder{}
+	r.DispatchForTest(resp, mkInteraction("watch-channel", discordgo.PermissionAdministrator, "watch"))
 
-	if called != 1 {
-		t.Fatalf("handler called %d times, want 1", called)
-	}
+	require.Equal(t, 1, called, "handler must be invoked exactly once on happy path")
+	require.Empty(t, resp.Replies(), "router must not reply on happy path — handler owns the reply")
 }
 
 func TestRouter_RejectsWrongChannel(t *testing.T) {
@@ -93,17 +101,17 @@ func TestRouter_RejectsWrongChannel(t *testing.T) {
 		RequirePermissions: discordgo.PermissionAdministrator,
 		Logger:             quietLogger(),
 	})
-	r.Handle("watch", func(ctx context.Context, sess *discordgo.Session, ic *discordgo.InteractionCreate) error {
+	r.Handle("watch", func(ctx context.Context, resp slash.Responder, ic *discordgo.InteractionCreate) error {
 		called++
 		return nil
 	})
 
-	ic := mkInteraction("some-other-channel", discordgo.PermissionAdministrator, "watch")
-	runDispatch(t, r, ic)
+	resp := &recordingResponder{}
+	r.DispatchForTest(resp, mkInteraction("some-other-channel", discordgo.PermissionAdministrator, "watch"))
 
-	if called != 0 {
-		t.Fatalf("handler must not be called when channel is wrong; got %d calls", called)
-	}
+	require.Equal(t, 0, called, "handler must not be called when channel is wrong")
+	require.Len(t, resp.Replies(), 1)
+	require.Contains(t, resp.Replies()[0], "not enabled in this channel")
 }
 
 func TestRouter_RejectsNonAdmin(t *testing.T) {
@@ -113,30 +121,27 @@ func TestRouter_RejectsNonAdmin(t *testing.T) {
 		RequirePermissions: discordgo.PermissionAdministrator,
 		Logger:             quietLogger(),
 	})
-	r.Handle("watch", func(ctx context.Context, sess *discordgo.Session, ic *discordgo.InteractionCreate) error {
+	r.Handle("watch", func(ctx context.Context, resp slash.Responder, ic *discordgo.InteractionCreate) error {
 		called++
 		return nil
 	})
 
-	// Member with SendMessages but NOT Administrator.
-	ic := mkInteraction("watch-channel", discordgo.PermissionSendMessages, "watch")
-	runDispatch(t, r, ic)
+	resp := &recordingResponder{}
+	r.DispatchForTest(resp, mkInteraction("watch-channel", discordgo.PermissionSendMessages, "watch"))
 
-	if called != 0 {
-		t.Fatalf("handler must not be called for non-admin caller; got %d calls", called)
-	}
+	require.Equal(t, 0, called)
+	require.Len(t, resp.Replies(), 1)
+	require.Contains(t, resp.Replies()[0], "Administrator permission")
 }
 
 func TestRouter_RejectsDM(t *testing.T) {
-	// Member is nil for DM interactions — guild-membership gate must close
-	// before the permissions check (otherwise a dereference panic).
 	called := 0
 	r := slash.NewRouter(slash.Config{
 		AllowedChannelIDs:  []string{"watch-channel"},
 		RequirePermissions: discordgo.PermissionAdministrator,
 		Logger:             quietLogger(),
 	})
-	r.Handle("watch", func(ctx context.Context, sess *discordgo.Session, ic *discordgo.InteractionCreate) error {
+	r.Handle("watch", func(ctx context.Context, resp slash.Responder, ic *discordgo.InteractionCreate) error {
 		called++
 		return nil
 	})
@@ -145,20 +150,21 @@ func TestRouter_RejectsDM(t *testing.T) {
 		Interaction: &discordgo.Interaction{
 			Type:      discordgo.InteractionApplicationCommand,
 			ChannelID: "watch-channel",
-			Member:    nil, // simulating a DM
+			Member:    nil,
 			Data:      discordgo.ApplicationCommandInteractionData{Name: "watch"},
 		},
 	}
-	runDispatch(t, r, ic)
+	resp := &recordingResponder{}
+	r.DispatchForTest(resp, ic)
 
-	if called != 0 {
-		t.Fatalf("handler must not be called for DM (nil Member); got %d calls", called)
-	}
+	require.Equal(t, 0, called)
+	require.Len(t, resp.Replies(), 1)
+	require.Contains(t, resp.Replies()[0], "guild membership")
 }
 
 func TestRouter_DoubleRegisterPanics(t *testing.T) {
 	r := slash.NewRouter(slash.Config{Logger: quietLogger()})
-	r.Handle("watch", func(ctx context.Context, sess *discordgo.Session, ic *discordgo.InteractionCreate) error {
+	r.Handle("watch", func(ctx context.Context, resp slash.Responder, ic *discordgo.InteractionCreate) error {
 		return nil
 	})
 
@@ -167,7 +173,7 @@ func TestRouter_DoubleRegisterPanics(t *testing.T) {
 			t.Fatal("re-registering a handler must panic")
 		}
 	}()
-	r.Handle("watch", func(ctx context.Context, sess *discordgo.Session, ic *discordgo.InteractionCreate) error {
+	r.Handle("watch", func(ctx context.Context, resp slash.Responder, ic *discordgo.InteractionCreate) error {
 		return errors.New("should never be called")
 	})
 }
@@ -179,19 +185,18 @@ func TestRouter_IgnoresNonApplicationCommandInteractions(t *testing.T) {
 		RequirePermissions: discordgo.PermissionAdministrator,
 		Logger:             quietLogger(),
 	})
-	r.Handle("watch", func(ctx context.Context, sess *discordgo.Session, ic *discordgo.InteractionCreate) error {
+	r.Handle("watch", func(ctx context.Context, resp slash.Responder, ic *discordgo.InteractionCreate) error {
 		called++
 		return nil
 	})
 
-	ic := &discordgo.InteractionCreate{
+	resp := &recordingResponder{}
+	r.DispatchForTest(resp, &discordgo.InteractionCreate{
 		Interaction: &discordgo.Interaction{
-			Type: discordgo.InteractionMessageComponent, // a button click, not a slash cmd
+			Type: discordgo.InteractionMessageComponent,
 		},
-	}
-	runDispatch(t, r, ic)
+	})
 
-	if called != 0 {
-		t.Fatalf("non-slash interactions must be ignored; got %d calls", called)
-	}
+	require.Equal(t, 0, called, "non-slash interactions must be ignored")
+	require.Empty(t, resp.Replies())
 }

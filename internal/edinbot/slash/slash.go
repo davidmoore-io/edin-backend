@@ -29,10 +29,20 @@ import (
 	"github.com/bwmarrin/discordgo"
 )
 
+// Responder is the small surface area handlers use to reply to interactions
+// — abstracted from *discordgo.Session so handler tests can substitute a
+// recorder without a network stack. Production wiring is *discordgo.Session
+// (it implements all four methods natively).
+type Responder interface {
+	InteractionRespond(ic *discordgo.Interaction, resp *discordgo.InteractionResponse, opts ...discordgo.RequestOption) error
+	InteractionResponseEdit(ic *discordgo.Interaction, edit *discordgo.WebhookEdit, opts ...discordgo.RequestOption) (*discordgo.Message, error)
+	FollowupMessageCreate(ic *discordgo.Interaction, wait bool, params *discordgo.WebhookParams, opts ...discordgo.RequestOption) (*discordgo.Message, error)
+}
+
 // Handler runs one slash command. Implementations are responsible for
-// calling the appropriate Interaction-respond / -follow-up method on the
-// session — the router only dispatches; it doesn't reply.
-type Handler func(ctx context.Context, sess *discordgo.Session, ic *discordgo.InteractionCreate) error
+// calling the appropriate Interaction-respond / -follow-up method via the
+// Responder — the router only dispatches; it doesn't reply.
+type Handler func(ctx context.Context, resp Responder, ic *discordgo.InteractionCreate) error
 
 // Config governs gate behaviour for the whole router. All slash commands
 // registered with the router share the same gate; a future revision can
@@ -83,11 +93,21 @@ func (r *Router) Handle(name string, h Handler) {
 	r.handlers[name] = h
 }
 
-// Dispatch is the discordgo InteractionCreate handler. Wire it via
+// Dispatch is the discordgo InteractionCreate listener. Wire it via
 // session.AddHandler(router.Dispatch). Non-ApplicationCommand interactions
 // (button clicks, modal submits) are ignored here so future bot features
 // can register their own handlers without conflicting.
+//
+// Discord's session struct satisfies the Responder interface, so tests can
+// substitute a recorder while production passes the live session.
 func (r *Router) Dispatch(sess *discordgo.Session, ic *discordgo.InteractionCreate) {
+	r.dispatch(sess, ic)
+}
+
+// dispatch is the testable core. Takes a Responder rather than a concrete
+// session so unit tests can verify ephemeral content without a network
+// stack. The exported Dispatch above adapts the discordgo signature.
+func (r *Router) dispatch(resp Responder, ic *discordgo.InteractionCreate) {
 	if ic.Type != discordgo.InteractionApplicationCommand {
 		return
 	}
@@ -103,7 +123,7 @@ func (r *Router) Dispatch(sess *discordgo.Session, ic *discordgo.InteractionCrea
 
 	// Channel gate.
 	if !r.channelAllowed(ic.ChannelID) {
-		r.replyEphemeral(sess, ic, "This command is not enabled in this channel.")
+		r.replyEphemeral(resp, ic, "This command is not enabled in this channel.")
 		return
 	}
 
@@ -112,20 +132,26 @@ func (r *Router) Dispatch(sess *discordgo.Session, ic *discordgo.InteractionCrea
 	// so a nil Member here would mean Discord didn't populate it, which
 	// is itself a permission failure.
 	if ic.Member == nil {
-		r.replyEphemeral(sess, ic, "This command requires guild membership.")
+		r.replyEphemeral(resp, ic, "This command requires guild membership.")
 		return
 	}
 	if ic.Member.Permissions&r.cfg.RequirePermissions == 0 {
-		r.replyEphemeral(sess, ic,
+		r.replyEphemeral(resp, ic,
 			"This command requires the Administrator permission.")
 		return
 	}
 
 	// Dispatch. Handlers are responsible for their own response timing
 	// (defer-then-follow-up if the work might take >3s).
-	if err := h(context.Background(), sess, ic); err != nil {
+	if err := h(context.Background(), resp, ic); err != nil {
 		r.cfg.Logger.Printf("slash: handler %q failed: %v", cmdName, err)
 	}
+}
+
+// DispatchForTest is the unit-test entrypoint — same logic as Dispatch but
+// takes a Responder fake instead of a live discordgo session.
+func (r *Router) DispatchForTest(resp Responder, ic *discordgo.InteractionCreate) {
+	r.dispatch(resp, ic)
 }
 
 func (r *Router) channelAllowed(channelID string) bool {
@@ -142,8 +168,8 @@ func (r *Router) channelAllowed(channelID string) bool {
 
 // replyEphemeral sends a one-liner only the caller sees. Discord requires
 // an interaction reply within 3s; this lands well inside that window.
-func (r *Router) replyEphemeral(sess *discordgo.Session, ic *discordgo.InteractionCreate, text string) {
-	err := sess.InteractionRespond(ic.Interaction, &discordgo.InteractionResponse{
+func (r *Router) replyEphemeral(resp Responder, ic *discordgo.InteractionCreate, text string) {
+	err := resp.InteractionRespond(ic.Interaction, &discordgo.InteractionResponse{
 		Type: discordgo.InteractionResponseChannelMessageWithSource,
 		Data: &discordgo.InteractionResponseData{
 			Content: text,

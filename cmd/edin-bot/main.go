@@ -19,14 +19,18 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/bwmarrin/discordgo"
+
 	"github.com/edin-space/edin-backend/internal/edinbot/authclient"
 	"github.com/edin-space/edin-backend/internal/edinbot/bindings"
 	"github.com/edin-space/edin-backend/internal/edinbot/controlclient"
 	"github.com/edin-space/edin-backend/internal/edinbot/discordclient"
 	"github.com/edin-space/edin-backend/internal/edinbot/features"
+	"github.com/edin-space/edin-backend/internal/edinbot/features/watcher"
 	"github.com/edin-space/edin-backend/internal/edinbot/httpserver"
 	"github.com/edin-space/edin-backend/internal/edinbot/publisher"
 	"github.com/edin-space/edin-backend/internal/edinbot/scheduler"
+	"github.com/edin-space/edin-backend/internal/edinbot/slash"
 	"github.com/edin-space/edin-backend/internal/edinbot/store"
 )
 
@@ -120,10 +124,100 @@ func run() error {
 		return fmt.Errorf("start scheduler: %w", err)
 	}
 
+	// 9. Slash-command router + /watch /unwatch handlers + watcher loop.
+	// Wired only when WATCH_CHANNEL_ID and SLASH_GUILD_ID are set;
+	// otherwise the bot keeps the alerts-only behaviour and the slash
+	// surface is dormant. Both ID env vars carry the same Kaine guild
+	// today; kept separate so a second guild could host /watch later
+	// without forking the alerts deploy.
+	if cfg.WatchChannelID != "" && cfg.SlashGuildID != "" {
+		if err := startSlashAndWatcher(ctx, cfg, st, control, dc); err != nil {
+			log.Printf("[WARN] slash/watcher startup failed: %v (continuing without /watch feature)", err)
+		} else {
+			log.Printf("[INFO] /watch /unwatch enabled in channel %s (guild %s)", cfg.WatchChannelID, cfg.SlashGuildID)
+		}
+	} else {
+		log.Printf("[INFO] /watch /unwatch disabled — set WATCH_CHANNEL_ID and SLASH_GUILD_ID to enable")
+	}
+
 	log.Printf("[INFO] edin-bot %s started; %d binding(s)", version, len(bs))
 	<-ctx.Done()
 	log.Printf("[INFO] shutting down")
 	return sch.Stop(10 * time.Second)
+}
+
+// startSlashAndWatcher registers slash commands with Discord, attaches the
+// router as an InteractionCreate listener, and kicks off the polling
+// goroutine. Failures here are non-fatal — the alerts side of the bot
+// keeps running even if the watch feature can't initialise (e.g. Discord
+// rejected the command spec). All wiring of concrete deps lives here.
+func startSlashAndWatcher(ctx context.Context, cfg envConfig, st *store.PostgresStore, control *controlclient.Client, dc *discordclient.RealClient) error {
+	deps := watcher.HandlerDeps{
+		Store:   st,
+		Snap:    control,
+		Discord: dc,
+		Cfg: watcher.Config{
+			AllowedChannelID: cfg.WatchChannelID,
+			// MaxWatchesPerChannel / PollInterval / PerWatchStagger
+			// fall back to defaults via Config.Defaults().
+		},
+		GuildID: cfg.SlashGuildID,
+	}
+
+	router := slash.NewRouter(slash.Config{
+		AllowedChannelIDs:  []string{cfg.WatchChannelID},
+		RequirePermissions: discordgo.PermissionAdministrator,
+	})
+	router.Handle("watch", watcher.Watch(deps))
+	router.Handle("unwatch", watcher.Unwatch(deps))
+	dc.Session().AddHandler(router.Dispatch)
+
+	// Register guild-local slash commands. Re-registering with the same
+	// name + signature is a no-op on Discord's side; a deploy that
+	// changes the option list propagates instantly because guild
+	// commands skip the global cache.
+	commands := []*discordgo.ApplicationCommand{
+		{
+			Name:        "watch",
+			Description: "Watch a system for powerplay/faction changes",
+			Options: []*discordgo.ApplicationCommandOption{{
+				Type:        discordgo.ApplicationCommandOptionString,
+				Name:        "system",
+				Description: "System name (e.g. HIP 61332)",
+				Required:    true,
+			}},
+		},
+		{
+			Name:        "unwatch",
+			Description: "Stop watching a system",
+			Options: []*discordgo.ApplicationCommandOption{{
+				Type:        discordgo.ApplicationCommandOptionString,
+				Name:        "system",
+				Description: "System name to stop watching",
+				Required:    true,
+			}},
+		},
+	}
+	sess := dc.Session()
+	for _, cmd := range commands {
+		if _, err := sess.ApplicationCommandCreate(sess.State.User.ID, cfg.SlashGuildID, cmd); err != nil {
+			return fmt.Errorf("register %s: %w", cmd.Name, err)
+		}
+	}
+
+	// Kick the polling goroutine. NewWatcher applies Config defaults
+	// internally; the deps above carry only the channel-ID gate which
+	// the loop doesn't consume (it polls every persisted row regardless
+	// of channel — handlers gate intake at /watch time).
+	w := watcher.NewWatcher(watcher.LoopDeps{
+		Store:   st,
+		Snap:    control,
+		Discord: dc,
+		Cfg:     watcher.Config{},
+	})
+	w.Start(ctx)
+
+	return nil
 }
 
 // envConfig is read from the environment (which docker-compose populates from
@@ -138,6 +232,8 @@ type envConfig struct {
 	PostgresURL       string
 	BindingsPath      string
 	AdminToken        string
+	WatchChannelID    string
+	SlashGuildID      string
 }
 
 func loadEnv() (envConfig, error) {
@@ -151,6 +247,8 @@ func loadEnv() (envConfig, error) {
 		PostgresURL:       os.Getenv("POSTGRES_URL"),
 		BindingsPath:      os.Getenv("BINDINGS_PATH"),
 		AdminToken:        os.Getenv("ADMIN_TOKEN"),
+		WatchChannelID:    os.Getenv("WATCH_CHANNEL_ID"),
+		SlashGuildID:      os.Getenv("SLASH_GUILD_ID"),
 	}
 	if c.BindingsPath == "" {
 		c.BindingsPath = "/etc/edin-bot/bindings.yml"
