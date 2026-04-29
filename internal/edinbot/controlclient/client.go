@@ -7,11 +7,18 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"time"
 )
+
+// ErrSystemNotFound is returned by GetSystemWatchSnapshot when the requested
+// slug isn't in the galaxy data. The bot's /watch handler treats this as a
+// "system doesn't exist" branch and replies politely rather than failing
+// the slash command.
+var ErrSystemNotFound = errors.New("system not found")
 
 // TokenSource abstracts authclient.Client so this package doesn't import it
 // directly (avoids a cycle if authclient ever needs anything from here).
@@ -45,6 +52,43 @@ func (c *Client) LTDBuyers(ctx context.Context) (*LTDBuyersResponse, error) {
 	var out LTDBuyersResponse
 	if err := c.doJSON(ctx, http.MethodGet, "/api/kaine/mining/ltd-buyers", nil, &out); err != nil {
 		return nil, err
+	}
+	return &out, nil
+}
+
+// GetSystemWatchSnapshot fetches the powerplay + faction state for one
+// system identified by its slug. Returns ErrSystemNotFound on 404 — the
+// caller's /watch handler depends on this sentinel to render a polite
+// "system not found" ephemeral instead of a generic error.
+func (c *Client) GetSystemWatchSnapshot(ctx context.Context, slug string) (*SystemWatchSnapshot, error) {
+	tok, err := c.tokens.Token(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("get auth token: %w", err)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet,
+		c.baseURL+"/api/kaine/watcher/systems/"+slug, nil)
+	if err != nil {
+		return nil, fmt.Errorf("build request: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+tok)
+
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("do request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusNotFound {
+		return nil, ErrSystemNotFound
+	}
+	if resp.StatusCode/100 != 2 {
+		b, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("unexpected status %d: %s", resp.StatusCode, string(b))
+	}
+
+	var out SystemWatchSnapshot
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return nil, fmt.Errorf("decode response: %w", err)
 	}
 	return &out, nil
 }

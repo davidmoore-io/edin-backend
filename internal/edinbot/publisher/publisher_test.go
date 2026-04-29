@@ -140,6 +140,24 @@ func (m *memStore) EnableBinding(ctx context.Context, bid string) error {
 	return nil
 }
 
+// Watch-table stubs — publisher tests don't exercise the watch path.
+func (m *memStore) AddWatch(ctx context.Context, w store.WatchedSystem) error { return nil }
+func (m *memStore) RemoveWatch(ctx context.Context, channelID, systemSlug string) (bool, error) {
+	return false, nil
+}
+func (m *memStore) GetWatch(ctx context.Context, channelID, systemSlug string) (*store.WatchedSystem, error) {
+	return nil, nil
+}
+func (m *memStore) ListAllWatches(ctx context.Context) ([]store.WatchedSystem, error) {
+	return nil, nil
+}
+func (m *memStore) CountWatchesInChannel(ctx context.Context, channelID string) (int, error) {
+	return 0, nil
+}
+func (m *memStore) UpdateWatchState(ctx context.Context, channelID, systemSlug, hash string, render []byte, updatedAt time.Time) error {
+	return nil
+}
+
 func (m *memStore) RecordPollCycle(ctx context.Context, c store.PollCycle) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
