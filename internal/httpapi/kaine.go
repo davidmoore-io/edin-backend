@@ -349,6 +349,10 @@ func (s *Server) RegisterKaineRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/kaine/systems/intel/", s.withKaineAuth(s.handleSystemIntel))
 	mux.HandleFunc("/api/kaine/systems/", s.withKaineAuth(s.handleKaineSystemDetails))
 
+	// Watch-feature lookup — narrow payload, slug-keyed. Used by the bot's
+	// /watch poller every 120s/system; also the eventual permalink target.
+	mux.HandleFunc("/api/kaine/watcher/systems/", s.withKaineAuth(s.handleSystemWatchSnapshot))
+
 	// EDDN event detail (for modal display) - requires auth
 	mux.HandleFunc("/api/kaine/events/", s.withKaineAuth(s.handleEventDetail))
 
