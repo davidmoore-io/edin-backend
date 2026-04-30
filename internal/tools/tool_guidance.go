@@ -51,7 +51,8 @@ IMPORTANT: Before writing Cypher, call galaxy_schema to get the current node lab
 property names, edge types, and indexes. The schema evolves — don't assume property names.
 
 Key properties (may change — verify with galaxy_schema):
-- System: name, controlling_power, powerplay_state, reinforcement, undermining, x, y, z, location (point)
+- System: name, slug, controlling_power, powerplay_state, reinforcement, undermining, x, y, z, location (point)
+- System staleness: last_event_time, last_eddn_update (use these to answer "when was X last updated"; both are TIMESTAMP types)
 - Powerplay filtering: use s.controlling_power = 'Power Name' (property, not relationship)
 
 CRITICAL: System.location is a spatial point with a point index (3M+ entries).

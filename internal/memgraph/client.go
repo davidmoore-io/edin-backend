@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"sort"
 	"strings"
 	"time"
 
@@ -2023,12 +2024,13 @@ func (c *Client) GetGalaxyStats(ctx context.Context) (*GalaxyStats, error) {
 
 // SchemaInfo represents the full Memgraph schema: node labels, edge types, indexes, and constraints.
 type SchemaInfo struct {
-	NodeLabels    []string          `json:"node_labels"`
-	EdgeTypes     []string          `json:"edge_types"`
-	Indexes       []IndexInfo       `json:"indexes"`
-	Constraints   []ConstraintInfo  `json:"constraints"`
-	NodeCounts    map[string]int64  `json:"node_counts"`
-	EdgeCounts    map[string]int64  `json:"edge_counts"`
+	NodeLabels     []string            `json:"node_labels"`
+	EdgeTypes      []string            `json:"edge_types"`
+	Indexes        []IndexInfo         `json:"indexes"`
+	Constraints    []ConstraintInfo    `json:"constraints"`
+	NodeCounts     map[string]int64    `json:"node_counts"`
+	EdgeCounts     map[string]int64    `json:"edge_counts"`
+	NodeProperties map[string][]string `json:"node_properties"` // label -> sorted distinct property keys
 }
 
 // IndexInfo represents a single Memgraph index.
@@ -2055,8 +2057,9 @@ func (c *Client) GetSchema(ctx context.Context) (*SchemaInfo, error) {
 	defer session.Close(ctx)
 
 	schema := &SchemaInfo{
-		NodeCounts: make(map[string]int64),
-		EdgeCounts: make(map[string]int64),
+		NodeCounts:     make(map[string]int64),
+		EdgeCounts:     make(map[string]int64),
+		NodeProperties: make(map[string][]string),
 	}
 
 	// Node counts by label (also gives us label list)
@@ -2077,6 +2080,39 @@ func (c *Client) GetSchema(ctx context.Context) (*SchemaInfo, error) {
 				schema.NodeCounts[labelStr] = toInt64(cnt)
 			}
 		}
+	}
+
+	// Sample property keys per label so the agent knows what fields exist
+	// without having to guess. Without this, the agent invents plausible
+	// names like `updated_at` and gets nulls back — see Apr 2026 when it
+	// missed `last_eddn_update` on :System for exactly this reason.
+	//
+	// 1000 samples per label catches anything present on >~0.5% of nodes,
+	// which covers all properties that are useful for query-writing.
+	// Truly rare optional fields (e.g. `last_faction_update`, only on ~2%
+	// of System nodes) may still be missed; the index list below covers
+	// the indexed ones, and `galaxy_query` can fall back to broader
+	// timestamps like `last_eddn_update` for staleness questions.
+	for _, label := range schema.NodeLabels {
+		q := fmt.Sprintf(
+			"MATCH (n:`%s`) WITH n LIMIT 1000 UNWIND keys(n) AS k RETURN DISTINCT k ORDER BY k",
+			label,
+		)
+		res, err := session.Run(ctx, q, nil)
+		if err != nil {
+			log.Printf("⚠️ property sample for label %s failed: %v", label, err)
+			continue
+		}
+		var keys []string
+		for res.Next(ctx) {
+			if v, ok := res.Record().Get("k"); ok && v != nil {
+				if s, ok := v.(string); ok && s != "" {
+					keys = append(keys, s)
+				}
+			}
+		}
+		sort.Strings(keys)
+		schema.NodeProperties[label] = keys
 	}
 
 	// Edge counts by type (also gives us edge type list)

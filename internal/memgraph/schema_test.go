@@ -28,6 +28,25 @@ func TestGetSchema(t *testing.T) {
 	if len(schema.Indexes) == 0 {
 		t.Error("expected indexes")
 	}
+	if len(schema.NodeProperties) == 0 {
+		t.Error("expected node properties to be populated for at least one label")
+	}
+	// System nodes should always have name + location at minimum.
+	if sysProps, ok := schema.NodeProperties["System"]; ok {
+		needs := []string{"name", "x", "y", "z"}
+		for _, want := range needs {
+			found := false
+			for _, got := range sysProps {
+				if got == want {
+					found = true
+					break
+				}
+			}
+			if !found {
+				t.Errorf("System.NodeProperties missing %q (got %v)", want, sysProps)
+			}
+		}
+	}
 
 	b, _ := json.MarshalIndent(schema, "", "  ")
 	t.Logf("Schema:\n%s", string(b))
