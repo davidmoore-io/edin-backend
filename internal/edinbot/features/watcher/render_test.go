@@ -123,18 +123,92 @@ func TestRender_ReinforcementUnderminingNumbers(t *testing.T) {
 		"reinforcement delta must change state-hash so watcher edits the embed")
 }
 
-func TestRender_UnoccupiedColourTier(t *testing.T) {
-	// No controlling power. Originally this case rendered a red sidebar;
-	// it's now uniformly green (see powerColour). The behavioural part
-	// of this test — the "*no controlling power*" placeholder — is the
-	// piece that still matters.
+func TestRender_UnoccupiedState(t *testing.T) {
+	// Unoccupied systems suppress the merit/conflict block entirely
+	// in favour of a one-liner placeholder, mirroring how the Kaine
+	// system modal at edin.space/powerplay handles the state.
 	snap := &controlclient.SystemWatchSnapshot{
 		Slug: "Wregoe", Name: "Wregoe",
 		PowerplayState: "Unoccupied",
 	}
 	embed := watcher.Render(snap, 1714400000, "")
 	require.Equal(t, 0x22c55e, embed.Color)
-	require.Contains(t, embed.Description, "*no controlling power*")
+	require.Contains(t, embed.Description, "Unoccupied — no powerplay activity")
+	require.NotContains(t, embed.Description, "Reinforcement",
+		"Unoccupied systems must not render merit lines")
+	require.NotContains(t, embed.Description, "% control",
+		"Unoccupied systems have no control progress")
+}
+
+func TestRender_ExpansionState_PerPowerProgress(t *testing.T) {
+	// Expansion-state systems carry no controller and zero merits;
+	// the meaningful data is the per-power ConflictProgress in the
+	// PowerplayConflictProgress JSON blob. Real shape from Nadur's
+	// EDDN feed (Apr 30 21:00 UTC).
+	r := int64(0)
+	u := int64(0)
+	snap := &controlclient.SystemWatchSnapshot{
+		Slug: "Nadur", Name: "Nadur",
+		PowerplayState: "Expansion",
+		Powers:         []string{"Aisling Duval", "Nakato Kaine"},
+		Reinforcement:  &r,
+		Undermining:    &u,
+		PowerplayConflictProgress: json.RawMessage(
+			`[{"Power":"Aisling Duval","ConflictProgress":0.1056},` +
+				`{"Power":"Nakato Kaine","ConflictProgress":0.355875}]`),
+	}
+	embed := watcher.Render(snap, 1714400000, "")
+	desc := embed.Description
+
+	// State header line.
+	require.Contains(t, desc, "**Powerplay**\nExpansion\n")
+
+	// Per-power progress, leading power first (Kaine 35.6% > Aisling 10.6%).
+	kainePos := strings.Index(desc, "Nakato Kaine · 35.6%")
+	aislingPos := strings.Index(desc, "Aisling Duval · 10.6%")
+	require.GreaterOrEqual(t, kainePos, 0, "Kaine entry must render with one-decimal percent")
+	require.GreaterOrEqual(t, aislingPos, 0, "Aisling entry must render with one-decimal percent")
+	require.Less(t, kainePos, aislingPos,
+		"Conflict entries must sort by ConflictProgress DESC — leader first")
+
+	// The Expansion path must NOT emit the controlled-system fields.
+	require.NotContains(t, desc, "Reinforcement",
+		"Expansion systems have zero merits; render must omit the line")
+	require.NotContains(t, desc, "% control",
+		"Expansion systems have no control progress")
+	require.NotContains(t, desc, "*no controlling power*",
+		"Expansion handler renders state line, not the controlled-system placeholder")
+}
+
+func TestRender_ContestedState_PerPowerProgress(t *testing.T) {
+	// Contested systems use the same per-power progress rendering as
+	// Expansion. The state classifier matches the substring "contested".
+	snap := &controlclient.SystemWatchSnapshot{
+		Slug: "HIP1", Name: "HIP 1",
+		PowerplayState: "Contested",
+		PowerplayConflictProgress: json.RawMessage(
+			`[{"Power":"Felicia Winters","ConflictProgress":0.42},` +
+				`{"Power":"Aisling Duval","ConflictProgress":0.31}]`),
+	}
+	embed := watcher.Render(snap, 1714400000, "")
+	require.Contains(t, embed.Description, "**Powerplay**\nContested\n")
+	require.Contains(t, embed.Description, "Felicia Winters · 42.0%")
+	require.Contains(t, embed.Description, "Aisling Duval · 31.0%")
+}
+
+func TestRender_ConflictState_FallbackToPowerList(t *testing.T) {
+	// Edge case: PowerplayConflictProgress missing (eddn-listener never
+	// wrote it, or stored an empty payload). Render must fall back to
+	// the bare Powers array rather than emit "no data" — operators
+	// still want to know who's competing.
+	snap := &controlclient.SystemWatchSnapshot{
+		Slug: "X1", Name: "X 1",
+		PowerplayState: "Expansion",
+		Powers:         []string{"Power A", "Power B"},
+		// PowerplayConflictProgress intentionally nil
+	}
+	embed := watcher.Render(snap, 1714400000, "")
+	require.Contains(t, embed.Description, "Competing: Power A, Power B")
 }
 
 // stateHash determinism: two calls on identical data must agree, and a

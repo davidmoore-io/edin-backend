@@ -131,34 +131,7 @@ func Render(snap *controlclient.SystemWatchSnapshot, watchedAt int64, watchedBy 
 
 	d.WriteByte('\n')
 	d.WriteString("**Powerplay**\n")
-	powerLine := snap.ControllingPower
-	if powerLine == "" {
-		powerLine = "*no controlling power*"
-	}
-	if snap.PowerplayState != "" {
-		powerLine += " · " + snap.PowerplayState
-	}
-	if snap.ControlProgress != nil {
-		powerLine += fmt.Sprintf(" · %.0f%% control", *snap.ControlProgress*100)
-	}
-	fmt.Fprintln(&d, powerLine)
-	// Reinforcement / Undermining raw counts are the actionable numbers —
-	// the % control is derived from them, but operators want to see how
-	// far ahead/behind the system is in absolute terms. Rendered on a
-	// single line with thousands-separators for legibility.
-	if snap.Reinforcement != nil || snap.Undermining != nil {
-		var reinf, undr int64
-		if snap.Reinforcement != nil {
-			reinf = *snap.Reinforcement
-		}
-		if snap.Undermining != nil {
-			undr = *snap.Undermining
-		}
-		fmt.Fprintf(&d, "Reinforcement: %s · Undermining: %s\n", thousands(reinf), thousands(undr))
-	}
-	if contested := contestedPowers(snap); len(contested) > 0 {
-		fmt.Fprintf(&d, "Contested by: %s\n", strings.Join(contested, ", "))
-	}
+	renderPowerplayBlock(&d, snap)
 
 	d.WriteByte('\n')
 	d.WriteString("**Factions**\n")
@@ -196,6 +169,134 @@ func Render(snap *controlclient.SystemWatchSnapshot, watchedAt int64, watchedBy 
 		Description: d.String(),
 		Color:       powerColour(snap.PowerplayState),
 	}
+}
+
+// conflictEntry mirrors the per-power objects inside the
+// PowerplayConflictProgress array the eddn-listener stores as JSON. Field
+// names match the EDDN journal schema (capitalised) so the JSON unmarshal
+// is direct.
+type conflictEntry struct {
+	Power            string  `json:"Power"`
+	ConflictProgress float64 `json:"ConflictProgress"`
+}
+
+// isConflictState returns true for powerplay states where the system has
+// no single controller and per-power ConflictProgress is the meaningful
+// signal — Expansion (no power yet, multiple powers competing) and
+// Contested (a former controller is being challenged). Mirrors the
+// frontend's isExpansionState / isContestedState in
+// edin-frontend/src/pages/powerplay/types/powerplay.js so the bot embed
+// agrees with the kaine system modal at edin.space/powerplay.
+func isConflictState(powerplayState string) bool {
+	s := strings.ToLower(powerplayState)
+	return strings.Contains(s, "expansion") || strings.Contains(s, "contested")
+}
+
+// isUnoccupiedState returns true for the explicit Unoccupied state where
+// no powerplay activity is happening at all. Rendering should suppress
+// the merit/conflict block entirely and show a placeholder.
+func isUnoccupiedState(powerplayState string) bool {
+	return strings.EqualFold(strings.TrimSpace(powerplayState), "unoccupied")
+}
+
+// renderPowerplayBlock writes the body of the **Powerplay** section,
+// dispatching on PowerplayState. Three buckets:
+//
+//   - Conflict (Expansion / Contested) — render per-power ConflictProgress
+//     percentages. No controlling power, no reinforcement/undermining
+//     merits (those fields are zero during a conflict cycle).
+//   - Unoccupied — render a single placeholder line. Suppress everything
+//     else; the system has no active powerplay state.
+//   - Controlled (Stronghold / Fortified / Exploited / fallback) — render
+//     controller · state · control% line, then Reinforcement /
+//     Undermining merit counts. This is the path that existed before
+//     conflict-state handling was added.
+//
+// Each branch is responsible for emitting its own "Contested by:" tail
+// where applicable; the conflict branch encodes that information in the
+// ConflictProgress list directly so a separate line is redundant.
+func renderPowerplayBlock(d *strings.Builder, snap *controlclient.SystemWatchSnapshot) {
+	switch {
+	case isConflictState(snap.PowerplayState):
+		renderConflictBlock(d, snap)
+	case isUnoccupiedState(snap.PowerplayState):
+		fmt.Fprintln(d, "Unoccupied — no powerplay activity")
+	default:
+		renderControlledBlock(d, snap)
+	}
+}
+
+// renderControlledBlock is the original Stronghold/Fortified/Exploited
+// path — controller, state, control%, then merit counts.
+func renderControlledBlock(d *strings.Builder, snap *controlclient.SystemWatchSnapshot) {
+	powerLine := snap.ControllingPower
+	if powerLine == "" {
+		powerLine = "*no controlling power*"
+	}
+	if snap.PowerplayState != "" {
+		powerLine += " · " + snap.PowerplayState
+	}
+	if snap.ControlProgress != nil {
+		powerLine += fmt.Sprintf(" · %.0f%% control", *snap.ControlProgress*100)
+	}
+	fmt.Fprintln(d, powerLine)
+	if snap.Reinforcement != nil || snap.Undermining != nil {
+		var reinf, undr int64
+		if snap.Reinforcement != nil {
+			reinf = *snap.Reinforcement
+		}
+		if snap.Undermining != nil {
+			undr = *snap.Undermining
+		}
+		fmt.Fprintf(d, "Reinforcement: %s · Undermining: %s\n", thousands(reinf), thousands(undr))
+	}
+	if contested := contestedPowers(snap); len(contested) > 0 {
+		fmt.Fprintf(d, "Contested by: %s\n", strings.Join(contested, ", "))
+	}
+}
+
+// renderConflictBlock handles Expansion and Contested. Sorts entries by
+// ConflictProgress DESC so the leading power is first; sub-entries
+// (other competing powers) follow underneath. Falls back to the bare
+// `Powers` list when ConflictProgress is missing or unparseable — rare,
+// but possible if the eddn-listener stored a malformed payload.
+func renderConflictBlock(d *strings.Builder, snap *controlclient.SystemWatchSnapshot) {
+	// State header line — shows just the state so operators can see
+	// they're looking at a conflict cycle, not a controlled system.
+	fmt.Fprintln(d, snap.PowerplayState)
+
+	entries := parseConflictProgress(snap.PowerplayConflictProgress)
+	if len(entries) == 0 {
+		// Fallback: show the bare power list. Better than nothing,
+		// avoids a "no data" line that would mask the powers
+		// themselves.
+		if len(snap.Powers) > 0 {
+			fmt.Fprintf(d, "Competing: %s\n", strings.Join(snap.Powers, ", "))
+		}
+		return
+	}
+
+	sort.SliceStable(entries, func(i, j int) bool {
+		return entries[i].ConflictProgress > entries[j].ConflictProgress
+	})
+	for _, e := range entries {
+		fmt.Fprintf(d, "%s · %.1f%%\n", e.Power, e.ConflictProgress*100)
+	}
+}
+
+// parseConflictProgress decodes the snapshot's opaque JSON-blob field
+// into a typed slice. Returns nil for empty / malformed input — the
+// caller treats nil and empty identically (both fall back to the bare
+// power list).
+func parseConflictProgress(raw json.RawMessage) []conflictEntry {
+	if len(raw) == 0 {
+		return nil
+	}
+	var out []conflictEntry
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return nil
+	}
+	return out
 }
 
 // thousands formats an int with comma thousands-separators ("112,086").
