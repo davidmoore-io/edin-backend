@@ -41,6 +41,8 @@ func stateHash(s *controlclient.SystemWatchSnapshot) string {
 		PowerState       string
 		Powers           []string
 		ControlProgress  *float64
+		Reinforcement    *int64
+		Undermining      *int64
 		ConflictProgress json.RawMessage
 		Factions         []controlclient.WatchFaction
 	}
@@ -52,6 +54,8 @@ func stateHash(s *controlclient.SystemWatchSnapshot) string {
 		PowerState:       s.PowerplayState,
 		Powers:           append([]string(nil), s.Powers...),
 		ControlProgress:  s.ControlProgress,
+		Reinforcement:    s.Reinforcement,
+		Undermining:      s.Undermining,
 		ConflictProgress: s.PowerplayConflictProgress,
 		Factions:         append([]controlclient.WatchFaction(nil), s.Factions...),
 	}
@@ -79,20 +83,14 @@ func StateHashForTest(s *controlclient.SystemWatchSnapshot) string {
 	return stateHash(s)
 }
 
-// powerColour maps a powerplay state to the embed's colour-bar tier.
-// Stronghold (high control) → green; Fortified → amber; anything else
-// (Exploited / Contested / Unoccupied) → red. Operators wanted a
-// glance-cue alongside the data block; one consistent dimension of
-// colour beats per-faction colour picking.
+// powerColour returns the embed's left sidebar colour. Originally tier-
+// based (Stronghold green, Fortified amber, else red), but red on
+// Exploited systems read as alarmist when most Kaine systems sit there
+// by default — operators preferred a uniform green accent. Kept as a
+// function (not a const) so we can reintroduce tiering later without
+// touching the call site.
 func powerColour(powerplayState string) int {
-	switch strings.ToLower(powerplayState) {
-	case "stronghold":
-		return 0x22c55e
-	case "fortified":
-		return 0xeab308
-	default:
-		return 0xef4444
-	}
+	return 0x22c55e
 }
 
 // Render builds the embed for a watched system. Pure function: no side
@@ -144,6 +142,20 @@ func Render(snap *controlclient.SystemWatchSnapshot, watchedAt int64, watchedBy 
 		powerLine += fmt.Sprintf(" · %.0f%% control", *snap.ControlProgress*100)
 	}
 	fmt.Fprintln(&d, powerLine)
+	// Reinforcement / Undermining raw counts are the actionable numbers —
+	// the % control is derived from them, but operators want to see how
+	// far ahead/behind the system is in absolute terms. Rendered on a
+	// single line with thousands-separators for legibility.
+	if snap.Reinforcement != nil || snap.Undermining != nil {
+		var reinf, undr int64
+		if snap.Reinforcement != nil {
+			reinf = *snap.Reinforcement
+		}
+		if snap.Undermining != nil {
+			undr = *snap.Undermining
+		}
+		fmt.Fprintf(&d, "Reinforcement: %s · Undermining: %s\n", thousands(reinf), thousands(undr))
+	}
 	if contested := contestedPowers(snap); len(contested) > 0 {
 		fmt.Fprintf(&d, "Contested by: %s\n", strings.Join(contested, ", "))
 	}
@@ -184,6 +196,35 @@ func Render(snap *controlclient.SystemWatchSnapshot, watchedAt int64, watchedBy 
 		Description: d.String(),
 		Color:       powerColour(snap.PowerplayState),
 	}
+}
+
+// thousands formats an int with comma thousands-separators ("112,086").
+// Standalone helper rather than pulling in golang.org/x/text/message —
+// the bot's render path runs in a tight poll loop and we don't need
+// locale-aware formatting; the embed is English-only.
+func thousands(n int64) string {
+	s := fmt.Sprintf("%d", n)
+	if n < 0 {
+		return "-" + thousands(-n)
+	}
+	if len(s) <= 3 {
+		return s
+	}
+	var b strings.Builder
+	pre := len(s) % 3
+	if pre > 0 {
+		b.WriteString(s[:pre])
+		if len(s) > pre {
+			b.WriteByte(',')
+		}
+	}
+	for i := pre; i < len(s); i += 3 {
+		b.WriteString(s[i : i+3])
+		if i+3 < len(s) {
+			b.WriteByte(',')
+		}
+	}
+	return b.String()
 }
 
 // contestedPowers returns the list of non-controlling powers attached to

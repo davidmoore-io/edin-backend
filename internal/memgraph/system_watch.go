@@ -39,6 +39,8 @@ type SystemWatchSnapshot struct {
 	PowerplayState            string          `json:"powerplay_state,omitempty"`
 	Powers                    []string        `json:"powers,omitempty"`
 	ControlProgress           *float64        `json:"control_progress,omitempty"`
+	Reinforcement             *int64          `json:"reinforcement,omitempty"`
+	Undermining               *int64          `json:"undermining,omitempty"`
 	PowerplayConflictProgress json.RawMessage `json:"powerplay_conflict_progress,omitempty"`
 	Factions                  []WatchFaction  `json:"factions"`
 	LastUpdatedAt             time.Time       `json:"last_updated_at"`
@@ -106,6 +108,8 @@ func (c *Client) GetSystemWatchSnapshot(ctx context.Context, slug string) (*Syst
 		       s.powerplay_state            AS powerplay_state,
 		       s.powers                     AS powers,
 		       s.control_progress           AS control_progress,
+		       s.reinforcement              AS reinforcement,
+		       s.undermining                AS undermining,
 		       s.powerplay_conflict_progress AS powerplay_conflict_progress,
 		       faction_rows                 AS factions,
 		       last_updated_at              AS last_updated_at
@@ -155,6 +159,14 @@ func (c *Client) GetSystemWatchSnapshot(ctx context.Context, slug string) (*Syst
 	if v, ok := rec.Get("control_progress"); ok && v != nil {
 		f := toFloat64(v)
 		out.ControlProgress = &f
+	}
+	if v, ok := rec.Get("reinforcement"); ok && v != nil {
+		n := toInt64(v)
+		out.Reinforcement = &n
+	}
+	if v, ok := rec.Get("undermining"); ok && v != nil {
+		n := toInt64(v)
+		out.Undermining = &n
 	}
 	if v, ok := rec.Get("powerplay_conflict_progress"); ok && v != nil {
 		if s, ok := v.(string); ok && s != "" {

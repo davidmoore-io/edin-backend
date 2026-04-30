@@ -102,6 +102,8 @@ type SystemWatchSnapshot struct {
 	PowerplayState            string          `json:"powerplay_state,omitempty"`
 	Powers                    []string        `json:"powers,omitempty"`
 	ControlProgress           *float64        `json:"control_progress,omitempty"`
+	Reinforcement             *int64          `json:"reinforcement,omitempty"`
+	Undermining               *int64          `json:"undermining,omitempty"`
 	PowerplayConflictProgress json.RawMessage `json:"powerplay_conflict_progress,omitempty"`
 	Factions                  []WatchFaction  `json:"factions"`
 	LastUpdatedAt             time.Time       `json:"last_updated_at"`

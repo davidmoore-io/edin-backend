@@ -91,19 +91,49 @@ func TestRender_NoFactionsDataPath(t *testing.T) {
 	require.Contains(t, desc, "_no faction data_",
 		"empty faction list must render an explicit placeholder, not a void")
 
-	// Fortified → amber.
-	require.Equal(t, 0xeab308, embed.Color)
+	// Sidebar is now uniformly green — see powerColour comment for why.
+	require.Equal(t, 0x22c55e, embed.Color)
+}
+
+func TestRender_ReinforcementUnderminingNumbers(t *testing.T) {
+	// Operators want the absolute counts, not just the % control.
+	// Verify both render with comma thousands-separators on a single
+	// line, and that the line appears even when only one of the two
+	// fields is populated (a freshly-tracked system after cycle reset
+	// might have undermining=0 but reinforcement set, or vice versa).
+	r := int64(112086)
+	u := int64(93297)
+	snap := &controlclient.SystemWatchSnapshot{
+		Slug: "LTT4042", Name: "LTT 4042",
+		ControllingPower: "Nakato Kaine",
+		PowerplayState:   "Exploited",
+		Reinforcement:    &r,
+		Undermining:      &u,
+	}
+	embed := watcher.Render(snap, 1714400000, "")
+	require.Contains(t, embed.Description, "Reinforcement: 112,086 · Undermining: 93,297")
+
+	// State-hash sensitivity: changing one of the numbers must change
+	// the hash, otherwise the watcher loop will skip the edit.
+	h1 := watcher.StateHashForTest(snap)
+	r2 := int64(112087)
+	snap.Reinforcement = &r2
+	h2 := watcher.StateHashForTest(snap)
+	require.NotEqual(t, h1, h2,
+		"reinforcement delta must change state-hash so watcher edits the embed")
 }
 
 func TestRender_UnoccupiedColourTier(t *testing.T) {
-	// No controlling power → red tier. Mirrors the typical "frontier"
-	// system where the watch is set up to track first-power capture.
+	// No controlling power. Originally this case rendered a red sidebar;
+	// it's now uniformly green (see powerColour). The behavioural part
+	// of this test — the "*no controlling power*" placeholder — is the
+	// piece that still matters.
 	snap := &controlclient.SystemWatchSnapshot{
 		Slug: "Wregoe", Name: "Wregoe",
 		PowerplayState: "Unoccupied",
 	}
 	embed := watcher.Render(snap, 1714400000, "")
-	require.Equal(t, 0xef4444, embed.Color)
+	require.Equal(t, 0x22c55e, embed.Color)
 	require.Contains(t, embed.Description, "*no controlling power*")
 }
 
