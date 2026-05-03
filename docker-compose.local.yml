@@ -1,0 +1,45 @@
+# Local Memgraph for development and the manual end-to-end loop.
+#
+# This file is for the developer machine only — it is NOT used by tests
+# (Go integration tests use testcontainers via internal/testutil/memgraph.go,
+# and spin their own ephemeral instance). It is also NOT used in production
+# (production is managed by Ansible against memgraph/memgraph:latest, which
+# is a separate hygiene concern).
+#
+# Pinned to memgraph/memgraph:3.8.1 to match the version verified in production
+# at the time of writing. Keep this version aligned with what production runs;
+# otherwise local tokenizer behaviour can drift from production.
+#
+# Usage:
+#   make memgraph-local         # render init script + bring container up
+#   make memgraph-local-down    # stop and remove the container
+#   make memgraph-local-seed    # load the dev-subset of production data
+#
+services:
+  memgraph:
+    image: memgraph/memgraph:3.8.1
+    container_name: edin-dev-memgraph
+    # Schema (indexes, constraints, seed Power nodes) is applied AFTER startup
+    # by `make memgraph-local` over Bolt — see Makefile target. Same path the
+    # testcontainers harness uses, so local stack and tests agree.
+    command:
+      - "--also-log-to-stderr=true"
+      - "--log-level=WARNING"
+    ports:
+      # Host port 7688 (not 7687) to avoid clashing with other local Memgraph
+      # instances. Backend should connect with MEMGRAPH_PORT=7688 locally.
+      - "7688:7687"   # Bolt protocol — Go client connects here
+      - "7445:7444"   # WebSocket monitoring (optional; useful for Memgraph Lab)
+    volumes:
+      - edin-dev-memgraph-data:/var/lib/memgraph
+    healthcheck:
+      # mgconsole exits non-zero if it cannot connect; -1 means "use default port".
+      test: ["CMD-SHELL", "echo 'RETURN 1;' | mgconsole --use-ssl=false --host 127.0.0.1 --port 7687 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 15s
+
+volumes:
+  edin-dev-memgraph-data:
+    name: edin-dev-memgraph-data

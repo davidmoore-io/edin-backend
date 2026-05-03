@@ -725,13 +725,30 @@ func (c *Client) SearchSystems(ctx context.Context, query string, limit int) ([]
 		limit = 10
 	}
 
+	plan, err := buildSearchPlan(query)
+	if err != nil {
+		return nil, fmt.Errorf("system search: %w", err)
+	}
+
 	session := c.driver.NewSession(ctx, neo4j.SessionConfig{AccessMode: neo4j.AccessModeRead})
 	defer session.Close(ctx)
 
-	// Case-insensitive prefix search
+	// Token-prefix search via the Tantivy text index `systems_name_text`,
+	// created by the Memgraph init template (edin-data Ansible role).
+	//
+	// regex_search applies the regex against each indexed term independently;
+	// the plan's regex is `<lastToken>.*`, which gives prefix behaviour for the
+	// (potentially incomplete) last token the user typed. Earlier tokens are
+	// enforced as literal substrings via the WHERE filter — cheap, because the
+	// regex_search has already narrowed to a small candidate set.
+	//
+	// Result ordering: regex_search returns a relevance score; ties are broken
+	// by name length (so "Sol" beats "Solatium" for q=sol) and then alphabetic.
 	cypher := `
-		MATCH (s:System)
-		WHERE toLower(s.name) STARTS WITH toLower($query)
+		CALL text_search.regex_search('systems_name_text', $regex)
+		YIELD node, score
+		WITH node AS s, score
+		WHERE all(t IN $must_contain WHERE toLower(s.name) CONTAINS t)
 		RETURN
 			s.name AS name,
 			s.id64 AS id64,
@@ -753,17 +770,24 @@ func (c *Client) SearchSystems(ctx context.Context, query string, limit int) ([]
 			s.x AS x, s.y AS y, s.z AS z,
 			s.thargoid_state AS thargoid_state,
 			s.thargoid_progress AS thargoid_progress,
-			s.last_eddn_update AS last_eddn_update
-		ORDER BY s.name
+			s.last_eddn_update AS last_eddn_update,
+			score AS _score
+		ORDER BY score DESC, size(s.name) ASC, s.name ASC
 		LIMIT $limit
 	`
 
-	result, err := session.Run(ctx, cypher, map[string]any{"query": query, "limit": int64(limit)})
+	result, err := session.Run(ctx, cypher, map[string]any{
+		"regex":        plan.Regex,
+		"must_contain": plan.MustContain,
+		"limit":        int64(limit),
+	})
 	if err != nil {
 		return nil, fmt.Errorf("search query failed: %w", err)
 	}
 
-	var systems []SystemData
+	// Initialise as empty slice rather than nil so callers (and our JSON
+	// encoder) get a deterministic [] for no-match instead of `null`.
+	systems := []SystemData{}
 	for result.Next(ctx) {
 		record := result.Record()
 		sys := SystemData{}
@@ -2325,12 +2349,23 @@ func (c *Client) SearchStations(ctx context.Context, query string, limit int) ([
 		limit = 20
 	}
 
+	plan, err := buildSearchPlan(query)
+	if err != nil {
+		return nil, fmt.Errorf("station search: %w", err)
+	}
+
 	session := c.driver.NewSession(ctx, neo4j.SessionConfig{AccessMode: neo4j.AccessModeRead})
 	defer session.Close(ctx)
 
+	// Mirrors SearchSystems: token-prefix search via the Tantivy text index
+	// `stations_name_text`. The MATCH stitches each result Station back to its
+	// owning System via HAS_STATION so the response carries system_name/id64.
 	cypher := `
-		MATCH (s:System)-[:HAS_STATION]->(st:Station)
-		WHERE toLower(st.name) STARTS WITH toLower($query)
+		CALL text_search.regex_search('stations_name_text', $regex)
+		YIELD node, score
+		WITH node AS st, score
+		WHERE all(t IN $must_contain WHERE toLower(st.name) CONTAINS t)
+		MATCH (s:System)-[:HAS_STATION]->(st)
 		RETURN
 			st.id64 AS id64,
 			st.name AS name,
@@ -2341,17 +2376,23 @@ func (c *Client) SearchStations(ctx context.Context, query string, limit int) ([
 			st.max_pad AS max_pad,
 			st.is_planetary AS is_planetary,
 			st.services AS services,
-			st.last_eddn_update AS last_eddn_update
-		ORDER BY st.name
+			st.last_eddn_update AS last_eddn_update,
+			score AS _score
+		ORDER BY score DESC, size(st.name) ASC, st.name ASC
 		LIMIT $limit
 	`
 
-	result, err := session.Run(ctx, cypher, map[string]any{"query": query, "limit": int64(limit)})
+	result, err := session.Run(ctx, cypher, map[string]any{
+		"regex":        plan.Regex,
+		"must_contain": plan.MustContain,
+		"limit":        int64(limit),
+	})
 	if err != nil {
 		return nil, fmt.Errorf("search query failed: %w", err)
 	}
 
-	var stations []StationData
+	// Empty slice (not nil) so JSON encodes to [] for no-match.
+	stations := []StationData{}
 	for result.Next(ctx) {
 		record := result.Record()
 		st := StationData{}
