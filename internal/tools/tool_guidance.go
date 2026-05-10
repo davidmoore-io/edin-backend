@@ -50,12 +50,33 @@ Read-only only (MATCH/RETURN/WITH/WHERE/ORDER BY/LIMIT). LIMIT auto-appended if 
 IMPORTANT: Before writing Cypher, call galaxy_schema to get the current node labels,
 property names, edge types, and indexes. The schema evolves — don't assume property names.
 
-Key properties (may change — verify with galaxy_schema):
-- System: name, slug, controlling_power, powerplay_state, reinforcement, undermining, x, y, z, location (point)
-- System staleness: last_event_time, last_eddn_update (use these to answer "when was X last updated"; both are TIMESTAMP types)
-- Powerplay filtering: use s.controlling_power = 'Power Name' (property, not relationship)
+Key node types and properties (may change — verify with galaxy_schema):
+- System: name, slug, controlling_power, powerplay_state, reinforcement, undermining, x, y, z, location (point), population, allegiance, government, economy, security, last_event_time, last_eddn_update
+- Body: name, type (Star/Planet/Barycentre), sub_type, distance_from_arrival, system_id64, is_landable, terraform_state, atmosphere_type, stellar_mass, earth_masses, surface_temp
+- Ring: name, ring_class (Metallic/MetalRich/Rocky/Icy), reserve_level (Pristine/Major/Common/Low/Depleted), mass_mt, inner_rad, outer_rad, hotspot_types, has_ltd, has_tritium, has_painite
+- Station: name, type, market_id, distance_ls, large_pads, medium_pads, small_pads, services, economies, government, controlling_faction
+- Market: market_id, top_exports, top_imports, commodity_count
+- Faction: name, allegiance, government, is_pmf (true for Player Minor Factions), pmf_source
+- FleetCarrier: carrier_id (e.g. "B8F-40H"), name, current_system
+- Power: name (e.g. "Nakato Kaine")
 
-CRITICAL: System.location is a spatial point with a point index (3M+ entries).
+Key relationships (traverse these to answer questions about bodies, rings, stations, markets):
+- (:System)-[:HAS_BODY]->(:Body)
+- (:Body)-[:HAS_RING]->(:Ring)          ← ring_class tells you Metallic/Rocky/Icy/MetalRich
+- (:System)-[:HAS_STATION]->(:Station)
+- (:Station)-[:HAS_MARKET]->(:Market)
+- (:Faction)-[:PRESENT_IN]->(:System)   ← relationship has: influence, state, happiness
+- (:Power)-[:CONTROLS]->(:System)
+
+System staleness: use last_event_time or last_eddn_update to answer "when was X last updated" (both TIMESTAMP).
+Powerplay filtering: use s.controlling_power = 'Power Name' (property, not relationship).
+
+NEVER say data is missing without first querying the relevant node type. Ring composition
+(metallic vs rocky) lives on Ring nodes — always check (:Body)-[:HAS_RING]->(:Ring) before
+saying ring data is unavailable. Station data lives on Station nodes linked to the system
+via HAS_STATION.
+
+CRITICAL: System.location is a spatial point with a point index (4M+ entries).
 ALWAYS use point.distance() for distance/range queries — it uses the spatial index and is
 1000x faster than manual sqrt on x/y/z properties.
 
@@ -66,6 +87,10 @@ Parameters:
 Distance calculation (FAST — uses spatial index):
 MATCH (s1:System {name: 'Alrai'}), (s2:System {name: 'HIP 63499'})
 RETURN point.distance(s1.location, s2.location) AS distance_ly
+
+Ring composition query example:
+MATCH (s:System {name: 'Wregoe MO-Z d13-77'})-[:HAS_BODY]->(b:Body)-[:HAS_RING]->(r:Ring)
+RETURN b.name, r.name, r.ring_class, r.reserve_level ORDER BY b.name, r.name
 
 Range query (FAST — uses spatial index):
 MATCH (ref:System {name: 'Sol'})
