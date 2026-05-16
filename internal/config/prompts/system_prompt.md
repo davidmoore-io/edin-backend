@@ -278,7 +278,30 @@ When using `galaxy_query` for ad-hoc Cypher queries, use this schema:
 
 **Discovery Node Types:**
 - **Signal** — Bio/Geo signals on bodies: `body_id64`, `type` (Biological/Geological/Human), `type_localised`, `count`, `last_update`
-- **SystemSignal** — System-level POIs: `system_id64`, `signal_type` (Combat/ResourceExtraction/USS/Titan), `signal_name`, `uss_type`, `is_station`, `spawning_faction`, `spawning_state`, `count`, `first_seen`, `last_update`
+- **SystemSignal** — System-level POIs: `system_id64`, `signal_type` (Combat/ResourceExtraction/USS/NavBeacon/Installation/Megaship/FleetCarrier/Codex etc.), `signal_name` (raw localisation key — see decode table below), `uss_type`, `is_station`, `spawning_faction`, `spawning_state`, `count`, `first_seen`, `last_update`
+
+**Signal name decode table** — EDDN sends raw localisation keys; always translate before reporting:
+- `$MULTIPLAYER_SCENARIO14_TITLE;` → Resource Extraction Site (standard RES)
+- `$MULTIPLAYER_SCENARIO77_TITLE;` → Resource Extraction Site (Low)
+- `$MULTIPLAYER_SCENARIO78_TITLE;` → Resource Extraction Site (High) — better NPC bounties
+- `$MULTIPLAYER_SCENARIO79_TITLE;` → Resource Extraction Site (Hazardous) — Haz RES, most dangerous/profitable
+- `$MULTIPLAYER_SCENARIO42_TITLE;` → Nav Beacon
+- `$MULTIPLAYER_SCENARIO80_TITLE;` → Compromised Nav Beacon (pirate-controlled)
+- `$Warzone_PointRace_Low:#index=N;` → Combat Zone (Low Intensity)
+- `$Warzone_PointRace_Med:#index=N;` → Combat Zone (Medium Intensity)
+- `$Warzone_PointRace_High:#index=N;` → Combat Zone (High Intensity) — most merit-efficient CZ
+- `$USS_DegradedEmissions;` → Degraded Emissions USS (low-grade manufactured/encoded materials)
+- `$USS_HighGradeEmissions;` → High Grade Emissions USS (Grade 5 manufactured materials — very rare)
+- `$USS_EncodedEmissions;` → Encoded Emissions USS
+- `$USS_WeaponsFire;` → Weapons Fire USS (active combat nearby)
+- `$USS_DistressCall;` → Distress Call USS
+- `$USS_ConvoyDispersalPattern;` → Convoy Dispersal Pattern USS
+- `$USS_PowerEmissions;` → Power Emissions USS (wake scan opportunity)
+- `$USS_PowerplayConvoyDistressSignal;` → Powerplay Convoy Distress Signal USS
+- `$EXT_PANEL_ColonisationBeacon_Site:#index=N;` → Colonisation Beacon (construction site)
+- `$FIXED_EVENT_CAPSHIP_MILITARY;` → Military Installation
+- `$FIXED_EVENT_LIFE_CLOUD;` → Notable Stellar Phenomena (Codex)
+- Named directly (e.g. "Stronghold Carrier", "Federation Cap Ship") → use as-is
 - **Settlement** — Planetary bases: `market_id`, `name`, `system_id64`, `system_name`, `body_id64`, `body_name`, `latitude`, `longitude`, `last_update`
 - **CodexEntry** — POI discoveries: `entry_id`, `name`, `name_localised`, `category`, `category_localised`, `sub_category`, `region`, `region_localised`, `system_id64`, `system_name`, `body_id` (INT), `body_name`, `latitude`, `longitude`, `discovered_at`, `last_update`
 

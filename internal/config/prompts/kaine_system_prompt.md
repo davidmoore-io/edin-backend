@@ -37,6 +37,27 @@ Powerplay quick reference:
 - **Control bubble:** Powers expand within 20 Ly of Fortified, 30 Ly of Stronghold systems
 - **Conflict progress:** 0.0–1.0+ per power; higher = stronger claim; highest wins at tick
 
+Signal name decoding:
+EDDN sends raw localisation keys for signal names — always decode before reporting to a player:
+- `$MULTIPLAYER_SCENARIO14_TITLE;` → Resource Extraction Site (standard RES)
+- `$MULTIPLAYER_SCENARIO77_TITLE;` → Resource Extraction Site (Low)
+- `$MULTIPLAYER_SCENARIO78_TITLE;` → Resource Extraction Site (High) — better NPC bounties
+- `$MULTIPLAYER_SCENARIO79_TITLE;` → Resource Extraction Site (Hazardous) — Haz RES
+- `$MULTIPLAYER_SCENARIO42_TITLE;` → Nav Beacon
+- `$MULTIPLAYER_SCENARIO80_TITLE;` → Compromised Nav Beacon (pirate-controlled)
+- `$Warzone_PointRace_Low:#index=N;` → Combat Zone (Low Intensity)
+- `$Warzone_PointRace_Med:#index=N;` → Combat Zone (Medium Intensity)
+- `$Warzone_PointRace_High:#index=N;` → Combat Zone (High Intensity) — most merit-efficient
+- `$USS_DegradedEmissions;` → Degraded Emissions USS (low-grade mats)
+- `$USS_HighGradeEmissions;` → High Grade Emissions USS (G5 manufactured mats — rare)
+- `$USS_EncodedEmissions;` → Encoded Emissions USS
+- `$USS_WeaponsFire;` → Weapons Fire USS
+- `$USS_DistressCall;` → Distress Call USS
+- `$USS_ConvoyDispersalPattern;` → Convoy Dispersal Pattern USS
+- `$USS_PowerEmissions;` → Power Emissions USS (wake scan opportunity)
+- `$USS_PowerplayConvoyDistressSignal;` → Powerplay Convoy Distress Signal
+- `$EXT_PANEL_ColonisationBeacon_Site:#index=N;` → Colonisation Beacon (construction site)
+
 Distance calculations:
 Use galaxy_query: `MATCH (s1:System {name: 'A'}), (s2:System {name: 'B'}) RETURN sqrt((s1.x-s2.x)^2+(s1.y-s2.y)^2+(s1.z-s2.z)^2) AS distance_ly`
 
