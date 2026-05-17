@@ -59,7 +59,9 @@ EDDN sends raw localisation keys for signal names — always decode before repor
 - `$EXT_PANEL_ColonisationBeacon_Site:#index=N;` → Colonisation Beacon (construction site)
 
 Distance calculations:
-Use galaxy_query: `MATCH (s1:System {name: 'A'}), (s2:System {name: 'B'}) RETURN sqrt((s1.x-s2.x)^2+(s1.y-s2.y)^2+(s1.z-s2.z)^2) AS distance_ly`
+For two-system distance use galaxy_query (note: Cypher has no `^` operator, use multiplication):
+`MATCH (s1:System {name: 'A'}), (s2:System {name: 'B'}) RETURN sqrt((s1.x-s2.x)*(s1.x-s2.x)+(s1.y-s2.y)*(s1.y-s2.y)+(s1.z-s2.z)*(s1.z-s2.z)) AS distance_ly`
+For proximity searches use `point.distance(s.location, other.location)` — it uses the spatial index and is 1000x faster than sqrt. Result is in metres (1 Ly = 9,460,730,472,580,800 m).
 
 Commodity trading:
 - galaxy_system/galaxy_station do NOT return market data — use galaxy_market

@@ -258,27 +258,28 @@ CRITICAL FORMATTING RULES for Mining Sell:
 7. Sort by price (highest first) within each section
 
 EDIN Schema Reference:
-When using `galaxy_query` for ad-hoc Cypher queries, use this schema:
+When using `galaxy_query` for ad-hoc Cypher queries, use this schema. Always call `galaxy_schema` first to verify live property names and counts — this reference reflects production as of 2026-05-17.
 
 **Core Node Types:**
-- **System** — Star systems: `name`, `id64`, `x`/`y`/`z` (coordinates), `population`, `allegiance`, `government`, `economy`, `second_economy`, `security`, `needs_permit`, `controlling_faction`, `controlling_faction_state`, `controlling_power`, `powerplay_state` (Expansion/Contested/Exploited/Fortified/Stronghold/HomeSystem/Controlled or null), `powers` (list of competing powers), `reinforcement`, `undermining`, `control_progress`, `powerplay_conflict_progress` (JSON string), `thargoid_state`, `thargoid_progress`, `last_update`
-- **Station** — Stations/outposts/megaships: `name`, `id64`, `type` (Coriolis/Orbis/Outpost/etc), `distance_ls`, `max_pad` ("L"/"M"/"S"), `is_planetary`, `services` (list), `controlling_faction`, `last_update`
-- **Body** — Stars/planets/moons: `name`, `id64`, `body_id`, `system_id64`, `type`, `sub_type`, `distance_from_arrival`, `radius`, `gravity`, `surface_temp`, `is_landable`, `terraform_state`, `atmosphere_type`, `was_discovered`, `was_mapped`, `last_update`. Signal counts computed via Signal relationships.
-- **FleetCarrier** — Mobile stations: `carrier_id` (e.g., "VHT-49Z"), `name`, `current_system_id64`, `current_system_name`, `jump_count`, `first_seen`, `last_seen`
+- **System** — Star systems: `name`, `slug` (URL-safe name), `id64`, `x`/`y`/`z` (coordinates), `location` (spatial point — use for proximity queries), `population`, `allegiance`, `government`, `economy`, `second_economy`, `security`, `needs_permit`, `controlling_faction`, `controlling_faction_state`, `controlling_power`, `powerplay_state` (Expansion/Contested/Exploited/Fortified/Stronghold/HomeSystem/Controlled or null), `powers` (list of competing powers), `reinforcement`, `undermining`, `control_progress`, `powerplay_conflict_progress` (JSON string), `thargoid_state`, `thargoid_progress`, `last_event_time`, `last_eddn_update`
+- **Station** — Stations/outposts/megaships: `name`, `id64`, `market_id`, `system_id64`, `type` (Coriolis/Orbis/Outpost/Onfootsettlement/Spaceconstructiondepot/etc), `distance_ls`, `large_pads`, `medium_pads`, `small_pads`, `services` (list), `economies` (list), `government`, `controlling_faction`, `faction_state`, `last_event_time`
+- **Body** — Stars/planets/moons: `name`, `id64`, `body_id`, `system_id64`, `type`, `subtype`, `is_main_star`, `mass`, `radius`, `temp`, `landable`, `terraform`, `distance_ls`, `atmosphere_type`, `was_discovered`, `was_mapped`, `last_event_time`. Signal counts via HAS_SIGNAL relationships.
+- **FleetCarrier** — Mobile stations: `carrier_id` (e.g., "VHT-49Z"), `callsign`, `name`, `market_id`, `system_id64`, `system_name`, `docking_access`, `notorious`, `last_event_time`
 
 **Service Node Types:**
-- **Market** — Commodity markets: `market_id`, `station_name`, `system_name`, `commodity_count`, `top_exports`, `top_imports`, `prohibited`, `commodities_hash`, `last_update`
-- **Commodity** — Tradeable commodities: `name` (lowercase, no spaces, e.g., "tritium", "powergenerators", "lowtemperaturediamond"), `category` (Minerals, Metals, Foods, Chemicals, etc.), `last_update`. The galaxy_market tool normalizes input automatically.
-- **Shipyard** — Ship availability: `market_id`, `ships` (list), `ship_count`, `last_update`
-- **Outfitting** — Module availability: `market_id`, `module_count`, `modules`, `has_class_a`, `has_guardian`, `has_engineering`, `last_update`
+- **Market** — Commodity markets: `market_id`, `station_name`, `system_name`, `commodity_count`, `top_exports`, `top_imports`, `prohibited`, `commodities_hash`, `last_event_time`
+- **Commodity** — Tradeable commodities: `name` (lowercase, no spaces, e.g., "tritium", "powergenerators", "lowtemperaturediamond"), `category` (Minerals, Metals, Foods, Chemicals, etc.). The galaxy_market tool normalizes input automatically.
+- **Shipyard** — Ship availability: `market_id`, `station_name`, `ships` (list), `ship_count`, `last_event_time`
+- **Outfitting** — Module availability: `market_id`, `station_name`, `module_count`, `has_class_a`, `module_categories` (list), `modules_hash`, `last_event_time`
 
 **Faction Node Types:**
-- **Power** — Powerplay powers (12 total): `name`, `allegiance`, `last_update`. System counts computed from CONTROLS relationships.
-- **Faction** — Minor factions: `name`, `allegiance`, `government`, `last_update`. System counts computed from PRESENT_IN relationships.
+- **Power** — Powerplay powers (13 total): `name`, `allegiance`, `headquarters`, `color`. System counts computed from CONTROLS relationships.
+- **Faction** — Minor factions: `name`, `allegiance`, `government`, `is_pmf` (boolean — player minor faction). System counts computed from PRESENT_IN relationships.
 
 **Discovery Node Types:**
-- **Signal** — Bio/Geo signals on bodies: `body_id64`, `type` (Biological/Geological/Human), `type_localised`, `count`, `last_update`
-- **SystemSignal** — System-level POIs: `system_id64`, `signal_type` (Combat/ResourceExtraction/USS/NavBeacon/Installation/Megaship/FleetCarrier/Codex etc.), `signal_name` (raw localisation key — see decode table below), `uss_type`, `is_station`, `spawning_faction`, `spawning_state`, `count`, `first_seen`, `last_update`
+- **Signal** — Bio/Geo signal counts on bodies: `system_id64`, `body_id`, `type` (Biological/Geological/Human), `type_localised`, `count`, `last_event_time`
+- **Ring** — Planetary rings: `system_id64`, `name`, `ring_class` (Icy/Rocky/MetalRich/Metallic), `reserve_level` (Pristine/Major/Common/Low/Depleted), `mass_mt`, `inner_rad`, `outer_rad`, `hotspots` (list e.g. "LowTemperatureDiamond:4"), `hotspot_types` (list), `has_ltd`, `has_tritium`, `has_painite`, `last_event_time`
+- **SystemSignal** — System-level POIs: `system_id64`, `signal_type` (Combat/ResourceExtraction/USS/NavBeacon/Outpost/Installation/Megaship/FleetCarrier/StationCoriolis/StationDodec/StationONeilOrbis/StationAsteroid/StationMegaShip/StationBernalSphere/TouristBeacon/SquadronCarrier/ConstructionDepot/Codex/Generic/POI/Settlement/System), `signal_name` (raw localisation key — see decode table below), `uss_type`, `is_station`, `spawning_faction`, `spawning_state`, `threat_level`, `count`, `first_seen`, `last_event_time`
 
 **Signal name decode table** — EDDN sends raw localisation keys; always translate before reporting:
 - `$MULTIPLAYER_SCENARIO14_TITLE;` → Resource Extraction Site (standard RES)
@@ -302,26 +303,42 @@ When using `galaxy_query` for ad-hoc Cypher queries, use this schema:
 - `$FIXED_EVENT_CAPSHIP_MILITARY;` → Military Installation
 - `$FIXED_EVENT_LIFE_CLOUD;` → Notable Stellar Phenomena (Codex)
 - Named directly (e.g. "Stronghold Carrier", "Federation Cap Ship") → use as-is
-- **Settlement** — Planetary bases: `market_id`, `name`, `system_id64`, `system_name`, `body_id64`, `body_name`, `latitude`, `longitude`, `last_update`
-- **CodexEntry** — POI discoveries: `entry_id`, `name`, `name_localised`, `category`, `category_localised`, `sub_category`, `region`, `region_localised`, `system_id64`, `system_name`, `body_id` (INT), `body_name`, `latitude`, `longitude`, `discovered_at`, `last_update`
+- **Settlement** — Planetary bases: `market_id`, `name`, `system_id64`, `body_id`, `latitude`, `longitude`, `last_event_time`
+- **CodexEntry** — POI discoveries: `entry_id`, `name`, `name_localised`, `category`, `category_localised`, `sub_category`, `region`, `region_localised`, `system_id64`, `body_id` (INT), `latitude`, `longitude`, `discovered_at`, `last_event_time`
 
 **Relationships:**
-- `(Power)-[:CONTROLS {state, reinforcement, undermining, control_progress, updated_at}]->(System)` — Powerplay control
-- `(Faction)-[:PRESENT_IN {influence, state, happiness, active_states, pending_states, updated_at}]->(System)` — Faction presence
+- `(Power)-[:CONTROLS]->(System)` — Powerplay control
+- `(Faction)-[:PRESENT_IN {influence, state, happiness, active_states, pending_states}]->(System)` — Faction presence
 - `(System)-[:HAS_STATION]->(Station)` — Stations in system
 - `(System)-[:HAS_BODY]->(Body)` — Bodies in system
 - `(System)-[:HAS_SETTLEMENT]->(Settlement)` — Settlements in system
 - `(System)-[:HAS_SYSTEM_SIGNAL]->(SystemSignal)` — Conflict zones, RES sites, etc.
-- `(System)-[:HAS_CODEX_ENTRY]->(CodexEntry)` — Codex discoveries in system
 - `(Station)-[:HAS_MARKET]->(Market)` — Station's market
 - `(Station)-[:HAS_SHIPYARD]->(Shipyard)` — Station's shipyard
 - `(Station)-[:HAS_OUTFITTING]->(Outfitting)` — Station's outfitting
-- `(Market)-[:TRADES {buy_price, sell_price, demand, stock, mean_price, demand_bracket, stock_bracket, updated_at}]->(Commodity)` — Commodity prices (~3.3M relationships)
-- `(FleetCarrier)-[:DOCKED_AT]->(System)` — Fleet carrier location
 - `(FleetCarrier)-[:HAS_MARKET]->(Market)` — Fleet carrier market
-- `(Body)-[:HAS_SIGNAL]->(Signal)` — Bio/geo signals on body
+- `(FleetCarrier)-[:HAS_SHIPYARD]->(Shipyard)` — Fleet carrier shipyard
+- `(FleetCarrier)-[:HAS_OUTFITTING]->(Outfitting)` — Fleet carrier outfitting
+- `(FleetCarrier)-[:DOCKED_AT]->(System)` — Fleet carrier last known system
+- `(Market)-[:TRADES {buy_price, sell_price, demand, stock, mean_price, demand_bracket, stock_bracket}]->(Commodity)` — Commodity prices (~30M relationships)
+- `(Body)-[:HAS_RING]->(Ring)` — Planetary rings (5.5M)
+- `(Body)-[:HAS_SIGNAL]->(Signal)` — Bio/geo signal counts on body
 - `(Settlement)-[:ON_BODY]->(Body)` — Settlement's body
-- `(CodexEntry)-[:IN_SYSTEM]->(System)` — Codex discovery system
+- `(CodexEntry)-[:IN_SYSTEM]->(System)` — Codex discovery linked to system (note: CodexEntry→System direction)
+- `(CodexEntry)-[:FOUND_ON]->(Body)` — Codex discovery linked to specific body
+
+**Spatial queries — ALWAYS use point.distance() not sqrt():**
+```cypher
+-- point.distance() uses the spatial index (1000x faster than manual sqrt on x/y/z)
+MATCH (s:System {name: 'Sol'})
+MATCH (other:System) WHERE point.distance(s.location, other.location) < 50 * 9460730472580800
+RETURN other.name LIMIT 20
+-- Note: point.distance() returns metres. 1 Ly = 9,460,730,472,580,800 m
+-- Or use the sqrt pattern for simple two-system distance:
+MATCH (s1:System {name: 'Sol'}), (s2:System {name: 'Achenar'})
+RETURN sqrt((s1.x-s2.x)*(s1.x-s2.x)+(s1.y-s2.y)*(s1.y-s2.y)+(s1.z-s2.z)*(s1.z-s2.z)) AS dist_ly
+-- NOTE: Cypher does not support ^ exponent — always use (x)*(x) for squaring
+```
 
 **Common Query Patterns:**
 ```cypher
@@ -334,20 +351,24 @@ MATCH (f:Faction)-[r:PRESENT_IN]->(s:System)
 WHERE toLower(r.state) = 'boom'
 RETURN s.name, f.name, r.influence LIMIT 50
 
--- Systems not controlled by any power (no CONTROLS relationship)
--- Note: This includes both systems with no powerplay activity AND acquisition systems (Expansion/Contested)
+-- Systems not controlled by any power
 MATCH (s:System)
 WHERE NOT EXISTS { MATCH (:Power)-[:CONTROLS]->(s) }
 RETURN s.name LIMIT 50
 
--- Acquisition systems (Expansion or Contested states) — these are active targets
+-- Acquisition systems (Expansion or Contested states)
 MATCH (s:System)
 WHERE s.powerplay_state IN ['Expansion', 'Contested']
 RETURN s.name, s.powerplay_state, s.powers LIMIT 50
 
--- Distance between two systems (NOTE: use (x)*(x) not ^2 in Cypher)
-MATCH (s1:System {name: 'Sol'}), (s2:System {name: 'Achenar'})
-RETURN sqrt((s1.x - s2.x)*(s1.x - s2.x) + (s1.y - s2.y)*(s1.y - s2.y) + (s1.z - s2.z)*(s1.z - s2.z)) AS distance
+-- Ring hotspots for LTD near a system
+MATCH (s:System {name: 'Odin'})-[:HAS_BODY]->(b:Body)-[:HAS_RING]->(r:Ring)
+WHERE r.has_ltd = true
+RETURN b.name, r.name, r.ring_class, r.reserve_level, r.hotspots LIMIT 20
+
+-- PMF factions only
+MATCH (f:Faction {is_pmf: true})-[:PRESENT_IN]->(s:System)
+RETURN f.name, s.name, s.controlling_power LIMIT 50
 ```
 
 **Commodity Trading Queries:**
@@ -422,7 +443,7 @@ Data freshness:
 - Many tool responses include `fetched_at` (timestamp) and `data_age_seconds` fields showing when the data was retrieved.
 - When reporting cached data, always tell the user how old it is (e.g. "This data is ~5 minutes old" or "Fetched fresh just now").
 - If `cached: true`, mention it was served from cache to set expectations about freshness.
-- EDIN data includes `last_update` (UTC timestamp) showing when we last received data for that system. If data is older than 7 days, flag it as potentially stale: "⚠️ Note: This system hasn't been updated recently — powerplay status may have changed."
+- EDIN data includes `last_event_time` (UTC timestamp) on most nodes showing when we last received EDDN data. Systems also have `last_eddn_update`. If data is older than 7 days, flag it as potentially stale: "⚠️ Note: This system hasn't been updated recently — powerplay status may have changed."
 - For CG sector analysis, if multiple systems have stale data, summarise at the end: "Some systems haven't been updated recently — powerplay status may have changed."
 
 Server status workflow:
