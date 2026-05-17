@@ -13,7 +13,6 @@ import (
 	"log"
 	"os"
 	"os/signal"
-	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -178,26 +177,27 @@ func setupSlash(ctx context.Context, guilds []bindings.SlashGuild, st *store.Pos
 	return nil
 }
 
-// registerSlashGuild registers /watch and /unwatch in one guild and configures
-// Discord-side permission restrictions.
+// registerSlashGuild registers /watch and /unwatch in one guild.
 //
 // Admin-only guilds (empty AllowedRoleIDs): DefaultMemberPermissions=8 hides
-// the commands from non-admins. Admins see the commands everywhere but the
-// runtime channel gate enforces the watch channel restriction.
+// the commands from non-admins across all channels. Admins see the commands
+// everywhere; the runtime channel gate enforces the watch channel restriction.
 //
-// Role-restricted guilds (non-empty AllowedRoleIDs): DefaultMemberPermissions=0
-// disables the commands for everyone by default. The Application Command
-// Permissions API then grants the listed roles and restricts visibility to the
-// watch channel only via the documented guild_id-1 "all channels" constant.
+// Role-restricted guilds (non-empty AllowedRoleIDs): DefaultMemberPermissions
+// is left unset (visible to all by default). Discord's Application Command
+// Permissions API requires an OAuth2 Bearer token (not a Bot token) to set
+// role/channel restrictions programmatically, so those must be configured
+// manually via Server Settings → Integrations after first deployment.
+// AllowedRoleIDs in bindings.yml serves as the documented source of truth for
+// that manual step.
 func registerSlashGuild(sess *discordgo.Session, guild bindings.SlashGuild) error {
 	adminOnly := len(guild.AllowedRoleIDs) == 0
 	dmsBlocked := false
 
-	var defaultPerms int64
+	var defaultPerms *int64
 	if adminOnly {
-		defaultPerms = discordgo.PermissionAdministrator
-	} else {
-		defaultPerms = 0
+		p := int64(discordgo.PermissionAdministrator)
+		defaultPerms = &p
 	}
 
 	commands := []*discordgo.ApplicationCommand{
@@ -205,7 +205,7 @@ func registerSlashGuild(sess *discordgo.Session, guild bindings.SlashGuild) erro
 			Name:                     "watch",
 			Description:              "Watch a system for powerplay/faction changes",
 			DMPermission:             &dmsBlocked,
-			DefaultMemberPermissions: &defaultPerms,
+			DefaultMemberPermissions: defaultPerms,
 			Options: []*discordgo.ApplicationCommandOption{{
 				Type:        discordgo.ApplicationCommandOptionString,
 				Name:        "system",
@@ -217,7 +217,7 @@ func registerSlashGuild(sess *discordgo.Session, guild bindings.SlashGuild) erro
 			Name:                     "unwatch",
 			Description:              "Stop watching a system",
 			DMPermission:             &dmsBlocked,
-			DefaultMemberPermissions: &defaultPerms,
+			DefaultMemberPermissions: defaultPerms,
 			Options: []*discordgo.ApplicationCommandOption{{
 				Type:        discordgo.ApplicationCommandOptionString,
 				Name:        "system",
@@ -229,52 +229,19 @@ func registerSlashGuild(sess *discordgo.Session, guild bindings.SlashGuild) erro
 
 	appID := sess.State.User.ID
 	for _, cmd := range commands {
-		created, err := sess.ApplicationCommandCreate(appID, guild.GuildID, cmd)
-		if err != nil {
+		if _, err := sess.ApplicationCommandCreate(appID, guild.GuildID, cmd); err != nil {
 			return fmt.Errorf("register %s: %w", cmd.Name, err)
 		}
-		if !adminOnly {
-			if err := applyChannelPermissions(sess, appID, guild, created.ID); err != nil {
-				return fmt.Errorf("set permissions for %s: %w", cmd.Name, err)
-			}
-		}
 	}
+
+	if !adminOnly {
+		log.Printf("[INFO] slash: guild %s requires manual permission setup in Discord Integrations UI:", guild.GuildID)
+		log.Printf("[INFO]   Server Settings → Integrations → EDIN → /watch (and /unwatch)")
+		log.Printf("[INFO]   Add roles: %v", guild.AllowedRoleIDs)
+		log.Printf("[INFO]   Restrict to channel: %s", guild.WatchChannelID)
+	}
+
 	return nil
-}
-
-// applyChannelPermissions configures the Application Command Permissions API
-// to restrict command visibility to the watch channel only for the given roles.
-// Uses the documented guild_id-1 "all channels" constant to deny all channels
-// before explicitly allowing the watch channel.
-func applyChannelPermissions(sess *discordgo.Session, appID string, guild bindings.SlashGuild, cmdID string) error {
-	guildIDUint, err := strconv.ParseUint(guild.GuildID, 10, 64)
-	if err != nil {
-		return fmt.Errorf("invalid guild_id %q: %w", guild.GuildID, err)
-	}
-	allChannelsID := strconv.FormatUint(guildIDUint-1, 10)
-
-	perms := make([]*discordgo.ApplicationCommandPermissions, 0, len(guild.AllowedRoleIDs)+2)
-	for _, roleID := range guild.AllowedRoleIDs {
-		perms = append(perms, &discordgo.ApplicationCommandPermissions{
-			ID:         roleID,
-			Type:       discordgo.ApplicationCommandPermissionTypeRole,
-			Permission: true,
-		})
-	}
-	perms = append(perms,
-		&discordgo.ApplicationCommandPermissions{
-			ID:         allChannelsID,
-			Type:       discordgo.ApplicationCommandPermissionTypeChannel,
-			Permission: false,
-		},
-		&discordgo.ApplicationCommandPermissions{
-			ID:         guild.WatchChannelID,
-			Type:       discordgo.ApplicationCommandPermissionTypeChannel,
-			Permission: true,
-		},
-	)
-	return sess.ApplicationCommandPermissionsEdit(appID, guild.GuildID, cmdID,
-		&discordgo.ApplicationCommandPermissionsList{Permissions: perms})
 }
 
 // envConfig is read from the environment (which docker-compose populates from
