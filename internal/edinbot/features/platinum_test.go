@@ -47,11 +47,13 @@ func TestPlatinumBoomAlerts_HappyPath_BuildsItemsFromBuyers(t *testing.T) {
 
 	embed := snap.Items[0].Render()
 	bodyText := embed.Description
-	require.Contains(t, bodyText, "Sol", "system name appears in description heading")
+	require.Contains(t, bodyText, "Sol", "sell system appears in Sell at line")
 	require.Contains(t, bodyText, "Galileo")
 	require.Contains(t, bodyText, "Daedalus")
-	require.Contains(t, bodyText, "1,500t", "demand formatted with comma + t")
-	require.Contains(t, bodyText, "280,000c", "price formatted with comma + c")
+	require.Contains(t, bodyText, "MapSystem", "mine system appears in Mine at line")
+	require.Contains(t, bodyText, "280,000c/t", "platinum price in price line")
+	require.Contains(t, bodyText, "Rapid acquisition mining alert")
+	require.Contains(t, bodyText, "`Platinum:`", "label as backtick token")
 }
 
 func TestPlatinumBoomAlerts_DedupExcludeOCSAndSortByScore(t *testing.T) {
@@ -242,8 +244,8 @@ func TestLTDAlerts_HappyPath_BuildsItemsFromBuyers(t *testing.T) {
 	embed := snap.Items[0].Render()
 	bodyText := embed.Description
 	require.Contains(t, bodyText, "Galileo")
-	require.Contains(t, bodyText, "Expansion")
-	require.Contains(t, bodyText, "Data updated: <t:", "freshness rendered as live <t:N:R>")
+	require.Contains(t, bodyText, "<t:", "freshness rendered as live <t:N:R>")
+	require.Contains(t, bodyText, "Rapid acquisition mining alert")
 }
 
 func TestLTDAlerts_EmptyResponseIsHealthy(t *testing.T) {

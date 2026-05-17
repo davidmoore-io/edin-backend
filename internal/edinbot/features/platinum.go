@@ -65,6 +65,7 @@ func (p *PlatinumBoomAlerts) Poll(ctx context.Context, c Config) (Snapshot, erro
 	// but aren't actionable trade targets (cargo can't be delivered there).
 	bySys := map[string][]controlclient.Buyer{}
 	mapURLBySys := map[string][]string{} // first-non-empty wins; preserve order so dedup is deterministic
+	mineSystemBySys := map[string]string{} // first mine system seen for each sell system
 	seen := map[string]bool{}
 	for _, m := range resp.Maps {
 		for _, b := range m.Buyers {
@@ -83,12 +84,15 @@ func (p *PlatinumBoomAlerts) Poll(ctx context.Context, c Config) (Snapshot, erro
 			seen[key] = true
 			bySys[b.SystemName] = append(bySys[b.SystemName], b)
 			mapURLBySys[b.SystemName] = append(mapURLBySys[b.SystemName], m.Map1)
+			if _, ok := mineSystemBySys[b.SystemName]; !ok {
+				mineSystemBySys[b.SystemName] = m.SystemName
+			}
 		}
 	}
 
 	items := make([]Item, 0, len(bySys))
 	for sys, buyers := range bySys {
-		items = append(items, buildPlatinumItem(sys, buyers, firstMapURL(mapURLBySys[sys])))
+		items = append(items, buildPlatinumItem(sys, buyers, firstMapURL(mapURLBySys[sys]), mineSystemBySys[sys]))
 	}
 	sort.Slice(items, func(i, j int) bool { return items[i].Identity() < items[j].Identity() })
 
@@ -129,13 +133,14 @@ func (p *PlatinumBoomAlerts) fetchWithRetry(ctx context.Context) (*controlclient
 
 // platinumItem is the Item implementation for one buyer system.
 type platinumItem struct {
-	system string
-	buyers []controlclient.Buyer
-	mapURL string
-	hash   string
+	system     string
+	mineSystem string // where to mine (the hotspot system)
+	buyers     []controlclient.Buyer
+	mapURL     string
+	hash       string
 }
 
-func buildPlatinumItem(system string, buyers []controlclient.Buyer, mapURL string) *platinumItem {
+func buildPlatinumItem(system string, buyers []controlclient.Buyer, mapURL, mineSystem string) *platinumItem {
 	// Highest score first; alphabetical station name as a stable tiebreaker.
 	sort.Slice(buyers, func(i, j int) bool {
 		if buyers[i].Score != buyers[j].Score {
@@ -145,7 +150,7 @@ func buildPlatinumItem(system string, buyers []controlclient.Buyer, mapURL strin
 	})
 
 	h := sha256.New()
-	fmt.Fprintf(h, "system=%s|map=%s\n", system, mapURL)
+	fmt.Fprintf(h, "system=%s|map=%s|mine=%s\n", system, mapURL, mineSystem)
 	for _, b := range buyers {
 		var kp float64
 		if b.KaineProgress != nil {
@@ -156,16 +161,17 @@ func buildPlatinumItem(system string, buyers []controlclient.Buyer, mapURL strin
 			b.Score, kp, b.FactionState, unixOrZero(b.MarketUpdatedAt), unixOrZero(b.BGSUpdatedAt))
 	}
 	return &platinumItem{
-		system: system,
-		buyers: buyers,
-		mapURL: mapURL,
-		hash:   hex.EncodeToString(h.Sum(nil)),
+		system:     system,
+		mineSystem: mineSystem,
+		buyers:     buyers,
+		mapURL:     mapURL,
+		hash:       hex.EncodeToString(h.Sum(nil)),
 	}
 }
 
 // BuildPlatinumItemForTest is exposed so tests can construct items directly.
 func BuildPlatinumItemForTest(system string, buyers []controlclient.Buyer) Item {
-	return buildPlatinumItem(system, buyers, "")
+	return buildPlatinumItem(system, buyers, "", "")
 }
 
 func (p *platinumItem) Identity() string  { return "system:" + p.system }
@@ -187,37 +193,40 @@ func (p *platinumItem) SortKey() int64 {
 }
 
 func (p *platinumItem) Render() *discordgo.MessageEmbed {
-	tier := topTier(p.buyers)
-
-	state := ""
-	var kainePct float64
-	if len(p.buyers) > 0 {
-		state = p.buyers[0].FactionState
-		if kp := p.buyers[0].KaineProgress; kp != nil {
-			kainePct = *kp * 100
+	var maxPlat, maxOs int64
+	for _, b := range p.buyers {
+		if b.PlatinumPrice > maxPlat {
+			maxPlat = b.PlatinumPrice
+		}
+		if b.OsmiumPrice > maxOs {
+			maxOs = b.OsmiumPrice
 		}
 	}
 
-	// Description-line-1 carries the title row: 🟢 SystemName - [Map].
-	// Embed.title is left empty because Discord titles don't render masked
-	// links — we want the [Map] to be clickable inline. ### makes the line
-	// render at heading size on clients that support embed-headings.
-	// Map link uses escaped square brackets so "[Map]" renders literally
-	// AROUND the clickable Map text, matching the operator's brand request.
 	var desc strings.Builder
-	fmt.Fprintf(&desc, "### %s [%s](%s)", tierEmoji(tier), p.system, edsmURL(p.system))
-	if p.mapURL != "" {
-		fmt.Fprintf(&desc, " - \\[[Map](%s)\\]", p.mapURL)
-	}
-	desc.WriteString("\n")
-	if state != "" {
-		fmt.Fprintf(&desc, "%s · ", state)
-	}
-	fmt.Fprintf(&desc, "Kaine %.1f%%\n\n", kainePct)
+	desc.WriteString("🔥 **Rapid acquisition mining alert** 🔥\n")
 
-	// Drop buyers whose price AND demand are both zero — even if fresh, they're
-	// uninformative noise. Keep buyers where either has a non-zero value (e.g.
-	// price quoted but demand momentarily zero is still actionable info).
+	// Price line: commodity label and value as separate backtick tokens, joined by " / "
+	var prices []string
+	if maxPlat > 0 {
+		prices = append(prices, fmt.Sprintf("`Platinum:` `%sc/t`", commaInt64(maxPlat)))
+	}
+	if maxOs > 0 {
+		prices = append(prices, fmt.Sprintf("`Osmium:` `%sc/t`", commaInt64(maxOs)))
+	}
+	if len(prices) > 0 {
+		fmt.Fprintf(&desc, "%s\n\n", strings.Join(prices, " / "))
+	}
+
+	if p.mineSystem != "" {
+		fmt.Fprintf(&desc, "- Mine at: `%s`", p.mineSystem)
+		if p.mapURL != "" {
+			fmt.Fprintf(&desc, " - [Map](%s)", p.mapURL)
+		}
+		desc.WriteString("\n")
+	}
+
+	// Drop buyers whose price AND demand are both zero — uninformative noise.
 	usable := make([]controlclient.Buyer, 0, len(p.buyers))
 	for _, b := range p.buyers {
 		if b.PlatinumPrice == 0 && b.PlatinumDemand == 0 && b.OsmiumPrice == 0 && b.OsmiumDemand == 0 {
@@ -226,32 +235,27 @@ func (p *platinumItem) Render() *discordgo.MessageEmbed {
 		usable = append(usable, b)
 	}
 
-	blocks := make([]stationBlock, len(usable))
-	for i, b := range usable {
-		var body []string
-		if b.PlatinumDemand > 0 || b.PlatinumPrice > 0 {
-			body = append(body, fmt.Sprintf("Pt — **%s** / Demand: %s",
-				fullPrice(b.PlatinumPrice), fullDemand(b.PlatinumDemand)))
-		}
-		if b.OsmiumDemand > 0 || b.OsmiumPrice > 0 {
-			body = append(body, fmt.Sprintf("Os — **%s** / Demand: %s",
-				fullPrice(b.OsmiumPrice), fullDemand(b.OsmiumDemand)))
-		}
-		blocks[i] = stationBlock{
-			Header:     b.StationName,
-			Body:       body,
-			SeenAtUnix: unixOrZero(b.MarketUpdatedAt),
-		}
+	shown := usable
+	if len(shown) > 5 {
+		shown = shown[:5]
 	}
-	table, truncated := renderStationBlocks(blocks, 5)
-	desc.WriteString(table)
-	if truncated > 0 {
-		fmt.Fprintf(&desc, "\n+ %d more", truncated)
+	for _, b := range shown {
+		fmt.Fprintf(&desc, "- Sell at: `%s` - %s", b.SystemName, b.StationName)
+		if pads := padSizes(b.LargestPad); pads != "" {
+			fmt.Fprintf(&desc, " - Pads: %s", pads)
+		}
+		if ts := unixOrZero(b.MarketUpdatedAt); ts > 0 {
+			fmt.Fprintf(&desc, " — <t:%d:R>", ts)
+		}
+		desc.WriteString("\n")
+	}
+	if extra := len(usable) - 5; extra > 0 {
+		fmt.Fprintf(&desc, "+ %d more\n", extra)
 	}
 
 	return &discordgo.MessageEmbed{
 		Description: desc.String(),
-		Color:       tierColor(tier),
+		Color:       tierColor(topTier(p.buyers)),
 	}
 }
 

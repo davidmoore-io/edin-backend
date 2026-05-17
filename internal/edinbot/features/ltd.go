@@ -58,6 +58,7 @@ func (l *LTDAlerts) Poll(ctx context.Context, c Config) (Snapshot, error) {
 	// but aren't actionable trade targets (cargo can't be delivered there).
 	bySys := map[string][]controlclient.Buyer{}
 	mapURLBySys := map[string][]string{}
+	mineSystemBySys := map[string]string{} // first mine system seen for each sell system
 	seen := map[string]bool{}
 	for _, m := range resp.Maps {
 		for _, b := range m.Buyers {
@@ -76,12 +77,15 @@ func (l *LTDAlerts) Poll(ctx context.Context, c Config) (Snapshot, error) {
 			seen[key] = true
 			bySys[b.SystemName] = append(bySys[b.SystemName], b)
 			mapURLBySys[b.SystemName] = append(mapURLBySys[b.SystemName], m.Map1)
+			if _, ok := mineSystemBySys[b.SystemName]; !ok {
+				mineSystemBySys[b.SystemName] = m.SystemName
+			}
 		}
 	}
 
 	items := make([]Item, 0, len(bySys))
 	for sys, buyers := range bySys {
-		items = append(items, buildLTDItem(sys, buyers, firstMapURL(mapURLBySys[sys])))
+		items = append(items, buildLTDItem(sys, buyers, firstMapURL(mapURLBySys[sys]), mineSystemBySys[sys]))
 	}
 	sort.Slice(items, func(i, j int) bool { return items[i].Identity() < items[j].Identity() })
 
@@ -121,13 +125,14 @@ func (l *LTDAlerts) fetchWithRetry(ctx context.Context) (*controlclient.LTDBuyer
 }
 
 type ltdItem struct {
-	system string
-	buyers []controlclient.Buyer
-	mapURL string
-	hash   string
+	system     string
+	mineSystem string // where to mine (the hotspot system)
+	buyers     []controlclient.Buyer
+	mapURL     string
+	hash       string
 }
 
-func buildLTDItem(system string, buyers []controlclient.Buyer, mapURL string) *ltdItem {
+func buildLTDItem(system string, buyers []controlclient.Buyer, mapURL, mineSystem string) *ltdItem {
 	// Highest score first; alphabetical station name as a stable tiebreaker.
 	sort.Slice(buyers, func(i, j int) bool {
 		if buyers[i].Score != buyers[j].Score {
@@ -137,7 +142,7 @@ func buildLTDItem(system string, buyers []controlclient.Buyer, mapURL string) *l
 	})
 
 	h := sha256.New()
-	fmt.Fprintf(h, "system=%s|map=%s\n", system, mapURL)
+	fmt.Fprintf(h, "system=%s|map=%s|mine=%s\n", system, mapURL, mineSystem)
 	for _, b := range buyers {
 		var kp float64
 		if b.KaineProgress != nil {
@@ -148,16 +153,17 @@ func buildLTDItem(system string, buyers []controlclient.Buyer, mapURL string) *l
 			unixOrZero(b.MarketUpdatedAt), unixOrZero(b.BGSUpdatedAt))
 	}
 	return &ltdItem{
-		system: system,
-		buyers: buyers,
-		mapURL: mapURL,
-		hash:   hex.EncodeToString(h.Sum(nil)),
+		system:     system,
+		mineSystem: mineSystem,
+		buyers:     buyers,
+		mapURL:     mapURL,
+		hash:       hex.EncodeToString(h.Sum(nil)),
 	}
 }
 
 // BuildLTDItemForTest is exposed so tests can construct items directly.
 func BuildLTDItemForTest(system string, buyers []controlclient.Buyer) Item {
-	return buildLTDItem(system, buyers, "")
+	return buildLTDItem(system, buyers, "", "")
 }
 
 func (l *ltdItem) Identity() string  { return "system:" + l.system }
@@ -176,27 +182,27 @@ func (l *ltdItem) SortKey() int64 {
 }
 
 func (l *ltdItem) Render() *discordgo.MessageEmbed {
-	tier := topTier(l.buyers)
-
-	state := ""
-	var kainePct float64
-	if len(l.buyers) > 0 {
-		state = l.buyers[0].FactionState
-		if kp := l.buyers[0].KaineProgress; kp != nil {
-			kainePct = *kp * 100
+	var maxLTD int64
+	for _, b := range l.buyers {
+		if b.LTDPrice > maxLTD {
+			maxLTD = b.LTDPrice
 		}
 	}
 
 	var desc strings.Builder
-	fmt.Fprintf(&desc, "### %s [%s](%s)", tierEmoji(tier), l.system, edsmURL(l.system))
-	if l.mapURL != "" {
-		fmt.Fprintf(&desc, " - \\[[Map](%s)\\]", l.mapURL)
+	desc.WriteString("🔥 **Rapid acquisition mining alert** 🔥\n")
+
+	if maxLTD > 0 {
+		fmt.Fprintf(&desc, "`LTD:` `%sc/t`\n\n", commaInt64(maxLTD))
 	}
-	desc.WriteString("\n")
-	if state != "" {
-		fmt.Fprintf(&desc, "%s · ", state)
+
+	if l.mineSystem != "" {
+		fmt.Fprintf(&desc, "- Mine at: `%s`", l.mineSystem)
+		if l.mapURL != "" {
+			fmt.Fprintf(&desc, " - [Map](%s)", l.mapURL)
+		}
+		desc.WriteString("\n")
 	}
-	fmt.Fprintf(&desc, "Kaine %.1f%%\n\n", kainePct)
 
 	// Drop 0c/0t buyers — fresh but uninformative.
 	usable := make([]controlclient.Buyer, 0, len(l.buyers))
@@ -207,25 +213,26 @@ func (l *ltdItem) Render() *discordgo.MessageEmbed {
 		usable = append(usable, b)
 	}
 
-	blocks := make([]stationBlock, len(usable))
-	for i, b := range usable {
-		// LTD has a single commodity, so the headline price moves up to the
-		// header next to the station name. Demand drops to a body line.
-		blocks[i] = stationBlock{
-			Header:       b.StationName,
-			HeaderSuffix: fmt.Sprintf(" - **%s**", fullPrice(b.LTDPrice)),
-			Body:         []string{fmt.Sprintf("Demand: %s", fullDemand(b.LTDDemand))},
-			SeenAtUnix:   unixOrZero(b.MarketUpdatedAt),
-		}
+	shown := usable
+	if len(shown) > 5 {
+		shown = shown[:5]
 	}
-	table, truncated := renderStationBlocks(blocks, 5)
-	desc.WriteString(table)
-	if truncated > 0 {
-		fmt.Fprintf(&desc, "\n+ %d more", truncated)
+	for _, b := range shown {
+		fmt.Fprintf(&desc, "- Sell at: `%s` - %s", b.SystemName, b.StationName)
+		if pads := padSizes(b.LargestPad); pads != "" {
+			fmt.Fprintf(&desc, " - Pads: %s", pads)
+		}
+		if ts := unixOrZero(b.MarketUpdatedAt); ts > 0 {
+			fmt.Fprintf(&desc, " — <t:%d:R>", ts)
+		}
+		desc.WriteString("\n")
+	}
+	if extra := len(usable) - 5; extra > 0 {
+		fmt.Fprintf(&desc, "+ %d more\n", extra)
 	}
 
 	return &discordgo.MessageEmbed{
 		Description: desc.String(),
-		Color:       tierColor(tier),
+		Color:       tierColor(topTier(l.buyers)),
 	}
 }

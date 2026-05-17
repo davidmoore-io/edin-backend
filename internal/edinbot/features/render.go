@@ -198,6 +198,21 @@ func fullDemand(n int64) string {
 	return commaInt64(n) + "t"
 }
 
+// padSizes returns the pad availability string from a LargestPad value.
+// "L" → "LMS", "M" → "MS", "S" → "S", anything else → "".
+func padSizes(largestPad string) string {
+	switch strings.ToUpper(largestPad) {
+	case "L":
+		return "LMS"
+	case "M":
+		return "MS"
+	case "S":
+		return "S"
+	default:
+		return ""
+	}
+}
+
 // commaInt64 is the local copy of the existing commaInt — defined here to
 // avoid a forward dependency on the platinum.go-defined helper from
 // shared render code.
