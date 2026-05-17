@@ -36,7 +36,6 @@ type HandlerDeps struct {
 	Snap    Snapshotter
 	Discord Discord
 	Cfg     Config
-	GuildID string // Kaine guild — used to set guild_id on the persisted row
 	NowFunc func() time.Time
 	LogFunc func(format string, args ...any) // optional; defaults to log.Printf
 }
@@ -187,7 +186,7 @@ func Watch(deps HandlerDeps) slash.Handler {
 		// in sync with reality.
 		raw_render, _ := json.Marshal(embed)
 		err = deps.Store.AddWatch(ctx, store.WatchedSystem{
-			GuildID:       deps.GuildID,
+			GuildID:       ic.GuildID,
 			ChannelID:     ic.ChannelID,
 			SystemSlug:    slug,
 			SystemName:    snap.Name,
@@ -216,7 +215,7 @@ func Watch(deps HandlerDeps) slash.Handler {
 
 		return reply(resp, ic, fmt.Sprintf(
 			"Now watching **%s** — %s",
-			snap.Name, messageLink(deps.GuildID, ic.ChannelID, msgID)))
+			snap.Name, messageLink(ic.GuildID, ic.ChannelID, msgID)))
 	}
 }
 

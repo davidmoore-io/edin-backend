@@ -11,9 +11,8 @@
 // Surface area is deliberately small:
 //
 //	r := slash.NewRouter(slash.Config{
-//	    AllowedChannelIDs:    []string{"1498813935057637597"},
-//	    RequirePermissions:   discordgo.PermissionAdministrator,
-//	    Logger:               log.Default(),
+//	    AllowedChannelIDs: []string{"1498813935057637597"},
+//	    Logger:            log.Default(),
 //	})
 //	r.Handle("watch",   watchHandler.Run)
 //	r.Handle("unwatch", unwatchHandler.Run)
@@ -54,12 +53,6 @@ type Config struct {
 	// means "any channel" (use sparingly).
 	AllowedChannelIDs []string
 
-	// RequirePermissions is a Discord permissions bitmask the calling
-	// member must hold. Defaults to PermissionAdministrator. The slice
-	// shape isn't necessary today — admin OR another role would be
-	// expressed by adding more bits to this single bitmask.
-	RequirePermissions int64
-
 	// Logger receives gate decisions and dispatch errors. nil → log.Default.
 	Logger *log.Logger
 }
@@ -73,9 +66,6 @@ type Router struct {
 // NewRouter constructs a router with the given gate config. Commands are
 // registered separately via Handle.
 func NewRouter(cfg Config) *Router {
-	if cfg.RequirePermissions == 0 {
-		cfg.RequirePermissions = discordgo.PermissionAdministrator
-	}
 	if cfg.Logger == nil {
 		cfg.Logger = log.Default()
 	}
@@ -127,17 +117,11 @@ func (r *Router) dispatch(resp Responder, ic *discordgo.InteractionCreate) {
 		return
 	}
 
-	// Permission gate. ic.Member is nil in DM contexts — the channel gate
-	// above blocks those today (DMs aren't in any allowed channel list)
-	// so a nil Member here would mean Discord didn't populate it, which
-	// is itself a permission failure.
+	// Guard against unexpected DM-context interactions; ic.Member is nil
+	// outside a guild. DMPermission:false on the command and the channel
+	// gate above make this unreachable in normal operation.
 	if ic.Member == nil {
 		r.replyEphemeral(resp, ic, "This command requires guild membership.")
-		return
-	}
-	if ic.Member.Permissions&r.cfg.RequirePermissions == 0 {
-		r.replyEphemeral(resp, ic,
-			"This command requires the Administrator permission.")
 		return
 	}
 

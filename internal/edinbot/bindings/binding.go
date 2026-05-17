@@ -18,3 +18,25 @@ type Binding struct {
 	IsPoll       bool // true if the registered feature is a PollFeature
 	IsEvent      bool // true if the registered feature is an EventDrivenFeature
 }
+
+// SlashGuild holds slash-command registration config for one Discord guild.
+// AllowedRoleIDs drives which Discord permission model is used:
+//
+//   - Empty: DefaultMemberPermissions="8" (admin-only). Discord hides the
+//     command from non-admins across all channels. Admins see it everywhere
+//     but the runtime channel gate enforces the watch channel restriction.
+//
+//   - Non-empty: DefaultMemberPermissions="0" (hidden for all by default),
+//     then the Application Command Permissions API grants the listed roles
+//     and restricts visibility to WatchChannelID only.
+type SlashGuild struct {
+	GuildID        string   // Discord snowflake
+	WatchChannelID string   // Channel where /watch and /unwatch are honoured
+	AllowedRoleIDs []string // Discord role snowflakes; empty = admin-only
+}
+
+// Config is the parsed, validated result of loading bindings.yml.
+type Config struct {
+	Bindings    []Binding
+	SlashGuilds []SlashGuild
+}

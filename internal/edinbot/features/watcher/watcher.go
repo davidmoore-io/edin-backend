@@ -59,11 +59,6 @@ type Discord interface {
 
 // Config gates the watcher's external behaviour.
 type Config struct {
-	// AllowedChannelID is the single channel where the slash commands are
-	// honoured. Today it's "1498813935057637597" (#system-watch); a future
-	// version could allow several channels by switching to a slice.
-	AllowedChannelID string
-
 	// MaxWatchesPerChannel caps how many concurrent watches a channel
 	// holds. Default 50; protects against accidental flooding by a
 	// curious commander running /watch on every system in the bubble.

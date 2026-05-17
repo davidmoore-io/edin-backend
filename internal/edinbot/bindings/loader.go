@@ -18,8 +18,15 @@ var (
 	snowflakePattern = regexp.MustCompile(`^[0-9]+$`)
 )
 
+type rawSlashGuild struct {
+	GuildID        string   `yaml:"guild_id"`
+	WatchChannelID string   `yaml:"watch_channel_id"`
+	AllowedRoleIDs []string `yaml:"allowed_role_ids,omitempty"`
+}
+
 type fileShape struct {
-	Bindings []rawBinding `yaml:"bindings"`
+	Bindings    []rawBinding    `yaml:"bindings"`
+	SlashGuilds []rawSlashGuild `yaml:"slash_guilds,omitempty"`
 }
 
 type rawBinding struct {
@@ -31,32 +38,46 @@ type rawBinding struct {
 	Config       map[string]any `yaml:"config,omitempty"`
 }
 
-// Load parses YAML from r, validates every binding against the registered
-// feature's expectations, and returns the resolved []Binding. Any validation
-// failure is fatal — partial results are never returned. Per spec §6.
-func Load(r io.Reader) ([]Binding, error) {
+// Load parses YAML from r, validates every binding and slash guild against
+// their respective constraints, and returns the resolved Config. Any
+// validation failure is fatal — partial results are never returned. Per spec §6.
+func Load(r io.Reader) (Config, error) {
 	var f fileShape
 	dec := yaml.NewDecoder(r)
 	dec.KnownFields(true)
 	if err := dec.Decode(&f); err != nil {
-		return nil, fmt.Errorf("parse bindings yaml: %w", err)
+		return Config{}, fmt.Errorf("parse bindings yaml: %w", err)
 	}
 
-	out := make([]Binding, 0, len(f.Bindings))
+	bindings := make([]Binding, 0, len(f.Bindings))
 	seenID := map[string]bool{}
-
 	for i, raw := range f.Bindings {
 		b, err := validate(raw)
 		if err != nil {
-			return nil, fmt.Errorf("binding[%d] (%q): %w", i, raw.ID, err)
+			return Config{}, fmt.Errorf("binding[%d] (%q): %w", i, raw.ID, err)
 		}
 		if seenID[b.ID] {
-			return nil, fmt.Errorf("binding[%d]: duplicate id %q", i, b.ID)
+			return Config{}, fmt.Errorf("binding[%d]: duplicate id %q", i, b.ID)
 		}
 		seenID[b.ID] = true
-		out = append(out, b)
+		bindings = append(bindings, b)
 	}
-	return out, nil
+
+	slashGuilds := make([]SlashGuild, 0, len(f.SlashGuilds))
+	seenGuildID := map[string]bool{}
+	for i, raw := range f.SlashGuilds {
+		sg, err := validateSlashGuild(raw)
+		if err != nil {
+			return Config{}, fmt.Errorf("slash_guild[%d]: %w", i, err)
+		}
+		if seenGuildID[sg.GuildID] {
+			return Config{}, fmt.Errorf("slash_guild[%d]: duplicate guild_id %q", i, sg.GuildID)
+		}
+		seenGuildID[sg.GuildID] = true
+		slashGuilds = append(slashGuilds, sg)
+	}
+
+	return Config{Bindings: bindings, SlashGuilds: slashGuilds}, nil
 }
 
 func validate(raw rawBinding) (Binding, error) {
@@ -113,4 +134,23 @@ func validate(raw rawBinding) (Binding, error) {
 		return Binding{}, fmt.Errorf("feature %q config validation: %w", raw.Feature, err)
 	}
 	return b, nil
+}
+
+func validateSlashGuild(raw rawSlashGuild) (SlashGuild, error) {
+	if !snowflakePattern.MatchString(raw.GuildID) {
+		return SlashGuild{}, errors.New("guild_id must be a non-empty numeric snowflake string")
+	}
+	if !snowflakePattern.MatchString(raw.WatchChannelID) {
+		return SlashGuild{}, errors.New("watch_channel_id must be a non-empty numeric snowflake string")
+	}
+	for i, roleID := range raw.AllowedRoleIDs {
+		if !snowflakePattern.MatchString(roleID) {
+			return SlashGuild{}, fmt.Errorf("allowed_role_ids[%d] %q must be a numeric snowflake string", i, roleID)
+		}
+	}
+	return SlashGuild{
+		GuildID:        raw.GuildID,
+		WatchChannelID: raw.WatchChannelID,
+		AllowedRoleIDs: raw.AllowedRoleIDs,
+	}, nil
 }

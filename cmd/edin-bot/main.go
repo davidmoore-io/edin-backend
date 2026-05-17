@@ -13,6 +13,7 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -90,7 +91,7 @@ func run() error {
 	}
 
 	// 6. bindings YAML
-	bs, err := loadBindings(cfg.BindingsPath)
+	bindingsCfg, err := loadBindings(cfg.BindingsPath)
 	if err != nil {
 		return fmt.Errorf("load bindings: %w", err)
 	}
@@ -98,7 +99,7 @@ func run() error {
 	// 7. publisher + scheduler
 	pub := publisher.New(st, dc)
 	sch := scheduler.New(scheduler.Config{
-		Bindings:  bs,
+		Bindings:  bindingsCfg.Bindings,
 		Publisher: pub,
 		Store:     st,
 		Bus:       bus,
@@ -108,7 +109,7 @@ func run() error {
 	// 8. http server (separate goroutine)
 	srv := httpserver.New(httpserver.Config{
 		Addr:       ":8080",
-		Health:     newHealthOracle(st, bs),
+		Health:     newHealthOracle(st, bindingsCfg.Bindings),
 		Trigger:    sch,
 		Cleaner:    pub,
 		AdminToken: cfg.AdminToken,
@@ -125,96 +126,47 @@ func run() error {
 	}
 
 	// 9. Slash-command router + /watch /unwatch handlers + watcher loop.
-	// Wired only when WATCH_CHANNEL_ID and SLASH_GUILD_ID are set;
-	// otherwise the bot keeps the alerts-only behaviour and the slash
-	// surface is dormant. Both ID env vars carry the same Kaine guild
-	// today; kept separate so a second guild could host /watch later
-	// without forking the alerts deploy.
-	if cfg.WatchChannelID != "" && cfg.SlashGuildID != "" {
-		if err := startSlashAndWatcher(ctx, cfg, st, control, dc); err != nil {
-			log.Printf("[WARN] slash/watcher startup failed: %v (continuing without /watch feature)", err)
+	// Active when slash_guilds is non-empty in bindings.yml; dormant otherwise.
+	if len(bindingsCfg.SlashGuilds) > 0 {
+		if err := setupSlash(ctx, bindingsCfg.SlashGuilds, st, control, dc); err != nil {
+			log.Printf("[WARN] slash setup failed: %v (continuing without /watch feature)", err)
 		} else {
-			log.Printf("[INFO] /watch /unwatch enabled in channel %s (guild %s)", cfg.WatchChannelID, cfg.SlashGuildID)
+			log.Printf("[INFO] /watch /unwatch enabled in %d guild(s)", len(bindingsCfg.SlashGuilds))
 		}
 	} else {
-		log.Printf("[INFO] /watch /unwatch disabled — set WATCH_CHANNEL_ID and SLASH_GUILD_ID to enable")
+		log.Printf("[INFO] /watch /unwatch disabled — add slash_guilds to bindings.yml to enable")
 	}
 
-	log.Printf("[INFO] edin-bot %s started; %d binding(s)", version, len(bs))
+	log.Printf("[INFO] edin-bot %s started; %d binding(s)", version, len(bindingsCfg.Bindings))
 	<-ctx.Done()
 	log.Printf("[INFO] shutting down")
 	return sch.Stop(10 * time.Second)
 }
 
-// startSlashAndWatcher registers slash commands with Discord, attaches the
-// router as an InteractionCreate listener, and kicks off the polling
-// goroutine. Failures here are non-fatal — the alerts side of the bot
-// keeps running even if the watch feature can't initialise (e.g. Discord
-// rejected the command spec). All wiring of concrete deps lives here.
-func startSlashAndWatcher(ctx context.Context, cfg envConfig, st *store.PostgresStore, control *controlclient.Client, dc *discordclient.RealClient) error {
-	deps := watcher.HandlerDeps{
-		Store:   st,
-		Snap:    control,
-		Discord: dc,
-		Cfg: watcher.Config{
-			AllowedChannelID: cfg.WatchChannelID,
-			// MaxWatchesPerChannel / PollInterval / PerWatchStagger
-			// fall back to defaults via Config.Defaults().
-		},
-		GuildID: cfg.SlashGuildID,
+// setupSlash wires the slash router, registers /watch and /unwatch in every
+// configured guild, and starts the watcher polling loop. The router is wired
+// once; it receives interactions from all guilds and gates by channel.
+// Command registration and permission configuration are per-guild.
+func setupSlash(ctx context.Context, guilds []bindings.SlashGuild, st *store.PostgresStore, control *controlclient.Client, dc *discordclient.RealClient) error {
+	watchChannelIDs := make([]string, 0, len(guilds))
+	for _, g := range guilds {
+		watchChannelIDs = append(watchChannelIDs, g.WatchChannelID)
 	}
 
-	router := slash.NewRouter(slash.Config{
-		AllowedChannelIDs:  []string{cfg.WatchChannelID},
-		RequirePermissions: discordgo.PermissionAdministrator,
-	})
+	router := slash.NewRouter(slash.Config{AllowedChannelIDs: watchChannelIDs})
+	deps := watcher.HandlerDeps{Store: st, Snap: control, Discord: dc, Cfg: watcher.Config{}}
 	router.Handle("watch", watcher.Watch(deps))
 	router.Handle("unwatch", watcher.Unwatch(deps))
 	dc.Session().AddHandler(router.Dispatch)
 
-	// Register guild-local slash commands. Re-registering with the same
-	// name + signature is a no-op on Discord's side; a deploy that
-	// changes the option list propagates instantly because guild
-	// commands skip the global cache.
-	// DMPermission: false keeps the commands from appearing in DMs at all
-	// — the channel-gate would reject them anyway, but suppressing them
-	// in the DM autocomplete is gentler UX.
-	dmsBlocked := false
-	commands := []*discordgo.ApplicationCommand{
-		{
-			Name:         "watch",
-			Description:  "Watch a system for powerplay/faction changes",
-			DMPermission: &dmsBlocked,
-			Options: []*discordgo.ApplicationCommandOption{{
-				Type:        discordgo.ApplicationCommandOptionString,
-				Name:        "system",
-				Description: "System name (e.g. HIP 61332)",
-				Required:    true,
-			}},
-		},
-		{
-			Name:         "unwatch",
-			Description:  "Stop watching a system",
-			DMPermission: &dmsBlocked,
-			Options: []*discordgo.ApplicationCommandOption{{
-				Type:        discordgo.ApplicationCommandOptionString,
-				Name:        "system",
-				Description: "System name to stop watching",
-				Required:    true,
-			}},
-		},
-	}
 	sess := dc.Session()
-	for _, cmd := range commands {
-		if _, err := sess.ApplicationCommandCreate(sess.State.User.ID, cfg.SlashGuildID, cmd); err != nil {
-			return fmt.Errorf("register %s: %w", cmd.Name, err)
+	for _, g := range guilds {
+		if err := registerSlashGuild(sess, g); err != nil {
+			return fmt.Errorf("guild %s: %w", g.GuildID, err)
 		}
+		log.Printf("[INFO] slash: registered /watch /unwatch in guild %s (watch channel %s)", g.GuildID, g.WatchChannelID)
 	}
 
-	// Kick the polling goroutine. NewWatcher applies Config defaults
-	// internally; the deps above carry only the channel-ID gate which
-	// the loop doesn't consume (it polls every persisted row regardless
-	// of channel — handlers gate intake at /watch time).
 	w := watcher.NewWatcher(watcher.LoopDeps{
 		Store:   st,
 		Snap:    control,
@@ -224,6 +176,105 @@ func startSlashAndWatcher(ctx context.Context, cfg envConfig, st *store.Postgres
 	w.Start(ctx)
 
 	return nil
+}
+
+// registerSlashGuild registers /watch and /unwatch in one guild and configures
+// Discord-side permission restrictions.
+//
+// Admin-only guilds (empty AllowedRoleIDs): DefaultMemberPermissions=8 hides
+// the commands from non-admins. Admins see the commands everywhere but the
+// runtime channel gate enforces the watch channel restriction.
+//
+// Role-restricted guilds (non-empty AllowedRoleIDs): DefaultMemberPermissions=0
+// disables the commands for everyone by default. The Application Command
+// Permissions API then grants the listed roles and restricts visibility to the
+// watch channel only via the documented guild_id-1 "all channels" constant.
+func registerSlashGuild(sess *discordgo.Session, guild bindings.SlashGuild) error {
+	adminOnly := len(guild.AllowedRoleIDs) == 0
+	dmsBlocked := false
+
+	var defaultPerms int64
+	if adminOnly {
+		defaultPerms = discordgo.PermissionAdministrator
+	} else {
+		defaultPerms = 0
+	}
+
+	commands := []*discordgo.ApplicationCommand{
+		{
+			Name:                     "watch",
+			Description:              "Watch a system for powerplay/faction changes",
+			DMPermission:             &dmsBlocked,
+			DefaultMemberPermissions: &defaultPerms,
+			Options: []*discordgo.ApplicationCommandOption{{
+				Type:        discordgo.ApplicationCommandOptionString,
+				Name:        "system",
+				Description: "System name (e.g. HIP 61332)",
+				Required:    true,
+			}},
+		},
+		{
+			Name:                     "unwatch",
+			Description:              "Stop watching a system",
+			DMPermission:             &dmsBlocked,
+			DefaultMemberPermissions: &defaultPerms,
+			Options: []*discordgo.ApplicationCommandOption{{
+				Type:        discordgo.ApplicationCommandOptionString,
+				Name:        "system",
+				Description: "System name to stop watching",
+				Required:    true,
+			}},
+		},
+	}
+
+	appID := sess.State.User.ID
+	for _, cmd := range commands {
+		created, err := sess.ApplicationCommandCreate(appID, guild.GuildID, cmd)
+		if err != nil {
+			return fmt.Errorf("register %s: %w", cmd.Name, err)
+		}
+		if !adminOnly {
+			if err := applyChannelPermissions(sess, appID, guild, created.ID); err != nil {
+				return fmt.Errorf("set permissions for %s: %w", cmd.Name, err)
+			}
+		}
+	}
+	return nil
+}
+
+// applyChannelPermissions configures the Application Command Permissions API
+// to restrict command visibility to the watch channel only for the given roles.
+// Uses the documented guild_id-1 "all channels" constant to deny all channels
+// before explicitly allowing the watch channel.
+func applyChannelPermissions(sess *discordgo.Session, appID string, guild bindings.SlashGuild, cmdID string) error {
+	guildIDUint, err := strconv.ParseUint(guild.GuildID, 10, 64)
+	if err != nil {
+		return fmt.Errorf("invalid guild_id %q: %w", guild.GuildID, err)
+	}
+	allChannelsID := strconv.FormatUint(guildIDUint-1, 10)
+
+	perms := make([]*discordgo.ApplicationCommandPermissions, 0, len(guild.AllowedRoleIDs)+2)
+	for _, roleID := range guild.AllowedRoleIDs {
+		perms = append(perms, &discordgo.ApplicationCommandPermissions{
+			ID:         roleID,
+			Type:       discordgo.ApplicationCommandPermissionTypeRole,
+			Permission: true,
+		})
+	}
+	perms = append(perms,
+		&discordgo.ApplicationCommandPermissions{
+			ID:         allChannelsID,
+			Type:       discordgo.ApplicationCommandPermissionTypeChannel,
+			Permission: false,
+		},
+		&discordgo.ApplicationCommandPermissions{
+			ID:         guild.WatchChannelID,
+			Type:       discordgo.ApplicationCommandPermissionTypeChannel,
+			Permission: true,
+		},
+	)
+	return sess.ApplicationCommandPermissionsEdit(appID, guild.GuildID, cmdID,
+		&discordgo.ApplicationCommandPermissionsList{Permissions: perms})
 }
 
 // envConfig is read from the environment (which docker-compose populates from
@@ -238,8 +289,6 @@ type envConfig struct {
 	PostgresURL       string
 	BindingsPath      string
 	AdminToken        string
-	WatchChannelID    string
-	SlashGuildID      string
 }
 
 func loadEnv() (envConfig, error) {
@@ -253,8 +302,6 @@ func loadEnv() (envConfig, error) {
 		PostgresURL:       os.Getenv("POSTGRES_URL"),
 		BindingsPath:      os.Getenv("BINDINGS_PATH"),
 		AdminToken:        os.Getenv("ADMIN_TOKEN"),
-		WatchChannelID:    os.Getenv("WATCH_CHANNEL_ID"),
-		SlashGuildID:      os.Getenv("SLASH_GUILD_ID"),
 	}
 	if c.BindingsPath == "" {
 		c.BindingsPath = "/etc/edin-bot/bindings.yml"
@@ -360,10 +407,10 @@ func loadPriorOutages(ctx context.Context, st store.Store) error {
 	return feat.LoadPriorOutages(prior)
 }
 
-func loadBindings(path string) ([]bindings.Binding, error) {
+func loadBindings(path string) (bindings.Config, error) {
 	f, err := os.Open(path)
 	if err != nil {
-		return nil, err
+		return bindings.Config{}, err
 	}
 	defer f.Close()
 	return bindings.Load(f)

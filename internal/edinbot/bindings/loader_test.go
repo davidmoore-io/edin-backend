@@ -66,18 +66,19 @@ bindings:
     feature: "event-fake"
     config: {}
 `
-	bs, err := bindings.Load(strings.NewReader(yaml))
+	cfg, err := bindings.Load(strings.NewReader(yaml))
 	require.NoError(t, err)
-	require.Len(t, bs, 2)
+	require.Len(t, cfg.Bindings, 2)
+	require.Empty(t, cfg.SlashGuilds)
 
-	require.Equal(t, "kaine-poll", bs[0].ID)
-	require.Equal(t, "1334858214533103646", bs[0].GuildID)
-	require.Equal(t, 15*time.Minute, bs[0].PollInterval)
-	require.True(t, bs[0].IsPoll)
+	require.Equal(t, "kaine-poll", cfg.Bindings[0].ID)
+	require.Equal(t, "1334858214533103646", cfg.Bindings[0].GuildID)
+	require.Equal(t, 15*time.Minute, cfg.Bindings[0].PollInterval)
+	require.True(t, cfg.Bindings[0].IsPoll)
 
-	require.Equal(t, "edin-event", bs[1].ID)
-	require.True(t, bs[1].IsEvent)
-	require.Equal(t, time.Duration(0), bs[1].PollInterval)
+	require.Equal(t, "edin-event", cfg.Bindings[1].ID)
+	require.True(t, cfg.Bindings[1].IsEvent)
+	require.Equal(t, time.Duration(0), cfg.Bindings[1].PollInterval)
 }
 
 func TestLoader_DuplicateIDFails(t *testing.T) {
@@ -220,4 +221,107 @@ bindings:
 	_, err := bindings.Load(strings.NewReader(yaml))
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "required_key missing")
+}
+
+func TestLoader_SlashGuilds_HappyPath(t *testing.T) {
+	setupRegistryForTests(t)
+	yaml := `
+bindings:
+  - id: "x"
+    guild_id: "1"
+    channel_id: "2"
+    feature: "poll-fake"
+    poll_interval: 1m
+slash_guilds:
+  - guild_id: "1334858214533103646"
+    watch_channel_id: "1498813935057637597"
+  - guild_id: "1289051766456848546"
+    watch_channel_id: "1503701700320432239"
+    allowed_role_ids:
+      - "1289051766582677507"
+      - "1353722595043971112"
+      - "1329039235063480360"
+`
+	cfg, err := bindings.Load(strings.NewReader(yaml))
+	require.NoError(t, err)
+	require.Len(t, cfg.Bindings, 1)
+	require.Len(t, cfg.SlashGuilds, 2)
+
+	// Admin-only guild: no roles
+	require.Equal(t, "1334858214533103646", cfg.SlashGuilds[0].GuildID)
+	require.Equal(t, "1498813935057637597", cfg.SlashGuilds[0].WatchChannelID)
+	require.Empty(t, cfg.SlashGuilds[0].AllowedRoleIDs)
+
+	// Role-restricted guild
+	require.Equal(t, "1289051766456848546", cfg.SlashGuilds[1].GuildID)
+	require.Equal(t, "1503701700320432239", cfg.SlashGuilds[1].WatchChannelID)
+	require.Equal(t, []string{"1289051766582677507", "1353722595043971112", "1329039235063480360"}, cfg.SlashGuilds[1].AllowedRoleIDs)
+}
+
+func TestLoader_SlashGuilds_NoSlashGuildsIsValid(t *testing.T) {
+	setupRegistryForTests(t)
+	yaml := `
+bindings:
+  - id: "x"
+    guild_id: "1"
+    channel_id: "2"
+    feature: "poll-fake"
+    poll_interval: 1m
+`
+	cfg, err := bindings.Load(strings.NewReader(yaml))
+	require.NoError(t, err)
+	require.Empty(t, cfg.SlashGuilds)
+}
+
+func TestLoader_SlashGuilds_DuplicateGuildFails(t *testing.T) {
+	setupRegistryForTests(t)
+	yaml := `
+bindings: []
+slash_guilds:
+  - guild_id: "1234567890"
+    watch_channel_id: "9876543210"
+  - guild_id: "1234567890"
+    watch_channel_id: "1111111111"
+`
+	_, err := bindings.Load(strings.NewReader(yaml))
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "duplicate")
+}
+
+func TestLoader_SlashGuilds_BadGuildSnowflakeFails(t *testing.T) {
+	yaml := `
+bindings: []
+slash_guilds:
+  - guild_id: "not-a-snowflake"
+    watch_channel_id: "9876543210"
+`
+	_, err := bindings.Load(strings.NewReader(yaml))
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "guild_id")
+}
+
+func TestLoader_SlashGuilds_BadChannelSnowflakeFails(t *testing.T) {
+	yaml := `
+bindings: []
+slash_guilds:
+  - guild_id: "1234567890"
+    watch_channel_id: "not-a-snowflake"
+`
+	_, err := bindings.Load(strings.NewReader(yaml))
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "watch_channel_id")
+}
+
+func TestLoader_SlashGuilds_BadRoleSnowflakeFails(t *testing.T) {
+	yaml := `
+bindings: []
+slash_guilds:
+  - guild_id: "1234567890"
+    watch_channel_id: "9876543210"
+    allowed_role_ids:
+      - "valid-enough"
+`
+	_, err := bindings.Load(strings.NewReader(yaml))
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "allowed_role_ids")
 }

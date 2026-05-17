@@ -222,11 +222,13 @@ func (r *recordingResp) DeferCount() int {
 }
 
 // mkInteraction builds an InteractionCreate carrying the slash command
-// option "system" with the supplied input.
+// option "system" with the supplied input. GuildID is set to "kaine-guild"
+// to match the guild ID that tests assert on persisted rows.
 func mkInteraction(channelID, userID, system string) *discordgo.InteractionCreate {
 	return &discordgo.InteractionCreate{
 		Interaction: &discordgo.Interaction{
 			Type:      discordgo.InteractionApplicationCommand,
+			GuildID:   "kaine-guild",
 			ChannelID: channelID,
 			Member: &discordgo.Member{
 				User: &discordgo.User{ID: userID},
@@ -258,7 +260,6 @@ func mkDeps(st *fakeStore, snap *fakeSnapshotter, dc *fakeDiscord) watcher.Handl
 		Snap:    snap,
 		Discord: dc,
 		Cfg:     watcher.Config{}, // defaults: 50 / 120s / 1s
-		GuildID: "kaine-guild",
 		NowFunc: func() time.Time { return time.Date(2026, 4, 29, 12, 0, 0, 0, time.UTC) },
 		LogFunc: func(format string, args ...any) {}, // silent
 	}

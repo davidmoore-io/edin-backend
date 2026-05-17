@@ -57,12 +57,12 @@ func (r *recordingResponder) Replies() []string {
 
 func quietLogger() *log.Logger { return log.New(io.Discard, "", 0) }
 
-func mkInteraction(channelID string, perms int64, command string) *discordgo.InteractionCreate {
+func mkInteraction(channelID, command string) *discordgo.InteractionCreate {
 	return &discordgo.InteractionCreate{
 		Interaction: &discordgo.Interaction{
 			Type:      discordgo.InteractionApplicationCommand,
 			ChannelID: channelID,
-			Member:    &discordgo.Member{Permissions: perms},
+			Member:    &discordgo.Member{},
 			Data: discordgo.ApplicationCommandInteractionData{
 				Name: command,
 			},
@@ -76,9 +76,8 @@ func TestRouter_DispatchesToHandlerOnHappyPath(t *testing.T) {
 		called int
 	)
 	r := slash.NewRouter(slash.Config{
-		AllowedChannelIDs:  []string{"watch-channel"},
-		RequirePermissions: discordgo.PermissionAdministrator,
-		Logger:             quietLogger(),
+		AllowedChannelIDs: []string{"watch-channel"},
+		Logger:            quietLogger(),
 	})
 	r.Handle("watch", func(ctx context.Context, resp slash.Responder, ic *discordgo.InteractionCreate) error {
 		mu.Lock()
@@ -88,7 +87,7 @@ func TestRouter_DispatchesToHandlerOnHappyPath(t *testing.T) {
 	})
 
 	resp := &recordingResponder{}
-	r.DispatchForTest(resp, mkInteraction("watch-channel", discordgo.PermissionAdministrator, "watch"))
+	r.DispatchForTest(resp, mkInteraction("watch-channel", "watch"))
 
 	require.Equal(t, 1, called, "handler must be invoked exactly once on happy path")
 	require.Empty(t, resp.Replies(), "router must not reply on happy path — handler owns the reply")
@@ -97,9 +96,8 @@ func TestRouter_DispatchesToHandlerOnHappyPath(t *testing.T) {
 func TestRouter_RejectsWrongChannel(t *testing.T) {
 	called := 0
 	r := slash.NewRouter(slash.Config{
-		AllowedChannelIDs:  []string{"watch-channel"},
-		RequirePermissions: discordgo.PermissionAdministrator,
-		Logger:             quietLogger(),
+		AllowedChannelIDs: []string{"watch-channel"},
+		Logger:            quietLogger(),
 	})
 	r.Handle("watch", func(ctx context.Context, resp slash.Responder, ic *discordgo.InteractionCreate) error {
 		called++
@@ -107,39 +105,18 @@ func TestRouter_RejectsWrongChannel(t *testing.T) {
 	})
 
 	resp := &recordingResponder{}
-	r.DispatchForTest(resp, mkInteraction("some-other-channel", discordgo.PermissionAdministrator, "watch"))
+	r.DispatchForTest(resp, mkInteraction("some-other-channel", "watch"))
 
 	require.Equal(t, 0, called, "handler must not be called when channel is wrong")
 	require.Len(t, resp.Replies(), 1)
 	require.Contains(t, resp.Replies()[0], "not enabled in this channel")
 }
 
-func TestRouter_RejectsNonAdmin(t *testing.T) {
-	called := 0
-	r := slash.NewRouter(slash.Config{
-		AllowedChannelIDs:  []string{"watch-channel"},
-		RequirePermissions: discordgo.PermissionAdministrator,
-		Logger:             quietLogger(),
-	})
-	r.Handle("watch", func(ctx context.Context, resp slash.Responder, ic *discordgo.InteractionCreate) error {
-		called++
-		return nil
-	})
-
-	resp := &recordingResponder{}
-	r.DispatchForTest(resp, mkInteraction("watch-channel", discordgo.PermissionSendMessages, "watch"))
-
-	require.Equal(t, 0, called)
-	require.Len(t, resp.Replies(), 1)
-	require.Contains(t, resp.Replies()[0], "Administrator permission")
-}
-
 func TestRouter_RejectsDM(t *testing.T) {
 	called := 0
 	r := slash.NewRouter(slash.Config{
-		AllowedChannelIDs:  []string{"watch-channel"},
-		RequirePermissions: discordgo.PermissionAdministrator,
-		Logger:             quietLogger(),
+		AllowedChannelIDs: []string{"watch-channel"},
+		Logger:            quietLogger(),
 	})
 	r.Handle("watch", func(ctx context.Context, resp slash.Responder, ic *discordgo.InteractionCreate) error {
 		called++
@@ -181,9 +158,8 @@ func TestRouter_DoubleRegisterPanics(t *testing.T) {
 func TestRouter_IgnoresNonApplicationCommandInteractions(t *testing.T) {
 	called := 0
 	r := slash.NewRouter(slash.Config{
-		AllowedChannelIDs:  []string{"watch-channel"},
-		RequirePermissions: discordgo.PermissionAdministrator,
-		Logger:             quietLogger(),
+		AllowedChannelIDs: []string{"watch-channel"},
+		Logger:            quietLogger(),
 	})
 	r.Handle("watch", func(ctx context.Context, resp slash.Responder, ic *discordgo.InteractionCreate) error {
 		called++
