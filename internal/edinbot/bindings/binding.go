@@ -33,6 +33,12 @@ type SlashGuild struct {
 	GuildID        string   // Discord snowflake
 	WatchChannelID string   // Channel where /watch and /unwatch are honoured
 	AllowedRoleIDs []string // Discord role snowflakes; empty = admin-only
+	// AllowedUserIDs is an optional runtime allowlist. When non-empty, only
+	// these user snowflakes may use the slash commands in this guild; anyone
+	// else receives an ephemeral "no permission" reply. Intended as a stopgap
+	// until Discord-side role/channel restrictions can be configured via the
+	// Integrations UI (requires Administrator in the target guild).
+	AllowedUserIDs []string
 }
 
 // Config is the parsed, validated result of loading bindings.yml.

@@ -148,11 +148,22 @@ func run() error {
 // Command registration and permission configuration are per-guild.
 func setupSlash(ctx context.Context, guilds []bindings.SlashGuild, st *store.PostgresStore, control *controlclient.Client, dc *discordclient.RealClient) error {
 	watchChannelIDs := make([]string, 0, len(guilds))
+	allowedUsersByGuild := make(map[string]map[string]bool)
 	for _, g := range guilds {
 		watchChannelIDs = append(watchChannelIDs, g.WatchChannelID)
+		if len(g.AllowedUserIDs) > 0 {
+			set := make(map[string]bool, len(g.AllowedUserIDs))
+			for _, id := range g.AllowedUserIDs {
+				set[id] = true
+			}
+			allowedUsersByGuild[g.GuildID] = set
+		}
 	}
 
-	router := slash.NewRouter(slash.Config{AllowedChannelIDs: watchChannelIDs})
+	router := slash.NewRouter(slash.Config{
+		AllowedChannelIDs:   watchChannelIDs,
+		AllowedUsersByGuild: allowedUsersByGuild,
+	})
 	deps := watcher.HandlerDeps{Store: st, Snap: control, Discord: dc, Cfg: watcher.Config{}}
 	router.Handle("watch", watcher.Watch(deps))
 	router.Handle("unwatch", watcher.Unwatch(deps))

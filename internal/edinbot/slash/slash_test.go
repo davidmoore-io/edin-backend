@@ -139,6 +139,98 @@ func TestRouter_RejectsDM(t *testing.T) {
 	require.Contains(t, resp.Replies()[0], "guild membership")
 }
 
+func TestRouter_RejectsUnauthorisedUser(t *testing.T) {
+	called := 0
+	r := slash.NewRouter(slash.Config{
+		AllowedChannelIDs: []string{"watch-channel"},
+		AllowedUsersByGuild: map[string]map[string]bool{
+			"guild-1": {"allowed-user": true},
+		},
+		Logger: quietLogger(),
+	})
+	r.Handle("watch", func(ctx context.Context, resp slash.Responder, ic *discordgo.InteractionCreate) error {
+		called++
+		return nil
+	})
+
+	resp := &recordingResponder{}
+	ic := &discordgo.InteractionCreate{
+		Interaction: &discordgo.Interaction{
+			Type:      discordgo.InteractionApplicationCommand,
+			GuildID:   "guild-1",
+			ChannelID: "watch-channel",
+			Member:    &discordgo.Member{User: &discordgo.User{ID: "unauthorised-user"}},
+			Data:      discordgo.ApplicationCommandInteractionData{Name: "watch"},
+		},
+	}
+	r.DispatchForTest(resp, ic)
+
+	require.Equal(t, 0, called, "handler must not fire for unlisted user")
+	require.Len(t, resp.Replies(), 1)
+	require.Contains(t, resp.Replies()[0], "don't have permission")
+}
+
+func TestRouter_AllowsAuthorisedUser(t *testing.T) {
+	called := 0
+	r := slash.NewRouter(slash.Config{
+		AllowedChannelIDs: []string{"watch-channel"},
+		AllowedUsersByGuild: map[string]map[string]bool{
+			"guild-1": {"allowed-user": true},
+		},
+		Logger: quietLogger(),
+	})
+	r.Handle("watch", func(ctx context.Context, resp slash.Responder, ic *discordgo.InteractionCreate) error {
+		called++
+		return nil
+	})
+
+	resp := &recordingResponder{}
+	ic := &discordgo.InteractionCreate{
+		Interaction: &discordgo.Interaction{
+			Type:      discordgo.InteractionApplicationCommand,
+			GuildID:   "guild-1",
+			ChannelID: "watch-channel",
+			Member:    &discordgo.Member{User: &discordgo.User{ID: "allowed-user"}},
+			Data:      discordgo.ApplicationCommandInteractionData{Name: "watch"},
+		},
+	}
+	r.DispatchForTest(resp, ic)
+
+	require.Equal(t, 1, called, "handler must fire for listed user")
+	require.Empty(t, resp.Replies())
+}
+
+func TestRouter_NoUserGateForUnlistedGuild(t *testing.T) {
+	called := 0
+	r := slash.NewRouter(slash.Config{
+		AllowedChannelIDs: []string{"watch-channel"},
+		AllowedUsersByGuild: map[string]map[string]bool{
+			"guild-1": {"allowed-user": true},
+		},
+		Logger: quietLogger(),
+	})
+	r.Handle("watch", func(ctx context.Context, resp slash.Responder, ic *discordgo.InteractionCreate) error {
+		called++
+		return nil
+	})
+
+	resp := &recordingResponder{}
+	// guild-2 has no user allowlist — any user passes
+	ic := &discordgo.InteractionCreate{
+		Interaction: &discordgo.Interaction{
+			Type:      discordgo.InteractionApplicationCommand,
+			GuildID:   "guild-2",
+			ChannelID: "watch-channel",
+			Member:    &discordgo.Member{User: &discordgo.User{ID: "random-user"}},
+			Data:      discordgo.ApplicationCommandInteractionData{Name: "watch"},
+		},
+	}
+	r.DispatchForTest(resp, ic)
+
+	require.Equal(t, 1, called, "handler must fire when guild has no user allowlist")
+	require.Empty(t, resp.Replies())
+}
+
 func TestRouter_DoubleRegisterPanics(t *testing.T) {
 	r := slash.NewRouter(slash.Config{Logger: quietLogger()})
 	r.Handle("watch", func(ctx context.Context, resp slash.Responder, ic *discordgo.InteractionCreate) error {

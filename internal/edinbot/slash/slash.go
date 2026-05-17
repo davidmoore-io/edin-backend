@@ -53,6 +53,12 @@ type Config struct {
 	// means "any channel" (use sparingly).
 	AllowedChannelIDs []string
 
+	// AllowedUsersByGuild maps guild ID to the set of user IDs permitted to
+	// use commands in that guild. When a guild has an entry here, any user
+	// not in the set receives an ephemeral "no permission" reply. Guilds
+	// with no entry are unrestricted at the user level.
+	AllowedUsersByGuild map[string]map[string]bool
+
 	// Logger receives gate decisions and dispatch errors. nil → log.Default.
 	Logger *log.Logger
 }
@@ -123,6 +129,20 @@ func (r *Router) dispatch(resp Responder, ic *discordgo.InteractionCreate) {
 	if ic.Member == nil {
 		r.replyEphemeral(resp, ic, "This command requires guild membership.")
 		return
+	}
+
+	// User gate: if an allowlist is configured for this guild, only those
+	// users may proceed. This is a runtime fallback for guilds where
+	// Discord-side permission configuration is not yet possible.
+	if allowed, ok := r.cfg.AllowedUsersByGuild[ic.GuildID]; ok && len(allowed) > 0 {
+		userID := ""
+		if ic.Member.User != nil {
+			userID = ic.Member.User.ID
+		}
+		if !allowed[userID] {
+			r.replyEphemeral(resp, ic, "You don't have permission to use this command.")
+			return
+		}
 	}
 
 	// Dispatch. Handlers are responsible for their own response timing

@@ -22,6 +22,7 @@ type rawSlashGuild struct {
 	GuildID        string   `yaml:"guild_id"`
 	WatchChannelID string   `yaml:"watch_channel_id"`
 	AllowedRoleIDs []string `yaml:"allowed_role_ids,omitempty"`
+	AllowedUserIDs []string `yaml:"allowed_user_ids,omitempty"`
 }
 
 type fileShape struct {
@@ -148,9 +149,15 @@ func validateSlashGuild(raw rawSlashGuild) (SlashGuild, error) {
 			return SlashGuild{}, fmt.Errorf("allowed_role_ids[%d] %q must be a numeric snowflake string", i, roleID)
 		}
 	}
+	for i, userID := range raw.AllowedUserIDs {
+		if !snowflakePattern.MatchString(userID) {
+			return SlashGuild{}, fmt.Errorf("allowed_user_ids[%d] %q must be a numeric snowflake string", i, userID)
+		}
+	}
 	return SlashGuild{
 		GuildID:        raw.GuildID,
 		WatchChannelID: raw.WatchChannelID,
 		AllowedRoleIDs: raw.AllowedRoleIDs,
+		AllowedUserIDs: raw.AllowedUserIDs,
 	}, nil
 }
