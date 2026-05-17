@@ -204,7 +204,7 @@ func (p *platinumItem) Render() *discordgo.MessageEmbed {
 	}
 
 	var desc strings.Builder
-	desc.WriteString("🔥 **Rapid acquisition mining alert** 🔥\n")
+	desc.WriteString("🔥 **Mining alert** 🔥\n")
 
 	// Price line: commodity label and value as separate backtick tokens, joined by " / "
 	var prices []string

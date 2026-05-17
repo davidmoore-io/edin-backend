@@ -190,7 +190,7 @@ func (l *ltdItem) Render() *discordgo.MessageEmbed {
 	}
 
 	var desc strings.Builder
-	desc.WriteString("🔥 **Rapid acquisition mining alert** 🔥\n")
+	desc.WriteString("🔥 **Mining alert** 🔥\n")
 
 	if maxLTD > 0 {
 		fmt.Fprintf(&desc, "`LTD:` `%sc/t`\n\n", commaInt64(maxLTD))

@@ -52,7 +52,7 @@ func TestPlatinumBoomAlerts_HappyPath_BuildsItemsFromBuyers(t *testing.T) {
 	require.Contains(t, bodyText, "Daedalus")
 	require.Contains(t, bodyText, "MapSystem", "mine system appears in Mine at line")
 	require.Contains(t, bodyText, "280,000c/t", "platinum price in price line")
-	require.Contains(t, bodyText, "Rapid acquisition mining alert")
+	require.Contains(t, bodyText, "Mining alert")
 	require.Contains(t, bodyText, "`Platinum:`", "label as backtick token")
 }
 
@@ -245,7 +245,7 @@ func TestLTDAlerts_HappyPath_BuildsItemsFromBuyers(t *testing.T) {
 	bodyText := embed.Description
 	require.Contains(t, bodyText, "Galileo")
 	require.Contains(t, bodyText, "<t:", "freshness rendered as live <t:N:R>")
-	require.Contains(t, bodyText, "Rapid acquisition mining alert")
+	require.Contains(t, bodyText, "Mining alert")
 }
 
 func TestLTDAlerts_EmptyResponseIsHealthy(t *testing.T) {
