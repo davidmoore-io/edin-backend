@@ -965,28 +965,41 @@ type StationData struct {
 	LastEDDNUpdate     time.Time `json:"last_eddn_update,omitempty"`
 }
 
+// BodyRingData represents a ring or belt associated with a body.
+type BodyRingData struct {
+	Name         string   `json:"name"`
+	RingClass    string   `json:"ring_class"`
+	ReserveLevel string   `json:"reserve_level,omitempty"`
+	HotspotTypes []string `json:"hotspot_types,omitempty"`
+	Hotspots     []string `json:"hotspots,omitempty"`
+	HasLTD       bool     `json:"has_ltd,omitempty"`
+	HasTritium   bool     `json:"has_tritium,omitempty"`
+	HasPainite   bool     `json:"has_painite,omitempty"`
+}
+
 // BodyData represents a celestial body from Memgraph.
 // Aligned with eddn-listener/MEMGRAPH-SCHEMA.md v3 (2026-01-06)
 type BodyData struct {
-	ID64                int64     `json:"id64"`
-	BodyID              int       `json:"body_id,omitempty"`
-	SystemID64          int64     `json:"system_id64,omitempty"`
-	SystemName          string    `json:"system_name,omitempty"` // From relationship
-	Name                string    `json:"name"`
-	Type                string    `json:"type,omitempty"` // Star, Planet, Moon
-	SubType             string    `json:"sub_type,omitempty"`
-	DistanceFromArrival float64   `json:"distance_from_arrival,omitempty"`
-	Radius              float64   `json:"radius,omitempty"`
-	Gravity             float64   `json:"gravity,omitempty"`
-	SurfaceTemp         int       `json:"surface_temp,omitempty"`
-	SurfacePressure     float64   `json:"surface_pressure,omitempty"`
-	IsLandable          bool      `json:"is_landable,omitempty"`
-	TerraformState      string    `json:"terraform_state,omitempty"`
-	AtmosphereType      string    `json:"atmosphere_type,omitempty"`
-	Volcanism           string    `json:"volcanism,omitempty"`
-	WasDiscovered       bool      `json:"was_discovered,omitempty"`
-	WasMapped           bool      `json:"was_mapped,omitempty"`
-	LastEDDNUpdate      time.Time `json:"last_eddn_update,omitempty"`
+	ID64                int64          `json:"id64"`
+	BodyID              int            `json:"body_id,omitempty"`
+	SystemID64          int64          `json:"system_id64,omitempty"`
+	SystemName          string         `json:"system_name,omitempty"`
+	Name                string         `json:"name"`
+	Type                string         `json:"type,omitempty"`
+	SubType             string         `json:"sub_type,omitempty"`
+	DistanceFromArrival float64        `json:"distance_from_arrival,omitempty"`
+	Radius              float64        `json:"radius,omitempty"`
+	Gravity             float64        `json:"gravity,omitempty"`
+	SurfaceTemp         int            `json:"surface_temp,omitempty"`
+	SurfacePressure     float64        `json:"surface_pressure,omitempty"`
+	IsLandable          bool           `json:"is_landable,omitempty"`
+	TerraformState      string         `json:"terraform_state,omitempty"`
+	AtmosphereType      string         `json:"atmosphere_type,omitempty"`
+	Volcanism           string         `json:"volcanism,omitempty"`
+	WasDiscovered       bool           `json:"was_discovered,omitempty"`
+	WasMapped           bool           `json:"was_mapped,omitempty"`
+	Rings               []BodyRingData `json:"rings,omitempty"`
+	LastEDDNUpdate      time.Time      `json:"last_eddn_update,omitempty"`
 }
 
 // FleetCarrierData represents a fleet carrier from Memgraph.
@@ -1312,6 +1325,8 @@ func (c *Client) GetBodiesInSystem(ctx context.Context, systemName string) ([]Bo
 
 	query := `
 		MATCH (s:System {name: $name})-[:HAS_BODY]->(b:Body)
+		OPTIONAL MATCH (b)-[:HAS_RING]->(r:Ring)
+		WITH b, collect(r) AS rings
 		RETURN
 			b.id64 AS id64,
 			b.body_id AS body_id,
@@ -1329,7 +1344,8 @@ func (c *Client) GetBodiesInSystem(ctx context.Context, systemName string) ([]Bo
 			b.volcanism AS volcanism,
 			b.was_discovered AS was_discovered,
 			b.was_mapped AS was_mapped,
-			b.last_eddn_update AS last_eddn_update
+			b.last_event_time AS last_eddn_update,
+			rings
 		ORDER BY b.distance_from_arrival
 	`
 
@@ -1393,6 +1409,50 @@ func (c *Client) GetBodiesInSystem(ctx context.Context, systemName string) ([]Bo
 		}
 		if v, ok := record.Get("last_eddn_update"); ok && v != nil {
 			b.LastEDDNUpdate = toTime(v)
+		}
+
+		// Parse rings with full hotspot data
+		if v, ok := record.Get("rings"); ok && v != nil {
+			if ringNodes, ok := v.([]any); ok {
+				for _, ringNode := range ringNodes {
+					if rn, ok := ringNode.(neo4j.Node); ok {
+						ring := BodyRingData{}
+						if s, ok := rn.Props["name"].(string); ok {
+							ring.Name = s
+						}
+						if s, ok := rn.Props["ring_class"].(string); ok {
+							ring.RingClass = s
+						}
+						if s, ok := rn.Props["reserve_level"].(string); ok {
+							ring.ReserveLevel = s
+						}
+						if b2, ok := rn.Props["has_ltd"].(bool); ok {
+							ring.HasLTD = b2
+						}
+						if b2, ok := rn.Props["has_tritium"].(bool); ok {
+							ring.HasTritium = b2
+						}
+						if b2, ok := rn.Props["has_painite"].(bool); ok {
+							ring.HasPainite = b2
+						}
+						if arr, ok := rn.Props["hotspot_types"].([]any); ok {
+							for _, ht := range arr {
+								if s, ok := ht.(string); ok {
+									ring.HotspotTypes = append(ring.HotspotTypes, s)
+								}
+							}
+						}
+						if arr, ok := rn.Props["hotspots"].([]any); ok {
+							for _, hs := range arr {
+								if s, ok := hs.(string); ok {
+									ring.Hotspots = append(ring.Hotspots, s)
+								}
+							}
+						}
+						b.Rings = append(b.Rings, ring)
+					}
+				}
+			}
 		}
 
 		bodies = append(bodies, b)
