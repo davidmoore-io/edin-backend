@@ -120,25 +120,35 @@ type BodyInfo struct {
 	WasDiscovered bool `json:"was_discovered,omitempty"`
 	WasMapped     bool `json:"was_mapped,omitempty"`
 
-	Rings []RingInfo `json:"rings,omitempty"`
+	Rings          []RingInfo `json:"rings,omitempty"`
+	LastEDDNUpdate time.Time  `json:"last_eddn_update,omitempty"`
 }
 
 // RingInfo represents a planetary ring.
 type RingInfo struct {
-	Name      string  `json:"name"`
-	RingClass string  `json:"ring_class"`
-	InnerRad  float64 `json:"inner_rad"` // meters
-	OuterRad  float64 `json:"outer_rad"` // meters
+	Name         string   `json:"name"`
+	RingClass    string   `json:"ring_class"`
+	InnerRad     float64  `json:"inner_rad"`               // meters
+	OuterRad     float64  `json:"outer_rad"`               // meters
+	ReserveLevel string   `json:"reserve_level,omitempty"` // Pristine/Major/Common/Low/Depleted
+	HotspotTypes []string `json:"hotspot_types,omitempty"` // ["LowTemperatureDiamond","Painite",...]
+	Hotspots     []string `json:"hotspots,omitempty"`      // ["LowTemperatureDiamond:4","Painite:2",...]
+	HasLTD       bool     `json:"has_ltd,omitempty"`
+	HasTritium   bool     `json:"has_tritium,omitempty"`
+	HasPainite   bool     `json:"has_painite,omitempty"`
 }
 
 // StationInfo represents a space station.
 type StationInfo struct {
-	MarketID    int64          `json:"market_id"`
-	Name        string         `json:"name"`
-	Type        string         `json:"type"`
-	DistanceLS  float64        `json:"distance_ls"`
-	LandingPads map[string]int `json:"landing_pads"`
-	Services    []string       `json:"services,omitempty"`
+	MarketID           int64          `json:"market_id"`
+	Name               string         `json:"name"`
+	Type               string         `json:"type"`
+	DistanceLS         float64        `json:"distance_ls"`
+	LandingPads        map[string]int `json:"landing_pads"`
+	Services           []string       `json:"services,omitempty"`
+	ControllingFaction string         `json:"controlling_faction,omitempty"`
+	Government         string         `json:"government,omitempty"`
+	LastEDDNUpdate     time.Time      `json:"last_eddn_update,omitempty"`
 }
 
 // GalaxyViewStats contains aggregate statistics for the galaxy visualization.
@@ -450,6 +460,7 @@ func (c *Client) getSystemBodies(ctx context.Context, session neo4j.SessionWithC
 		       b.is_landable AS is_landable,
 		       b.was_discovered AS was_discovered,
 		       b.was_mapped AS was_mapped,
+		       b.last_event_time AS last_eddn_update,
 		       rings
 		ORDER BY b.body_id
 	`
@@ -566,7 +577,12 @@ func (c *Client) getSystemBodies(ctx context.Context, session neo4j.SessionWithC
 			body.WasMapped = v.(bool)
 		}
 
-		// Parse rings
+		// Parse last_eddn_update for body
+		if v, ok := record.Get("last_eddn_update"); ok && v != nil {
+			body.LastEDDNUpdate = toTime(v)
+		}
+
+		// Parse rings — extract all hotspot and classification fields
 		if v, ok := record.Get("rings"); ok && v != nil {
 			if ringNodes, ok := v.([]any); ok {
 				for _, ringNode := range ringNodes {
@@ -583,6 +599,32 @@ func (c *Client) getSystemBodies(ctx context.Context, session neo4j.SessionWithC
 						}
 						if outerRad, ok := rn.Props["outer_rad"]; ok {
 							ring.OuterRad = toFloat64(outerRad)
+						}
+						if rl, ok := rn.Props["reserve_level"].(string); ok {
+							ring.ReserveLevel = rl
+						}
+						if hasLTD, ok := rn.Props["has_ltd"].(bool); ok {
+							ring.HasLTD = hasLTD
+						}
+						if hasTritium, ok := rn.Props["has_tritium"].(bool); ok {
+							ring.HasTritium = hasTritium
+						}
+						if hasPainite, ok := rn.Props["has_painite"].(bool); ok {
+							ring.HasPainite = hasPainite
+						}
+						if htRaw, ok := rn.Props["hotspot_types"].([]any); ok {
+							for _, ht := range htRaw {
+								if s, ok := ht.(string); ok {
+									ring.HotspotTypes = append(ring.HotspotTypes, s)
+								}
+							}
+						}
+						if hsRaw, ok := rn.Props["hotspots"].([]any); ok {
+							for _, hs := range hsRaw {
+								if s, ok := hs.(string); ok {
+									ring.Hotspots = append(ring.Hotspots, s)
+								}
+							}
 						}
 						body.Rings = append(body.Rings, ring)
 					}
@@ -614,7 +656,10 @@ func (c *Client) getSystemStations(ctx context.Context, session neo4j.SessionWit
 		       st.large_pads AS large_pads,
 		       st.medium_pads AS medium_pads,
 		       st.small_pads AS small_pads,
-		       st.services AS services
+		       st.services AS services,
+		       st.controlling_faction AS controlling_faction,
+		       st.government AS government,
+		       st.last_event_time AS last_eddn_update
 		ORDER BY st.distance_ls
 	`
 
@@ -662,6 +707,15 @@ func (c *Client) getSystemStations(ctx context.Context, session neo4j.SessionWit
 					}
 				}
 			}
+		}
+		if v, ok := record.Get("controlling_faction"); ok && v != nil {
+			station.ControllingFaction = v.(string)
+		}
+		if v, ok := record.Get("government"); ok && v != nil {
+			station.Government = v.(string)
+		}
+		if v, ok := record.Get("last_eddn_update"); ok && v != nil {
+			station.LastEDDNUpdate = toTime(v)
 		}
 
 		stations = append(stations, station)
