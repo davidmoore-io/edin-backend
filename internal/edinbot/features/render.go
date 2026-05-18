@@ -81,7 +81,7 @@ func edsmURL(systemName string) string {
 // dropped before the snapshot is built — operators don't want to chase
 // alerts whose underlying data hasn't ticked in over a day. Buyers with
 // no MarketUpdatedAt at all are also dropped (no freshness signal at all).
-const MaxFreshness = 24 * time.Hour
+const MaxFreshness = 48 * time.Hour
 
 // isFresh returns true if the buyer's market data was seen within MaxFreshness.
 // Used by both plat and LTD features to gate which buyers reach the rendered

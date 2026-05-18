@@ -217,18 +217,25 @@ func (l *ltdItem) Render() *discordgo.MessageEmbed {
 	if len(shown) > 5 {
 		shown = shown[:5]
 	}
+	var latestTS int64
 	for _, b := range shown {
-		fmt.Fprintf(&desc, "- Sell at: `%s` - %s", b.SystemName, b.StationName)
+		fmt.Fprintf(&desc, "- Sell at: `%s`", b.SystemName)
+		if b.StationName != "" {
+			fmt.Fprintf(&desc, " - %s", b.StationName)
+		}
 		if pads := padSizes(b.LargestPad); pads != "" {
 			fmt.Fprintf(&desc, " - Pads: %s", pads)
 		}
-		if ts := unixOrZero(b.MarketUpdatedAt); ts > 0 {
-			fmt.Fprintf(&desc, " — <t:%d:R>", ts)
-		}
 		desc.WriteString("\n")
+		if ts := unixOrZero(b.MarketUpdatedAt); ts > latestTS {
+			latestTS = ts
+		}
 	}
 	if extra := len(usable) - 5; extra > 0 {
 		fmt.Fprintf(&desc, "+ %d more\n", extra)
+	}
+	if latestTS > 0 {
+		fmt.Fprintf(&desc, "\nEDDN Update: <t:%d:R>\n", latestTS)
 	}
 
 	return &discordgo.MessageEmbed{
