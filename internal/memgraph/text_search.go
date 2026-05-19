@@ -2,6 +2,7 @@ package memgraph
 
 import (
 	"errors"
+	"fmt"
 	"regexp"
 	"strings"
 )
@@ -26,29 +27,32 @@ var errQueryTooLong = errors.New("text_search: query exceeds length cap")
 // query will look for tokens that don't exist.
 var tokenSplitter = regexp.MustCompile(`[^a-z0-9]+`)
 
-// SearchPlan is the parsed form of a user query. It carries everything
-// needed to run a token-prefix search via Memgraph's text_search.regex_search
-// procedure plus a Cypher post-filter.
+// SearchPlan is the parsed form of a user query.
 //
-// Why regex_search rather than text_search.search:
-//   In Memgraph 3.8.1, the standard `text_search.search` procedure does NOT
-//   support `term*` prefix wildcards — `data.name:cent*` returns no results
-//   even when an indexed term "centauri" exists. `regex_search` does support
-//   regex-style prefix matching (regex applied per indexed term). The cost is
-//   that we lose the boolean AND syntax across multiple terms, so we emulate
-//   it: the LAST token becomes a regex prefix, and earlier tokens become
-//   literal substrings the system name must contain.
+// For single-token queries we fall back to regex_search, which supports the
+// `term.*` prefix pattern Tantivy needs for autocomplete. For multi-token
+// queries we use text_search.search with a boolean AND query across all
+// completed tokens — this sidesteps the 1000-result cap that regex_search hits
+// when a single anchor token (e.g. "4" in "c5-4") is far too common.
+//
+// The last token is always handled via a Cypher CONTAINS post-filter rather
+// than a Tantivy term, because the user may be mid-word ("cent" for
+// "centauri") and mid-word strings are not standalone indexed terms.
 type SearchPlan struct {
-	// Regex is passed to text_search.regex_search. It is of the form
-	// `<lastToken>.*` and matches any indexed term beginning with the last
-	// (potentially incomplete) token typed by the user.
+	// SearchQuery is a Tantivy boolean AND query for multi-token searches,
+	// e.g. "data.name:col AND data.name:359 AND data.name:sector".
+	// Empty for single-token searches — use Regex instead.
+	SearchQuery string
+
+	// Regex is used for single-token searches only; passed to regex_search.
+	// Form: "<token>.*". Empty for multi-token searches.
 	Regex string
 
-	// MustContain holds the lowercased earlier tokens. The Cypher post-filter
-	// ANDs `toLower(name) CONTAINS t` for each of these — cheap because the
-	// regex_search has already narrowed the candidate set to a small handful.
-	// Empty for single-token queries.
-	MustContain []string
+	// LastToken is applied as a Cypher post-filter for multi-token queries:
+	//   WHERE toLower(s.name) CONTAINS lastToken
+	// Handles the last (possibly partial) typed token. Empty for single-token
+	// queries (covered by the Regex prefix instead).
+	LastToken string
 }
 
 // buildSearchPlan parses a user query into a SearchPlan. Returns an error
@@ -56,7 +60,7 @@ type SearchPlan struct {
 //
 // The function lowercases input and splits on non-alphanumeric runs to match
 // Tantivy's default tokenization. Tokens are pure alphanumerics, so no regex
-// metacharacter escaping is required when assembling the regex.
+// metacharacter escaping is required.
 func buildSearchPlan(raw string) (SearchPlan, error) {
 	if len(raw) > maxQueryLen {
 		return SearchPlan{}, errQueryTooLong
@@ -75,12 +79,24 @@ func buildSearchPlan(raw string) (SearchPlan, error) {
 		return SearchPlan{}, errEmptyQuery
 	}
 
-	last := tokens[len(tokens)-1]
-	earlier := tokens[:len(tokens)-1]
-
-	plan := SearchPlan{
-		Regex:       last + ".*",
-		MustContain: append([]string(nil), earlier...),
+	// Single token: regex_search gives us free prefix matching ("sol.*" →
+	// Sol, Solati, Sollaro…). No post-filter needed.
+	if len(tokens) == 1 {
+		return SearchPlan{Regex: tokens[0] + ".*"}, nil
 	}
-	return plan, nil
+
+	// Multi-token: build a Tantivy boolean AND query from all completed tokens
+	// (everything except the last), then use a Cypher CONTAINS filter for the
+	// last (possibly partial) token. The AND query is far more selective than
+	// a single-token regex, so the 1000-result cap is not an issue in practice.
+	completed := tokens[:len(tokens)-1]
+	parts := make([]string, len(completed))
+	for i, t := range completed {
+		parts[i] = fmt.Sprintf("data.name:%s", t)
+	}
+
+	return SearchPlan{
+		SearchQuery: strings.Join(parts, " AND "),
+		LastToken:   tokens[len(tokens)-1],
+	}, nil
 }

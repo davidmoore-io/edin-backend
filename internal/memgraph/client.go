@@ -733,54 +733,100 @@ func (c *Client) SearchSystems(ctx context.Context, query string, limit int) ([]
 	session := c.driver.NewSession(ctx, neo4j.SessionConfig{AccessMode: neo4j.AccessModeRead})
 	defer session.Close(ctx)
 
-	// Token-prefix search via the Tantivy text index `systems_name_text`,
-	// created by the Memgraph init template (edin-data Ansible role).
+	// Token-prefix search via the Tantivy text index `systems_name_text`.
 	//
-	// regex_search applies the regex against each indexed term independently;
-	// the plan's regex is `<lastToken>.*`, which gives prefix behaviour for the
-	// (potentially incomplete) last token the user typed. Earlier tokens are
-	// enforced as literal substrings via the WHERE filter — cheap, because the
-	// regex_search has already narrowed to a small candidate set.
+	// Single-token queries use regex_search("<token>.*") for prefix matching.
 	//
-	// Result ordering: regex_search returns a relevance score; ties are broken
-	// by name length (so "Sol" beats "Solatium" for q=sol) and then alphabetic.
-	cypher := `
-		CALL text_search.regex_search('systems_name_text', $regex)
-		YIELD node, score
-		WITH node AS s, score
-		WHERE all(t IN $must_contain WHERE toLower(s.name) CONTAINS t)
-		RETURN
-			s.name AS name,
-			s.id64 AS id64,
-			s.controlling_power AS controlling_power,
-			s.powers AS powers,
-			s.powerplay_state AS powerplay_state,
-			s.reinforcement AS reinforcement,
-			s.undermining AS undermining,
-			s.control_progress AS control_progress,
-			s.allegiance AS allegiance,
-			s.government AS government,
-			s.security AS security,
-			s.population AS population,
-			s.economy AS economy,
-			s.second_economy AS second_economy,
-			s.needs_permit AS needs_permit,
-			s.controlling_faction AS controlling_faction,
-			s.controlling_faction_state AS controlling_faction_state,
-			s.x AS x, s.y AS y, s.z AS z,
-			s.thargoid_state AS thargoid_state,
-			s.thargoid_progress AS thargoid_progress,
-			s.last_eddn_update AS last_eddn_update,
-			score AS _score
-		ORDER BY score DESC, size(s.name) ASC, s.name ASC
-		LIMIT $limit
-	`
+	// Multi-token queries use text_search.search with a boolean AND query
+	// across all completed tokens (e.g. "data.name:col AND data.name:359 AND
+	// data.name:sector AND data.name:rx AND data.name:r AND data.name:c5"),
+	// then apply a Cypher CONTAINS filter for the last (possibly partial) token.
+	// The AND query is far more selective than a single-token regex, so we never
+	// hit the 1000-result cap even for common tokens like "sector" or "4".
+	//
+	// WITH s, max(score) deduplicates nodes that have multiple Tantivy entries
+	// (can occur when duplicate System nodes exist in the graph).
+	var cypher string
+	var params map[string]any
 
-	result, err := session.Run(ctx, cypher, map[string]any{
-		"regex":        plan.Regex,
-		"must_contain": plan.MustContain,
-		"limit":        int64(limit),
-	})
+	if plan.SearchQuery == "" {
+		// Single-token: regex prefix search.
+		cypher = `
+			CALL text_search.regex_search('systems_name_text', $regex)
+			YIELD node, score
+			WITH node AS s, max(score) AS score
+			RETURN
+				s.name AS name,
+				s.id64 AS id64,
+				s.controlling_power AS controlling_power,
+				s.powers AS powers,
+				s.powerplay_state AS powerplay_state,
+				s.reinforcement AS reinforcement,
+				s.undermining AS undermining,
+				s.control_progress AS control_progress,
+				s.allegiance AS allegiance,
+				s.government AS government,
+				s.security AS security,
+				s.population AS population,
+				s.economy AS economy,
+				s.second_economy AS second_economy,
+				s.needs_permit AS needs_permit,
+				s.controlling_faction AS controlling_faction,
+				s.controlling_faction_state AS controlling_faction_state,
+				s.x AS x, s.y AS y, s.z AS z,
+				s.thargoid_state AS thargoid_state,
+				s.thargoid_progress AS thargoid_progress,
+				s.last_eddn_update AS last_eddn_update,
+				score AS _score
+			ORDER BY score DESC, size(s.name) ASC, s.name ASC
+			LIMIT $limit
+		`
+		params = map[string]any{
+			"regex": plan.Regex,
+			"limit": int64(limit),
+		}
+	} else {
+		// Multi-token: boolean AND query, CONTAINS post-filter on last token.
+		cypher = `
+			CALL text_search.search('systems_name_text', $search_query, 10000)
+			YIELD node, score
+			WITH node AS s, score
+			WHERE toLower(s.name) CONTAINS $last_token
+			WITH s, max(score) AS score
+			RETURN
+				s.name AS name,
+				s.id64 AS id64,
+				s.controlling_power AS controlling_power,
+				s.powers AS powers,
+				s.powerplay_state AS powerplay_state,
+				s.reinforcement AS reinforcement,
+				s.undermining AS undermining,
+				s.control_progress AS control_progress,
+				s.allegiance AS allegiance,
+				s.government AS government,
+				s.security AS security,
+				s.population AS population,
+				s.economy AS economy,
+				s.second_economy AS second_economy,
+				s.needs_permit AS needs_permit,
+				s.controlling_faction AS controlling_faction,
+				s.controlling_faction_state AS controlling_faction_state,
+				s.x AS x, s.y AS y, s.z AS z,
+				s.thargoid_state AS thargoid_state,
+				s.thargoid_progress AS thargoid_progress,
+				s.last_eddn_update AS last_eddn_update,
+				score AS _score
+			ORDER BY score DESC, size(s.name) ASC, s.name ASC
+			LIMIT $limit
+		`
+		params = map[string]any{
+			"search_query": plan.SearchQuery,
+			"last_token":   plan.LastToken,
+			"limit":        int64(limit),
+		}
+	}
+
+	result, err := session.Run(ctx, cypher, params)
 	if err != nil {
 		return nil, fmt.Errorf("search query failed: %w", err)
 	}
@@ -2418,35 +2464,67 @@ func (c *Client) SearchStations(ctx context.Context, query string, limit int) ([
 	defer session.Close(ctx)
 
 	// Mirrors SearchSystems: token-prefix search via the Tantivy text index
-	// `stations_name_text`. The MATCH stitches each result Station back to its
-	// owning System via HAS_STATION so the response carries system_name/id64.
-	cypher := `
-		CALL text_search.regex_search('stations_name_text', $regex)
-		YIELD node, score
-		WITH node AS st, score
-		WHERE all(t IN $must_contain WHERE toLower(st.name) CONTAINS t)
-		MATCH (s:System)-[:HAS_STATION]->(st)
-		RETURN
-			st.id64 AS id64,
-			st.name AS name,
-			st.type AS type,
-			s.name AS system_name,
-			s.id64 AS system_id64,
-			st.distance_ls AS distance_ls,
-			st.max_pad AS max_pad,
-			st.is_planetary AS is_planetary,
-			st.services AS services,
-			st.last_eddn_update AS last_eddn_update,
-			score AS _score
-		ORDER BY score DESC, size(st.name) ASC, st.name ASC
-		LIMIT $limit
-	`
+	// `stations_name_text`. Single-token uses regex_search; multi-token uses
+	// text_search.search with boolean AND + CONTAINS post-filter.
+	var cypher string
+	var params map[string]any
 
-	result, err := session.Run(ctx, cypher, map[string]any{
-		"regex":        plan.Regex,
-		"must_contain": plan.MustContain,
-		"limit":        int64(limit),
-	})
+	if plan.SearchQuery == "" {
+		cypher = `
+			CALL text_search.regex_search('stations_name_text', $regex)
+			YIELD node, score
+			WITH node AS st, max(score) AS score
+			MATCH (s:System)-[:HAS_STATION]->(st)
+			RETURN
+				st.id64 AS id64,
+				st.name AS name,
+				st.type AS type,
+				s.name AS system_name,
+				s.id64 AS system_id64,
+				st.distance_ls AS distance_ls,
+				st.max_pad AS max_pad,
+				st.is_planetary AS is_planetary,
+				st.services AS services,
+				st.last_eddn_update AS last_eddn_update,
+				score AS _score
+			ORDER BY score DESC, size(st.name) ASC, st.name ASC
+			LIMIT $limit
+		`
+		params = map[string]any{
+			"regex": plan.Regex,
+			"limit": int64(limit),
+		}
+	} else {
+		cypher = `
+			CALL text_search.search('stations_name_text', $search_query, 10000)
+			YIELD node, score
+			WITH node AS st, score
+			WHERE toLower(st.name) CONTAINS $last_token
+			WITH st, max(score) AS score
+			MATCH (s:System)-[:HAS_STATION]->(st)
+			RETURN
+				st.id64 AS id64,
+				st.name AS name,
+				st.type AS type,
+				s.name AS system_name,
+				s.id64 AS system_id64,
+				st.distance_ls AS distance_ls,
+				st.max_pad AS max_pad,
+				st.is_planetary AS is_planetary,
+				st.services AS services,
+				st.last_eddn_update AS last_eddn_update,
+				score AS _score
+			ORDER BY score DESC, size(st.name) ASC, st.name ASC
+			LIMIT $limit
+		`
+		params = map[string]any{
+			"search_query": plan.SearchQuery,
+			"last_token":   plan.LastToken,
+			"limit":        int64(limit),
+		}
+	}
+
+	result, err := session.Run(ctx, cypher, params)
 	if err != nil {
 		return nil, fmt.Errorf("search query failed: %w", err)
 	}

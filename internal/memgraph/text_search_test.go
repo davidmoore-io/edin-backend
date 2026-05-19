@@ -1,20 +1,14 @@
 package memgraph
 
 import (
-	"reflect"
 	"strings"
 	"testing"
 )
 
-// These tests pin the query-planning semantics of buildSearchPlan, the function
-// that turns user input into the regex + must-contain pair we feed to Memgraph's
-// text_search.regex_search and the Cypher post-filter.
-//
-// Why regex_search rather than `term*` Tantivy prefix wildcards:
-//   Memgraph 3.8.1's text_search.search does not honour term-prefix wildcards
-//   (verified empirically — `data.name:cent*` returns no results even when an
-//   indexed term "centauri" exists). regex_search applies a regex per indexed
-//   term, which gives us the prefix behaviour we need.
+// These tests pin the query-planning semantics of buildSearchPlan, which turns
+// user input into either a regex_search call (single token) or a
+// text_search.search boolean AND call (multi-token) plus a Cypher CONTAINS
+// post-filter for the last (possibly partial) token.
 
 func TestBuildSearchPlan_SingleToken(t *testing.T) {
 	got, err := buildSearchPlan("sol")
@@ -22,10 +16,13 @@ func TestBuildSearchPlan_SingleToken(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if got.Regex != "sol.*" {
-		t.Errorf("Regex: got %q want %q", got.Regex, "sol.*")
+		t.Errorf("Regex: got %q want sol.*", got.Regex)
 	}
-	if len(got.MustContain) != 0 {
-		t.Errorf("MustContain: expected empty, got %v", got.MustContain)
+	if got.SearchQuery != "" {
+		t.Errorf("SearchQuery: expected empty for single token, got %q", got.SearchQuery)
+	}
+	if got.LastToken != "" {
+		t.Errorf("LastToken: expected empty for single token, got %q", got.LastToken)
 	}
 }
 
@@ -35,7 +32,7 @@ func TestBuildSearchPlan_LowercasesMixedCase(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if got.Regex != "sol.*" {
-		t.Errorf("Regex: got %q want %q", got.Regex, "sol.*")
+		t.Errorf("Regex: got %q want sol.*", got.Regex)
 	}
 }
 
@@ -45,10 +42,7 @@ func TestBuildSearchPlan_TrimsWhitespace(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if got.Regex != "sol.*" {
-		t.Errorf("Regex: got %q want %q", got.Regex, "sol.*")
-	}
-	if len(got.MustContain) != 0 {
-		t.Errorf("MustContain: expected empty, got %v", got.MustContain)
+		t.Errorf("Regex: got %q want sol.*", got.Regex)
 	}
 }
 
@@ -65,7 +59,6 @@ func TestBuildSearchPlan_RejectsAllWhitespace(t *testing.T) {
 }
 
 func TestBuildSearchPlan_RejectsAllReservedChars(t *testing.T) {
-	// Tokenizer splits on non-alphanumeric runs, so "+++" → no tokens → error.
 	if _, err := buildSearchPlan("+++"); err == nil {
 		t.Fatal("expected error for input with no alphanumeric chars")
 	}
@@ -79,32 +72,32 @@ func TestBuildSearchPlan_LengthCap(t *testing.T) {
 }
 
 // Procgen / catalogue names contain non-alphanumeric chars that the Tantivy
-// indexer splits on. The user's input must be split the same way. These tests
-// pin that behaviour so regressions in the tokeniser fail loudly.
+// indexer splits on. These tests pin the tokenisation so regressions fail loud.
 func TestBuildSearchPlan_TokenisesOnNonAlphanumeric(t *testing.T) {
 	cases := []struct {
-		name        string
-		input       string
-		wantRegex   string
-		wantContain []string
+		name            string
+		input           string
+		wantRegex       string // non-empty → single-token path
+		wantSearchQuery string // non-empty → multi-token path
+		wantLastToken   string
 	}{
-		// "BD+45" — the user typed two adjacent indexed terms split by '+'.
-		// Tokeniser yields ["bd", "45"]; last gets `.*`, earlier becomes a
-		// must-contain so we don't match arbitrary BD-prefixed systems.
-		{"BD+45", "BD+45", "45.*", []string{"bd"}},
-		// Hyphen splits identically.
-		{"V886-Centauri", "V886-Centauri", "centauri.*", []string{"v886"}},
-		// Colon splits.
-		{"HIP:1234", "HIP:1234", "1234.*", []string{"hip"}},
-		// Period splits — 5 G. Capricorni is a real ED name.
-		{"5 G. Capricorni", "5 G. Capricorni", "capricorni.*", []string{"5", "g"}},
-		// Forward slash splits.
-		{"col/359", "col/359", "359.*", []string{"col"}},
-		// User-typed wildcards/punctuation are simply split, not literal regex.
-		{"sol*", "sol*", "sol.*", nil},
-		{"sol?", "sol?", "sol.*", nil},
-		{"sol\\foo", "sol\\foo", "foo.*", []string{"sol"}},
+		// Single-token inputs — only Regex is set.
+		{"sol*", "sol*", "sol.*", "", ""},
+		{"sol?", "sol?", "sol.*", "", ""},
+
+		// Two-token inputs: AND query on first token, CONTAINS on last.
+		{"BD+45", "BD+45", "", "data.name:bd", "45"},
+		{"V886-Centauri", "V886-Centauri", "", "data.name:v886", "centauri"},
+		{"HIP:1234", "HIP:1234", "", "data.name:hip", "1234"},
+		{"col/359", "col/359", "", "data.name:col", "359"},
+		{"sol\\foo", "sol\\foo", "", "data.name:sol", "foo"},
+		{"alpha cent", "alpha cent", "", "data.name:alpha", "cent"},
+
+		// Three-token inputs.
+		{"BD+45 1882", "BD+45 1882", "", "data.name:bd AND data.name:45", "1882"},
+		{"5 G. Capricorni", "5 G. Capricorni", "", "data.name:5 AND data.name:g", "capricorni"},
 	}
+
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			got, err := buildSearchPlan(tc.input)
@@ -114,47 +107,32 @@ func TestBuildSearchPlan_TokenisesOnNonAlphanumeric(t *testing.T) {
 			if got.Regex != tc.wantRegex {
 				t.Errorf("Regex: got %q want %q", got.Regex, tc.wantRegex)
 			}
-			if !reflect.DeepEqual(got.MustContain, sliceOrNil(tc.wantContain)) {
-				t.Errorf("MustContain: got %v want %v", got.MustContain, tc.wantContain)
+			if got.SearchQuery != tc.wantSearchQuery {
+				t.Errorf("SearchQuery: got %q want %q", got.SearchQuery, tc.wantSearchQuery)
+			}
+			if got.LastToken != tc.wantLastToken {
+				t.Errorf("LastToken: got %q want %q", got.LastToken, tc.wantLastToken)
 			}
 		})
 	}
 }
 
-func TestBuildSearchPlan_MultiTokenWhitespace(t *testing.T) {
-	// "alpha cent" — last token gets prefix, earlier becomes must-contain.
-	got, err := buildSearchPlan("alpha cent")
+// Regression: "Col 359 Sector RX-R c5-4" previously anchored on "4.*" via
+// regex_search, hitting the 1000-result cap. The AND query on all completed
+// tokens shrinks the candidate set to a handful before the CONTAINS check.
+func TestBuildSearchPlan_Col359RegressionCase(t *testing.T) {
+	got, err := buildSearchPlan("Col 359 Sector RX-R c5-4")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if got.Regex != "cent.*" {
-		t.Errorf("Regex: got %q want cent.*", got.Regex)
+	if got.Regex != "" {
+		t.Errorf("Regex: expected empty for multi-token, got %q", got.Regex)
 	}
-	if !reflect.DeepEqual(got.MustContain, []string{"alpha"}) {
-		t.Errorf("MustContain: got %v want [alpha]", got.MustContain)
+	wantQuery := "data.name:col AND data.name:359 AND data.name:sector AND data.name:rx AND data.name:r AND data.name:c5"
+	if got.SearchQuery != wantQuery {
+		t.Errorf("SearchQuery:\n  got  %q\n  want %q", got.SearchQuery, wantQuery)
 	}
-}
-
-func TestBuildSearchPlan_MultiTokenWithReservedChar(t *testing.T) {
-	// "BD+45 1882" → tokens [bd, 45, 1882]; regex on last, others must-contain.
-	got, err := buildSearchPlan("BD+45 1882")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	if got.LastToken != "4" {
+		t.Errorf("LastToken: got %q want %q", got.LastToken, "4")
 	}
-	if got.Regex != "1882.*" {
-		t.Errorf("Regex: got %q", got.Regex)
-	}
-	if !reflect.DeepEqual(got.MustContain, []string{"bd", "45"}) {
-		t.Errorf("MustContain: got %v want [bd 45]", got.MustContain)
-	}
-}
-
-// sliceOrNil normalises an empty want-slice to nil so reflect.DeepEqual matches
-// MustContain when there are no earlier tokens (we use append([]string(nil), …)
-// which yields nil for the empty case).
-func sliceOrNil(s []string) []string {
-	if len(s) == 0 {
-		return nil
-	}
-	return s
 }
