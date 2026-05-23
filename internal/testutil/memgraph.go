@@ -36,7 +36,7 @@ import (
 )
 
 const (
-	testMemgraphImage   = "memgraph/memgraph:3.8.1"
+	testMemgraphImage   = "memgraph/memgraph:3.10.1"
 	testMemgraphBoltPrt = "7687/tcp"
 	testStartupTimeout  = 60 * time.Second
 )
