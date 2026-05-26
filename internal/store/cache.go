@@ -638,29 +638,23 @@ func (s *CacheStore) GetExpansionHistory(ctx context.Context, systemName string,
 	if hours <= 0 {
 		hours = 24
 	}
-	// Cap at 30 days (raw feed has ~60 day retention)
 	if hours > 720 {
 		hours = 720
 	}
-	cutoff := time.Now().UTC().Add(-time.Duration(hours) * time.Hour)
 
-	// Query raw EDDN feed for FSDJump events with PowerplayConflictProgress
-	// The field contains an array like: [{"Power": "A. Lavigny-Duval", "ConflictProgress": 0.906925}, ...]
 	rows, err := s.eddnClient.pool.Query(ctx, `
 		SELECT
-			(message_data->>'timestamp')::timestamptz as event_time,
-			message_data->'PowerplayConflictProgress' as conflict_progress
-		FROM feed.messages
+			bucket                     AS event_time,
+			conflict_progress_json     AS conflict_progress
+		FROM feed.powerplay_hourly
 		WHERE system_name = $1
-			AND event_type = 'FSDJump'
-			AND message_data->'PowerplayConflictProgress' IS NOT NULL
-			AND jsonb_array_length(message_data->'PowerplayConflictProgress') > 0
-			AND received_at >= $2::timestamptz - INTERVAL '6 hours'
-			AND (message_data->>'timestamp')::timestamptz >= $2
-		ORDER BY (message_data->>'timestamp')::timestamptz ASC
-	`, systemName, cutoff)
+		  AND bucket >= NOW() - INTERVAL '1 hour' * $2
+		  AND conflict_progress_json IS NOT NULL
+		  AND jsonb_array_length(conflict_progress_json) > 0
+		ORDER BY bucket ASC
+	`, systemName, hours)
 	if err != nil {
-		return nil, fmt.Errorf("query raw EDDN feed for expansion history: %w", err)
+		return nil, fmt.Errorf("query expansion history aggregate: %w", err)
 	}
 	defer rows.Close()
 
@@ -676,14 +670,12 @@ func (s *CacheStore) GetExpansionHistory(ctx context.Context, systemName string,
 			return nil, fmt.Errorf("scan expansion history row: %w", err)
 		}
 
-		// Parse the JSON array
 		var entries []conflictEntry
 		if err := json.Unmarshal(progressJSON, &entries); err != nil {
-			// TODO: add structured logging here once a logger is available in the eddnClient path
+			// TODO: add structured logging when eddnClient has a logger
 			continue
 		}
 
-		// Convert to map for easier frontend consumption
 		progressMap := make(map[string]float64)
 		for _, e := range entries {
 			progressMap[e.Power] = e.ConflictProgress
