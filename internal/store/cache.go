@@ -26,12 +26,6 @@ func (s *CacheStore) SetEDDNClient(client *Client) {
 	s.eddnClient = client
 }
 
-// SetEDDNClientForTest injects a raw pgxpool.Pool directly into the EDDN client slot.
-// This is only for integration tests — production code must use SetEDDNClient.
-func (s *CacheStore) SetEDDNClientForTest(pool *pgxpool.Pool) {
-	s.eddnClient = &Client{pool: pool}
-}
-
 // SpanshSystemData represents cached Spansh data for a single system.
 type SpanshSystemData struct {
 	SystemName         string         `json:"system_name"`
@@ -618,16 +612,17 @@ func (s *CacheStore) GetSystemHistory(ctx context.Context, systemName string, ho
 		var timestamp time.Time
 		var reinforcement, undermining int64
 		var powerplayState, controllingPower, source string
-		if err := rows.Scan(&timestamp, &reinforcement, &undermining, &powerplayState, &controllingPower, &source); err == nil {
-			result = append(result, SystemHistoryEntry{
-				Timestamp:        timestamp,
-				Reinforcement:    reinforcement,
-				Undermining:      undermining,
-				PowerplayState:   powerplayState,
-				ControllingPower: controllingPower,
-				Source:           source,
-			})
+		if err := rows.Scan(&timestamp, &reinforcement, &undermining, &powerplayState, &controllingPower, &source); err != nil {
+			return nil, fmt.Errorf("scan system history row: %w", err)
 		}
+		result = append(result, SystemHistoryEntry{
+			Timestamp:        timestamp,
+			Reinforcement:    reinforcement,
+			Undermining:      undermining,
+			PowerplayState:   powerplayState,
+			ControllingPower: controllingPower,
+			Source:           source,
+		})
 	}
 
 	return result, rows.Err()
@@ -687,12 +682,13 @@ func (s *CacheStore) GetExpansionHistory(ctx context.Context, systemName string,
 		var timestamp time.Time
 		var progressJSON []byte
 		if err := rows.Scan(&timestamp, &progressJSON); err != nil {
-			continue
+			return nil, fmt.Errorf("scan expansion history row: %w", err)
 		}
 
 		// Parse the JSON array
 		var entries []conflictEntry
 		if err := json.Unmarshal(progressJSON, &entries); err != nil {
+			// TODO: add structured logging here once a logger is available in the eddnClient path
 			continue
 		}
 

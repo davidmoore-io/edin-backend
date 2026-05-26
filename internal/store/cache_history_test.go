@@ -42,10 +42,20 @@ func TestGetSystemHistory(t *testing.T) {
 			ReceivedAt:  now.Add(-35 * time.Hour),
 			SystemName:  "Lave",
 			EventType:   "FSDJump",
-			MessageData: testutil.PowerplayMessageData("Lave", "Nakato Kaine", "Stronghold", 3000, 300, now.Add(-1*time.Hour)),
+			MessageData: testutil.PowerplayMessageData("Lave", "Nakato Kaine", "Stronghold", 45000, 300, now.Add(-1*time.Hour)),
 		}
 
-		testutil.InsertEDDNMessages(t, pool, []testutil.EDDNMessageRow{rowA, rowB, rowC})
+		// Row D: received_at = now-29h — just inside the 30h guard window.
+		// For a 24h query: guard = cutoff - 6h = (now-24h) - 6h = now-30h.
+		// now-29h >= now-30h → included. This proves the boundary precision.
+		rowD := testutil.EDDNMessageRow{
+			ReceivedAt:  now.Add(-29 * time.Hour),
+			SystemName:  "Lave",
+			EventType:   "FSDJump",
+			MessageData: testutil.PowerplayMessageData("Lave", "Nakato Kaine", "Stronghold", 47000, 7500, now.Add(-1*time.Hour)),
+		}
+
+		testutil.InsertEDDNMessages(t, pool, []testutil.EDDNMessageRow{rowA, rowB, rowC, rowD})
 
 		cs := store.NewCacheStore(nil)
 		cs.SetEDDNClientForTest(pool)
@@ -53,18 +63,20 @@ func TestGetSystemHistory(t *testing.T) {
 		results, err := cs.GetSystemHistory(ctx, "Lave", 24)
 		require.NoError(t, err)
 
-		// With the guard: rows A and B must be returned; row C must be excluded.
-		require.Len(t, results, 2, "expected exactly 2 results (row C excluded by received_at guard)")
+		// Rows A (1000), B (2000), D (47000) should be present.
+		// Row C (45000, received_at=now-35h) must be absent — outside the now-30h guard window.
+		require.Len(t, results, 3, "expected exactly 3 results (row C excluded by received_at guard)")
 
 		// Verify the reinforcement values — order is ASC by event timestamp.
-		// Both rows A and B have event_time = now-1h, so ordering may vary; collect into a set.
+		// Rows A, B, and D all have event_time = now-1h, so ordering may vary; collect into a set.
 		reinforcements := make(map[int64]bool)
 		for _, r := range results {
 			reinforcements[r.Reinforcement] = true
 		}
 		require.True(t, reinforcements[1000], "row A reinforcement (1000) must be present")
 		require.True(t, reinforcements[2000], "row B reinforcement (2000) must be present")
-		require.False(t, reinforcements[3000], "row C reinforcement (3000) must be absent")
+		require.True(t, reinforcements[47000], "row D reinforcement (47000) must be present")
+		require.False(t, reinforcements[45000], "row C reinforcement (45000) must be absent")
 	})
 
 	t.Run("ProductionFixture", func(t *testing.T) {
