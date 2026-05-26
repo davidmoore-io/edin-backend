@@ -881,31 +881,24 @@ func (s *CacheStore) GetPowerplayHistory(ctx context.Context, systemNames []stri
 	}
 
 	if days <= 0 || days > 30 {
-		days = 14 // Default to 2 weeks
+		days = 14
 	}
 
-	// Query for daily aggregates with peak values per day
 	query := `
-		WITH daily_data AS (
-			SELECT
-				system_name,
-				DATE(message_data->>'timestamp') AS day,
-				MAX((message_data->>'PowerplayStateReinforcement')::bigint) AS reinforcement,
-				MAX((message_data->>'PowerplayStateUndermining')::bigint) AS undermining,
-				(array_agg(message_data->>'ControllingPower' ORDER BY message_data->>'timestamp' DESC))[1] AS controlling_power,
-				(array_agg(message_data->>'PowerplayState' ORDER BY message_data->>'timestamp' DESC))[1] AS powerplay_state,
-				(array_agg((message_data->>'PowerplayStateControlProgress')::float ORDER BY message_data->>'timestamp' DESC))[1] AS control_progress,
-				COUNT(*) AS observations
-			FROM feed.messages
-			WHERE schema_ref = 'https://eddn.edcd.io/schemas/journal/1'
-			  AND message_data->>'event' = 'FSDJump'
-			  AND system_name = ANY($1)
-			  AND message_data->>'ControllingPower' IS NOT NULL
-			  AND received_at >= NOW() - INTERVAL '1 day' * $2
-			GROUP BY system_name, DATE(message_data->>'timestamp')
-		)
-		SELECT system_name, day, reinforcement, undermining, controlling_power, powerplay_state, control_progress, observations
-		FROM daily_data
+		SELECT
+			system_name,
+			time_bucket('1 day', bucket)              AS day,
+			MAX(reinforcement)                         AS reinforcement,
+			MAX(undermining)                           AS undermining,
+			last(controlling_power, bucket)           AS controlling_power,
+			last(powerplay_state,   bucket)           AS powerplay_state,
+			NULL::float                                AS control_progress,
+			SUM(observations)::int                    AS observations
+		FROM feed.powerplay_hourly
+		WHERE system_name = ANY($1)
+		  AND controlling_power IS NOT NULL
+		  AND bucket >= NOW() - INTERVAL '1 day' * $2
+		GROUP BY system_name, time_bucket('1 day', bucket)
 		ORDER BY system_name, day DESC
 	`
 
