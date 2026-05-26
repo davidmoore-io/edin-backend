@@ -577,34 +577,25 @@ func (s *CacheStore) GetSystemHistory(ctx context.Context, systemName string, ho
 	if hours <= 0 {
 		hours = 24
 	}
-	// Cap at 30 days (raw feed has ~60 day retention)
 	if hours > 720 {
 		hours = 720
 	}
-	cutoff := time.Now().UTC().Add(-time.Duration(hours) * time.Hour)
 
-	// Query raw EDDN feed for FSDJump events with powerplay data
-	// Extract reinforcement and undermining from message_data JSON
-	// Use the event timestamp from message_data, not received_at (when EDDN got it)
-	// This handles late journal uploads correctly
 	rows, err := s.eddnClient.pool.Query(ctx, `
 		SELECT
-			(message_data->>'timestamp')::timestamptz as event_time,
-			COALESCE((message_data->>'PowerplayStateReinforcement')::bigint, 0) as reinforcement,
-			COALESCE((message_data->>'PowerplayStateUndermining')::bigint, 0) as undermining,
-			COALESCE(message_data->>'PowerplayState', '') as powerplay_state,
-			COALESCE(message_data->>'ControllingPower', '') as controlling_power,
-			COALESCE(software_name, 'unknown') as source
-		FROM feed.messages
+			bucket                                    AS event_time,
+			COALESCE(reinforcement, 0)                AS reinforcement,
+			COALESCE(undermining, 0)                  AS undermining,
+			COALESCE(powerplay_state, '')             AS powerplay_state,
+			COALESCE(controlling_power, '')           AS controlling_power,
+			COALESCE(source, 'EDDN')                  AS source
+		FROM feed.powerplay_hourly
 		WHERE system_name = $1
-			AND event_type = 'FSDJump'
-			AND message_data->>'PowerplayState' IS NOT NULL
-			AND received_at >= $2::timestamptz - INTERVAL '6 hours'
-			AND (message_data->>'timestamp')::timestamptz >= $2
-		ORDER BY (message_data->>'timestamp')::timestamptz ASC
-	`, systemName, cutoff)
+		  AND bucket >= NOW() - INTERVAL '1 hour' * $2
+		ORDER BY bucket ASC
+	`, systemName, hours)
 	if err != nil {
-		return nil, fmt.Errorf("query raw EDDN feed: %w", err)
+		return nil, fmt.Errorf("query powerplay aggregate: %w", err)
 	}
 	defer rows.Close()
 
