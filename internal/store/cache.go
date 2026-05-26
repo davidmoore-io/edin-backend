@@ -26,6 +26,12 @@ func (s *CacheStore) SetEDDNClient(client *Client) {
 	s.eddnClient = client
 }
 
+// SetEDDNClientForTest injects a raw pgxpool.Pool directly into the EDDN client slot.
+// This is only for integration tests — production code must use SetEDDNClient.
+func (s *CacheStore) SetEDDNClientForTest(pool *pgxpool.Pool) {
+	s.eddnClient = &Client{pool: pool}
+}
+
 // SpanshSystemData represents cached Spansh data for a single system.
 type SpanshSystemData struct {
 	SystemName         string         `json:"system_name"`
@@ -599,6 +605,7 @@ func (s *CacheStore) GetSystemHistory(ctx context.Context, systemName string, ho
 		WHERE system_name = $1
 			AND event_type = 'FSDJump'
 			AND message_data->>'PowerplayState' IS NOT NULL
+			AND received_at >= $2::timestamptz - INTERVAL '6 hours'
 			AND (message_data->>'timestamp')::timestamptz >= $2
 		ORDER BY (message_data->>'timestamp')::timestamptz ASC
 	`, systemName, cutoff)
@@ -662,6 +669,7 @@ func (s *CacheStore) GetExpansionHistory(ctx context.Context, systemName string,
 			AND event_type = 'FSDJump'
 			AND message_data->'PowerplayConflictProgress' IS NOT NULL
 			AND jsonb_array_length(message_data->'PowerplayConflictProgress') > 0
+			AND received_at >= $2::timestamptz - INTERVAL '6 hours'
 			AND (message_data->>'timestamp')::timestamptz >= $2
 		ORDER BY (message_data->>'timestamp')::timestamptz ASC
 	`, systemName, cutoff)
