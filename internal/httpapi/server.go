@@ -1464,6 +1464,7 @@ func (s *Server) handleEDINInaraLinks(w http.ResponseWriter, r *http.Request) {
 //   - /api/edin/systems/{systemName}/history?hours=24 - merit history (reinforcement/undermining)
 //   - /api/edin/systems/{systemName}/expansion-history?hours=168 - expansion conflict progress history
 //   - /api/edin/systems/{systemName}/factions - current factions (name, influence, states, happiness)
+//   - /api/edin/systems/{systemName}/stations - stations in system (name, type, distance, pad size, controlling faction)
 func (s *Server) handleEDINSystemHistory(w http.ResponseWriter, r *http.Request) {
 	s.applyCORSHeaders(w, r)
 	if r.Method == http.MethodOptions {
@@ -1572,8 +1573,34 @@ func (s *Server) handleEDINSystemHistory(w http.ResponseWriter, r *http.Request)
 			"factions":    factions,
 		})
 
+	case "stations":
+		if s.memgraph == nil {
+			s.writeError(w, http.StatusServiceUnavailable, "Memgraph not configured")
+			return
+		}
+		stations, err := s.memgraph.GetStationsInSystem(r.Context(), systemName)
+		if err != nil {
+			s.logger.Error(fmt.Sprintf("edin_system_stations error for %s", systemName), err)
+			s.writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		if stations == nil {
+			stations = []memgraph.StationData{}
+		}
+		// Filter out Fleet Carriers — transient, not useful for powerplay
+		filtered := stations[:0]
+		for _, st := range stations {
+			if strings.ToLower(st.Type) != "fleetcarrier" {
+				filtered = append(filtered, st)
+			}
+		}
+		s.writeJSON(w, http.StatusOK, map[string]any{
+			"system_name": systemName,
+			"stations":    filtered,
+		})
+
 	default:
-		s.writeError(w, http.StatusBadRequest, "invalid endpoint, expected 'history', 'expansion-history' or 'factions'")
+		s.writeError(w, http.StatusBadRequest, "invalid endpoint, expected 'history', 'expansion-history', 'factions' or 'stations'")
 	}
 }
 
