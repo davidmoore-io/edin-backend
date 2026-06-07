@@ -484,8 +484,9 @@ func (s *Server) handleCommanderAuthStatus(w http.ResponseWriter, r *http.Reques
 }
 
 // handleCommanderAuthToken handles GET /api/commander/auth/token.
-// Public endpoint — CSRF-protected via X-Edin-Fetch header.
-// Validates the commander_session cookie and issues a single-use nonce.
+// CSRF-protected via X-Edin-Fetch header (required by all callers, web and desktop).
+// Accepts a commander JWT via session cookie (web) or Authorization: Bearer header (desktop).
+// Issues a single-use nonce for WebSocket authentication.
 func (s *Server) handleCommanderAuthToken(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		s.writeError(w, http.StatusMethodNotAllowed, "only GET allowed")
