@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -499,11 +500,18 @@ func (s *Server) handleCommanderAuthToken(w http.ResponseWriter, r *http.Request
 
 	cfg := s.cfg.CommanderAuth
 
-	// Read commander_session cookie.
-	cookie, err := r.Cookie(cfg.CookieName)
-	if err != nil {
-		s.writeError(w, http.StatusUnauthorized, "no session cookie")
-		return
+	// Accept Bearer token (desktop client) or session cookie (web client).
+	// Both are validated by the same JWT validator — only the token source differs.
+	var jwtValue string
+	if authHeader := r.Header.Get("Authorization"); strings.HasPrefix(authHeader, "Bearer ") {
+		jwtValue = strings.TrimPrefix(authHeader, "Bearer ")
+	} else {
+		cookie, err := r.Cookie(cfg.CookieName)
+		if err != nil {
+			s.writeError(w, http.StatusUnauthorized, "authentication required")
+			return
+		}
+		jwtValue = cookie.Value
 	}
 
 	// Validate JWT.
@@ -511,7 +519,7 @@ func (s *Server) handleCommanderAuthToken(w http.ResponseWriter, r *http.Request
 		s.writeError(w, http.StatusUnauthorized, "commander auth not configured")
 		return
 	}
-	claims, err := s.commanderJWTValidator.Validate(r.Context(), cookie.Value)
+	claims, err := s.commanderJWTValidator.Validate(r.Context(), jwtValue)
 	if err != nil {
 		slog.Warn("commander_token: JWT validation failed", "error", err)
 		s.writeError(w, http.StatusUnauthorized, "invalid session")
