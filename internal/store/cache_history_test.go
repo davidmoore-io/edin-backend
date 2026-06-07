@@ -162,6 +162,47 @@ func TestGetSystemHistory(t *testing.T) {
 	})
 }
 
+func TestGetSystemHistory_ReturnsConflictProgressForUnoccupiedBuckets(t *testing.T) {
+	pool, _ := testutil.StartEDDNTestDB(t)
+	ctx := context.Background()
+
+	_, err := pool.Exec(ctx, aggregateDDL)
+	require.NoError(t, err)
+
+	now := time.Now().UTC().Truncate(time.Hour)
+	systemName := "Kokojina"
+	conflictData := `[{"Power":"Nakato Kaine","ConflictProgress":0.62},{"Power":"Jerome Archer","ConflictProgress":0.38}]`
+
+	testutil.InsertEDDNMessages(t, pool, []testutil.EDDNMessageRow{
+		{
+			ReceivedAt: now.Add(-30 * time.Minute),
+			SystemName: systemName,
+			EventType:  "FSDJump",
+			MessageData: fmt.Sprintf(
+				`{"event":"FSDJump","timestamp":%q,"StarSystem":%q,"PowerplayState":"Unoccupied","PowerplayConflictProgress":%s}`,
+				now.Add(-30*time.Minute).UTC().Format(time.RFC3339), systemName, conflictData,
+			),
+		},
+	})
+
+	_, err = pool.Exec(ctx,
+		`CALL refresh_continuous_aggregate('feed.powerplay_hourly', $1::timestamptz, $2::timestamptz)`,
+		now.Add(-2*time.Hour), now.Add(time.Hour),
+	)
+	require.NoError(t, err)
+
+	s := store.NewCacheStore(nil)
+	s.SetEDDNClientForTest(pool)
+
+	results, err := s.GetSystemHistory(ctx, systemName, 24)
+	require.NoError(t, err)
+	require.NotEmpty(t, results)
+
+	require.NotNil(t, results[0].ConflictProgress, "Unoccupied bucket must populate ConflictProgress")
+	require.InDelta(t, 0.62, results[0].ConflictProgress["Nakato Kaine"], 0.001)
+	require.InDelta(t, 0.38, results[0].ConflictProgress["Jerome Archer"], 0.001)
+}
+
 func TestGetSystemHistory_UsesAggregate(t *testing.T) {
 	pool, _ := testutil.StartEDDNTestDB(t)
 	ctx := context.Background()

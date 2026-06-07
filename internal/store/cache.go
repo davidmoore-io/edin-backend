@@ -541,12 +541,13 @@ func (s *CacheStore) GetAllInaraLinks(ctx context.Context) ([]*InaraLink, error)
 
 // SystemHistoryEntry represents a single historical data point.
 type SystemHistoryEntry struct {
-	Timestamp        time.Time `json:"timestamp"`
-	Reinforcement    int64     `json:"reinforcement"`
-	Undermining      int64     `json:"undermining"`
-	PowerplayState   string    `json:"powerplay_state,omitempty"`
-	ControllingPower string    `json:"controlling_power,omitempty"`
-	Source           string    `json:"source"` // Software that submitted the data
+	Timestamp        time.Time          `json:"timestamp"`
+	Reinforcement    int64              `json:"reinforcement"`
+	Undermining      int64              `json:"undermining"`
+	PowerplayState   string             `json:"powerplay_state,omitempty"`
+	ControllingPower string             `json:"controlling_power,omitempty"`
+	Source           string             `json:"source"` // Software that submitted the data
+	ConflictProgress map[string]float64 `json:"conflict_progress,omitempty"` // Populated for Unoccupied/Expansion/Contested buckets
 }
 
 // CurrentSystemState represents the current state of a system from EDDN.
@@ -588,7 +589,8 @@ func (s *CacheStore) GetSystemHistory(ctx context.Context, systemName string, ho
 			COALESCE(undermining, 0)                  AS undermining,
 			COALESCE(powerplay_state, '')             AS powerplay_state,
 			COALESCE(controlling_power, '')           AS controlling_power,
-			COALESCE(source, 'EDDN')                  AS source
+			COALESCE(source, 'EDDN')                  AS source,
+			conflict_progress_json
 		FROM feed.powerplay_hourly
 		WHERE system_name = $1
 		  AND bucket >= NOW() - INTERVAL '1 hour' * $2
@@ -599,21 +601,40 @@ func (s *CacheStore) GetSystemHistory(ctx context.Context, systemName string, ho
 	}
 	defer rows.Close()
 
+	type conflictEntry struct {
+		Power            string  `json:"Power"`
+		ConflictProgress float64 `json:"ConflictProgress"`
+	}
+
 	for rows.Next() {
 		var timestamp time.Time
 		var reinforcement, undermining int64
 		var powerplayState, controllingPower, source string
-		if err := rows.Scan(&timestamp, &reinforcement, &undermining, &powerplayState, &controllingPower, &source); err != nil {
+		var conflictJSON []byte
+		if err := rows.Scan(&timestamp, &reinforcement, &undermining, &powerplayState, &controllingPower, &source, &conflictJSON); err != nil {
 			return nil, fmt.Errorf("scan system history row: %w", err)
 		}
-		result = append(result, SystemHistoryEntry{
+		entry := SystemHistoryEntry{
 			Timestamp:        timestamp,
 			Reinforcement:    reinforcement,
 			Undermining:      undermining,
 			PowerplayState:   powerplayState,
 			ControllingPower: controllingPower,
 			Source:           source,
-		})
+		}
+		if len(conflictJSON) > 0 {
+			var entries []conflictEntry
+			if err := json.Unmarshal(conflictJSON, &entries); err == nil {
+				m := make(map[string]float64, len(entries))
+				for _, e := range entries {
+					m[e.Power] = e.ConflictProgress
+				}
+				if len(m) > 0 {
+					entry.ConflictProgress = m
+				}
+			}
+		}
+		result = append(result, entry)
 	}
 
 	return result, rows.Err()
