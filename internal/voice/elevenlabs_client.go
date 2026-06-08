@@ -48,7 +48,13 @@ func NewElevenLabsClient(cfg ElevenLabsConfig) *ElevenLabsClient {
 }
 
 func (c *ElevenLabsClient) Connect(ctx context.Context) error {
-	conn, _, err := websocket.DefaultDialer.DialContext(ctx, c.cfg.wsEndpoint(), http.Header{})
+	// Pass key as header (xi-api-key) in addition to the query param (xi_api_key).
+	// EL's error message uses the hyphen form; both are accepted by their API.
+	headers := http.Header{}
+	if c.cfg.APIKey != "" {
+		headers.Set("xi-api-key", c.cfg.APIKey)
+	}
+	conn, _, err := websocket.DefaultDialer.DialContext(ctx, c.cfg.wsEndpoint(), headers)
 	if err != nil {
 		return fmt.Errorf("elevenlabs dial: %w", err)
 	}
