@@ -307,7 +307,7 @@ func (s *Server) handleCopilotSwitchSession(session *copilotChatSession, targetS
 
 // handleCopilotMessage processes a user message for the copilot and streams the response.
 func (s *Server) handleCopilotMessage(session *copilotChatSession, content string, sessionRunner *assistant.Runner, voiceCfg *VoiceConfig) {
-	s.logger.Info(fmt.Sprintf("copilot_message fid=%s session=%s voice_cfg=%+v message=\"%s\"", session.user.FID, session.sessionID, voiceCfg, truncate(content, 160)))
+	s.logger.Info(fmt.Sprintf("copilot_message fid=%s session=%s message=\"%s\"", session.user.FID, session.sessionID, truncate(content, 160)))
 
 	// Add user message to history.
 	userMsg := llm.Message{
@@ -363,9 +363,7 @@ func (s *Server) handleCopilotMessage(session *copilotChatSession, content strin
 	turnRunner := sessionRunner.WithSystemPrompt(systemPrompt)
 
 	// Set up voice session if voice is enabled and ElevenLabs is configured.
-	apiKeySet := s.cfg.ElevenLabs.APIKey != ""
-	voiceEnabled := voiceCfg != nil && voiceCfg.VoiceEnabled && apiKeySet
-	s.logger.Info(fmt.Sprintf("voice_decision fid=%s voice_enabled=%v api_key_set=%v", session.user.FID, voiceEnabled, apiKeySet))
+	voiceEnabled := voiceCfg != nil && voiceCfg.VoiceEnabled && s.cfg.ElevenLabs.APIKey != ""
 
 	var vs *voice.VoiceSession
 	audioCh := make(chan []byte, 100)
