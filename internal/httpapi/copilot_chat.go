@@ -363,7 +363,9 @@ func (s *Server) handleCopilotMessage(session *copilotChatSession, content strin
 	turnRunner := sessionRunner.WithSystemPrompt(systemPrompt)
 
 	// Set up voice session if voice is enabled and ElevenLabs is configured.
-	voiceEnabled := voiceCfg != nil && voiceCfg.VoiceEnabled && s.cfg.ElevenLabs.APIKey != ""
+	apiKeySet := s.cfg.ElevenLabs.APIKey != ""
+	voiceEnabled := voiceCfg != nil && voiceCfg.VoiceEnabled && apiKeySet
+	s.logger.Info(fmt.Sprintf("voice_decision fid=%s voice_enabled=%v api_key_set=%v", session.user.FID, voiceEnabled, apiKeySet))
 
 	var vs *voice.VoiceSession
 	audioCh := make(chan []byte, 100)
