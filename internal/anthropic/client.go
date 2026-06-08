@@ -152,3 +152,8 @@ func (c *Client) CreateBetaMessage(ctx context.Context, params sdk.BetaMessageNe
 	}
 	return c.client.Beta.Messages.New(ctx, params)
 }
+
+// RawClient returns the underlying Anthropic SDK client for streaming access.
+func (c *Client) RawClient() *sdk.Client {
+	return c.client
+}
