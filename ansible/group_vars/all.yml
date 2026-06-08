@@ -7,6 +7,10 @@ control_api_repo_url: "git@github.com:davidmoore-io/edin-backend.git"
 control_api_repo_branch: main
 control_api_src_dir: /srv/edin-backend/src
 
+# EDIN personality templates (synced from local by Ansible — no remote repo)
+personality_templates_host_dir: /srv/edin-personality/system-prompts
+personality_templates_container_dir: /srv/personality/system-prompts
+
 # Control API
 control_api_dir: /srv/control-api
 control_api_env_file: /srv/control-api/control-api.env

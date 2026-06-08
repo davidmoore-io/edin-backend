@@ -11,7 +11,19 @@
   loop:
     - { path: "{{ control_api_dir }}" }
     - { path: "{{ control_api_src_dir | dirname }}", owner: "{{ ansible_user }}", group: "{{ ansible_user }}" }
+    - { path: "{{ personality_templates_host_dir | dirname }}", owner: "root", group: "root" }
+    - { path: "{{ personality_templates_host_dir }}", owner: "root", group: "root" }
   tags: [control_api, directories]
+
+- name: Sync EDIN personality templates to server
+  ansible.posix.synchronize:
+    src: "{{ playbook_dir }}/../../../../edin-personality/system-prompts/"
+    dest: "{{ personality_templates_host_dir }}/"
+    delete: true
+    recursive: true
+    rsync_opts:
+      - "--exclude=.git"
+  tags: [control_api, personality]
 
 - name: Ensure edin-app Docker network exists
   community.docker.docker_network:

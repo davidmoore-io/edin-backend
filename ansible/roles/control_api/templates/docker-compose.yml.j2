@@ -17,6 +17,9 @@ services:
       # from the host (sudo tail -f /var/log/edin/login-attempts.log) —
       # there's no need for `docker exec`.
       - {{ commander_login_attempt_log | dirname }}:{{ commander_login_attempt_log | dirname }}:rw
+      # EDIN personality templates — synced from local by Ansible (no remote repo).
+      # Read-only; redeploy to update templates.
+      - {{ personality_templates_host_dir }}:{{ personality_templates_container_dir }}:ro
     networks:
       - {{ edin_app_network }}
       - {{ edin_data_network }}
