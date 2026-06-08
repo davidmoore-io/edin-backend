@@ -2,6 +2,7 @@ package voice
 
 import (
 	"context"
+	"log"
 	"sync"
 	"time"
 )
@@ -25,28 +26,22 @@ func NewVoiceSession(ctx context.Context, cfg ElevenLabsConfig, audioCh chan []b
 	vs.wg.Add(1)
 	go func() {
 		defer vs.wg.Done()
-		client.ReadAudioChunks(readCtx, audioCh) //nolint:errcheck
+		if err := client.ReadAudioChunks(readCtx, audioCh); err != nil {
+			log.Printf("[voice] ReadAudioChunks exited: %v", err)
+		} else {
+			log.Printf("[voice] ReadAudioChunks completed (isFinal received)")
+		}
 	}()
 	return vs, nil
 }
 
-func (vs *VoiceSession) SendSpeakContent(text string) error {
-	if text == "" {
-		return nil
-	}
-	return vs.client.SendText(text, true)
-}
-
 func (vs *VoiceSession) Dispose() {
 	vs.once.Do(func() {
-		// Tell EL we're done sending text. It will finish generating audio and
-		// send isFinal: true. We must NOT cancel the read context yet — that
-		// would kill ReadAudioChunks before the audio arrives.
+		// Signal EL: done sending text, please finish generating.
 		vs.client.Flush()          //nolint:errcheck
 		vs.client.SendEndOfInput() //nolint:errcheck
 
-		// Wait for ReadAudioChunks to complete naturally (isFinal: true received),
-		// with a 10s ceiling so a stalled EL session can't block forever.
+		// Wait up to 10s for EL to send all audio and isFinal: true.
 		done := make(chan struct{})
 		go func() {
 			vs.wg.Wait()
@@ -54,12 +49,24 @@ func (vs *VoiceSession) Dispose() {
 		}()
 		select {
 		case <-done:
+			log.Printf("[voice] Dispose: ReadAudioChunks completed naturally")
 		case <-time.After(10 * time.Second):
-			vs.cancelCtx() // force exit on timeout
-			<-done
+			log.Printf("[voice] Dispose: timed out waiting for EL isFinal")
 		}
 
+		// Always cancel context and close WS to unblock ReadMessage() if still
+		// running (covers both timeout path and ensuring clean shutdown).
+		vs.cancelCtx()
 		vs.client.Close() //nolint:errcheck
+		vs.wg.Wait()      // wait for goroutine to actually exit after WS close
 		close(vs.audioCh)
 	})
+}
+
+func (vs *VoiceSession) SendSpeakContent(text string) error {
+	if text == "" {
+		return nil
+	}
+	log.Printf("[voice] SendSpeakContent: %d chars → ElevenLabs", len(text))
+	return vs.client.SendText(text, true)
 }
