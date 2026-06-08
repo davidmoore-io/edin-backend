@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -12,8 +13,10 @@ import (
 
 	"github.com/edin-space/edin-backend/internal/assistant"
 	"github.com/edin-space/edin-backend/internal/authz"
+	"github.com/edin-space/edin-backend/internal/copilot"
 	"github.com/edin-space/edin-backend/internal/llm"
 	"github.com/edin-space/edin-backend/internal/tools"
+	"github.com/edin-space/edin-backend/internal/voice"
 )
 
 // copilotChatSession holds the state for a single copilot WebSocket connection.
@@ -116,9 +119,10 @@ func (s *Server) handleCopilotChatWebSocket(w http.ResponseWriter, r *http.Reque
 	conn.SetReadDeadline(time.Now().Add(copilotCfg.WSReadDeadline))
 	// --- End auth ---
 
-	// Build a per-session runner with the commander's personalised system prompt.
-	// WithSystemPrompt creates a lightweight copy sharing the same client and executor.
-	sessionRunner := s.copilotRunner.WithSystemPrompt(CopilotSystemPrompt(user.Name))
+	// Build a per-session runner. System prompt is assembled from persona×mode templates;
+	// voice persona is not yet known at connection time (it arrives per-message), so we
+	// use the default system prompt here. handleCopilotMessage overwrites it per-turn.
+	sessionRunner := s.copilotRunner.WithSystemPrompt(s.assemblePrompt("the_mind", "standard", user.Name))
 
 	// Load or create session keyed on the commander FID.
 	sessionID, history := s.loadOrCreateChatSession(user.FID)
@@ -210,9 +214,10 @@ func (s *Server) handleCopilotChatWebSocket(w http.ResponseWriter, r *http.Reque
 
 		// Parse incoming message.
 		var incoming struct {
-			Type      string `json:"type"`
-			Content   string `json:"content"`
-			SessionID string `json:"session_id"`
+			Type      string       `json:"type"`
+			Content   string       `json:"content"`
+			SessionID string       `json:"session_id"`
+			Voice     *VoiceConfig `json:"voice"`
 		}
 		if err := json.Unmarshal(message, &incoming); err != nil {
 			session.send(ChatWSMessage{
@@ -226,7 +231,7 @@ func (s *Server) handleCopilotChatWebSocket(w http.ResponseWriter, r *http.Reque
 		switch incoming.Type {
 		case "user_message":
 			if incoming.Content != "" {
-				s.handleCopilotMessage(session, incoming.Content, sessionRunner)
+				s.handleCopilotMessage(session, incoming.Content, sessionRunner, incoming.Voice)
 			}
 		case "new_chat":
 			s.handleCopilotNewChat(session)
@@ -301,7 +306,7 @@ func (s *Server) handleCopilotSwitchSession(session *copilotChatSession, targetS
 }
 
 // handleCopilotMessage processes a user message for the copilot and streams the response.
-func (s *Server) handleCopilotMessage(session *copilotChatSession, content string, sessionRunner *assistant.Runner) {
+func (s *Server) handleCopilotMessage(session *copilotChatSession, content string, sessionRunner *assistant.Runner, voiceCfg *VoiceConfig) {
 	s.logger.Info(fmt.Sprintf("copilot_message fid=%s session=%s message=\"%s\"", session.user.FID, session.sessionID, truncate(content, 160)))
 
 	// Add user message to history.
@@ -337,12 +342,60 @@ func (s *Server) handleCopilotMessage(session *copilotChatSession, content strin
 	//
 	// Scopes come from the CommanderChatUser attached to the consumed nonce.
 	// They were populated at token-issue time in handleCommanderAuthToken;
-	// Task 6 will replace the hardcoded default commander set with scopes
-	// derived from the JWT's "scopes" claim, at which point this call site
-	// stays unchanged.
+	// the scopes claim wiring stays unchanged here.
 	ctx := assistant.WithContext(context.Background(), session.sessionID, session.user.FID)
 	ctx = authz.ContextWithScopes(ctx, session.user.Scopes...)
 	ctx = tools.WithCommanderFID(ctx, session.user.FID)
+
+	// Resolve persona and mode from the incoming voice config, with safe defaults.
+	persona, mode := "the_mind", "standard"
+	if voiceCfg != nil {
+		if voiceCfg.Persona != "" {
+			persona = voiceCfg.Persona
+		}
+		if voiceCfg.Mode != "" {
+			mode = voiceCfg.Mode
+		}
+	}
+
+	// Assemble per-turn system prompt from persona×mode templates.
+	systemPrompt := s.assemblePrompt(persona, mode, session.user.Name)
+	turnRunner := sessionRunner.WithSystemPrompt(systemPrompt)
+
+	// Set up voice session if voice is enabled and ElevenLabs is configured.
+	voiceEnabled := voiceCfg != nil && voiceCfg.VoiceEnabled && s.cfg.ElevenLabs.APIKey != ""
+
+	var vs *voice.VoiceSession
+	audioCh := make(chan []byte, 100)
+
+	if voiceEnabled {
+		voiceID := s.cfg.ElevenLabs.Voices.ForPersona(persona)
+		elCfg := voice.ElevenLabsConfig{
+			APIKey:  s.cfg.ElevenLabs.APIKey,
+			VoiceID: voiceID,
+			ModelID: "eleven_flash_v2_5",
+			Format:  "mp3_44100_128",
+		}
+		var vsErr error
+		vs, vsErr = voice.NewVoiceSession(ctx, elCfg, audioCh)
+		if vsErr != nil {
+			s.logger.Warn(fmt.Sprintf("voice_session_start_failed fid=%s: %v — continuing without voice", session.user.FID, vsErr))
+			voiceEnabled = false
+		} else {
+			defer vs.Dispose()
+			// Forward audio chunks to the client under the session write mutex.
+			// copilotChatSession.send holds writeMu internally, so concurrent calls
+			// from this goroutine and the main handler are safe.
+			go func() {
+				for chunk := range audioCh {
+					session.send(ChatWSMessage{ //nolint:errcheck
+						Type:      ChatWSTypeAudioChunk,
+						AudioData: base64.StdEncoding.EncodeToString(chunk),
+					})
+				}
+			}()
+		}
+	}
 
 	// Create progress callback that streams to WebSocket.
 	pm := initEdinMetrics()
@@ -372,15 +425,30 @@ func (s *Server) handleCopilotMessage(session *copilotChatSession, content strin
 		}
 	}
 
-	// Run the copilot with per-session runner (includes commander tools).
+	// Run the copilot with streaming. The voice session is already connected so
+	// the ElevenLabs WS is ready the instant the first <speak> segment closes.
 	start := time.Now()
-	reply, err := sessionRunner.RunWithProgress(ctx, historyForAPI, content, onProgress)
+	reply, runErr := turnRunner.RunWithStreaming(ctx, historyForAPI, content, assistant.StreamingRunnerCallbacks{
+		OnTextDelta: func(string) {}, // raw tokens not forwarded; speak/data callbacks handle it
+		OnSpeakChunk: func(chunk string) {
+			session.send(ChatWSMessage{Type: ChatWSTypeTextDelta, Content: chunk, Channel: "speak"}) //nolint:errcheck
+			if voiceEnabled && vs != nil {
+				vs.SendSpeakContent(chunk) //nolint:errcheck
+			}
+		},
+		OnDataChunk: func(chunk string) {
+			session.send(ChatWSMessage{Type: ChatWSTypeTextDelta, Content: chunk, Channel: "data"}) //nolint:errcheck
+			// data channel NOT sent to ElevenLabs
+		},
+		OnProgress: onProgress,
+	})
+	duration := time.Since(start)
 
-	if err != nil {
-		s.logger.Error(fmt.Sprintf("copilot_run_error fid=%s session=%s", session.user.FID, session.sessionID), err)
+	if runErr != nil {
+		s.logger.Error(fmt.Sprintf("copilot_run_error fid=%s session=%s", session.user.FID, session.sessionID), runErr)
 		session.send(ChatWSMessage{
 			Type:    ChatWSTypeError,
-			Content: fmt.Sprintf("Error processing message: %v", err),
+			Content: "I had trouble answering that.",
 			Error:   true,
 		})
 		return
@@ -395,11 +463,11 @@ func (s *Server) handleCopilotMessage(session *copilotChatSession, content strin
 	session.history = append(session.history, assistantMsg)
 	s.llmStore.AppendMessage(session.sessionID, assistantMsg)
 
-	// Send final response.
+	// Send final assembled text frame (for clients that prefer complete responses).
 	session.send(ChatWSMessage{
 		Type:     ChatWSTypeText,
 		Content:  reply,
-		Duration: time.Since(start).Round(time.Millisecond).String(),
+		Duration: duration.Round(time.Millisecond).String(),
 	})
 
 	// Send done signal.
@@ -408,5 +476,15 @@ func (s *Server) handleCopilotMessage(session *copilotChatSession, content strin
 		SessionID: session.sessionID,
 	})
 
-	s.logger.Info(fmt.Sprintf("copilot_complete fid=%s session=%s duration=%s reply=\"%s\"", session.user.FID, session.sessionID, time.Since(start), truncate(reply, 200)))
+	s.logger.Info(fmt.Sprintf("copilot_complete fid=%s session=%s duration=%s reply=\"%s\"", session.user.FID, session.sessionID, duration, truncate(reply, 200)))
+}
+
+// assemblePrompt is a nil-safe wrapper around s.promptAssembler.Assemble.
+// If the assembler is nil (e.g., in tests that construct Server directly),
+// it falls back to NewDefaultAssembler so no nil-pointer panic occurs.
+func (s *Server) assemblePrompt(persona, mode, commanderName string) string {
+	if s.promptAssembler != nil {
+		return s.promptAssembler.Assemble(persona, mode, commanderName)
+	}
+	return copilot.NewDefaultAssembler().Assemble(persona, mode, commanderName)
 }

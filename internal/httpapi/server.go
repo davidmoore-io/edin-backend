@@ -19,6 +19,7 @@ import (
 	"github.com/edin-space/edin-backend/internal/authentik"
 	"github.com/edin-space/edin-backend/internal/authz"
 	"github.com/edin-space/edin-backend/internal/config"
+	"github.com/edin-space/edin-backend/internal/copilot"
 	"github.com/edin-space/edin-backend/internal/dayz"
 	"github.com/edin-space/edin-backend/internal/kaine"
 	"github.com/edin-space/edin-backend/internal/llm"
@@ -116,6 +117,19 @@ func Run(ctx context.Context, cfg *config.Config, opsManager *ops.Manager, llmSt
 	// Create copilot runner — system prompt is set per-session by CopilotSystemPrompt(commanderName)
 	if server.copilotRunner == nil && llmClient != nil {
 		server.copilotRunner = assistant.NewRunner(llmClient, server.toolExec, "", cfg.LLM.MaxIterations)
+	}
+
+	// Wire prompt assembler for persona×mode system prompts (voice feature).
+	// Falls back to the default assembler if template dir is missing or empty.
+	if cfg.ElevenLabs.PersonalityTemplateDir != "" {
+		if pa, err := copilot.NewPromptAssembler(cfg.ElevenLabs.PersonalityTemplateDir); err == nil {
+			server.promptAssembler = pa
+		} else {
+			server.logger.Warn(fmt.Sprintf("prompt assembler load failed (%v) — using default", err))
+		}
+	}
+	if server.promptAssembler == nil {
+		server.promptAssembler = copilot.NewDefaultAssembler()
 	}
 
 	// Load the active system prompt from the database, seeding v1 from the compiled
@@ -318,6 +332,7 @@ type Server struct {
 	llmRunner       *assistant.Runner // Discord ops runner (has access to system management tools)
 	kaineRunner     *assistant.Runner // Kaine chat runner (Elite Dangerous tools only, no ops)
 	copilotRunner   *assistant.Runner // Copilot chat runner (commander-authenticated, includes commander tools)
+	promptAssembler *copilot.PromptAssembler // Assembles per-persona×mode system prompts for copilot
 	storeCfg        config.ConversationStoreConfig
 	spansh          *spansh.Client
 	cacheStore      *store.CacheStore

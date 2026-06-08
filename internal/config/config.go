@@ -3,10 +3,13 @@ package config
 import (
 	"errors"
 	"fmt"
+	"log"
 	"os"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/edin-space/edin-backend/internal/voice"
 )
 
 // Config aggregates runtime configuration for both the control API and the Discord bot.
@@ -31,6 +34,7 @@ type Config struct {
 	Authentik     AuthentikConfig
 	CommanderAuth CommanderAuthConfig
 	Copilot       CopilotConfig
+	ElevenLabs    ElevenLabsConfig
 }
 
 // AuthentikConfig holds Authentik identity provider API settings.
@@ -95,6 +99,14 @@ type CopilotConfig struct {
 	MessageHistoryLimit int           // 20  — messages sent to Anthropic per call
 	EventsDefaultLimit  int           // 20  — default event count for commander_events tool
 	EventsMaxLimit      int           // 100 — maximum event count for commander_events tool
+}
+
+// ElevenLabsConfig holds ElevenLabs TTS API settings.
+// Voice is optional — the backend starts and functions without it.
+type ElevenLabsConfig struct {
+	APIKey               string
+	PersonalityTemplateDir string
+	Voices               voice.PersonaVoices
 }
 
 // KaineAuthConfig holds Kaine portal JWT authentication settings.
@@ -303,6 +315,15 @@ func Load() (*Config, error) {
 	commanderAuthCfg := loadCommanderAuthConfig()
 	copilotCfg := loadCopilotConfig()
 
+	var elevenLabsCfg ElevenLabsConfig
+	elCfg, err := loadElevenLabsConfig()
+	if err != nil {
+		// Voice is optional — backend starts and functions without it.
+		log.Printf("WARNING: ElevenLabs not configured (%v) — voice disabled", err)
+	} else {
+		elevenLabsCfg = elCfg
+	}
+
 	return &Config{
 		DomainName:        domain,
 		ControlAPIDomain:  controlAPIDomain,
@@ -323,6 +344,7 @@ func Load() (*Config, error) {
 		Authentik:         authentikCfg,
 		CommanderAuth:     commanderAuthCfg,
 		Copilot:           copilotCfg,
+		ElevenLabs:        elevenLabsCfg,
 	}, nil
 }
 
@@ -687,6 +709,18 @@ func loadCopilotConfig() CopilotConfig {
 		EventsDefaultLimit:  eventsDefault,
 		EventsMaxLimit:      eventsMax,
 	}
+}
+
+func loadElevenLabsConfig() (ElevenLabsConfig, error) {
+	apiKey, err := requiredEnv("ELEVENLABS_API_KEY")
+	if err != nil {
+		return ElevenLabsConfig{}, err
+	}
+	return ElevenLabsConfig{
+		APIKey:               apiKey,
+		PersonalityTemplateDir: getenvDefault("PERSONALITY_TEMPLATE_DIR", "../edin-personality/system-prompts"),
+		Voices:               voice.LoadPersonaVoices(),
+	}, nil
 }
 
 func loadEDINConfig() EDINConfig {

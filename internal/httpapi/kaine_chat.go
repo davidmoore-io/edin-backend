@@ -30,6 +30,7 @@ const (
 	ChatWSTypeConnected    ChatWSMessageType = "connected"
 	ChatWSTypeChatHistory  ChatWSMessageType = "chat_history"
 	ChatWSTypeChatCleared  ChatWSMessageType = "chat_cleared"
+	ChatWSTypeAudioChunk   ChatWSMessageType = "audio_chunk"
 )
 
 // ChatWSMessage represents a WebSocket message for the chat interface.
@@ -45,6 +46,15 @@ type ChatWSMessage struct {
 	DebugMode  bool              `json:"debug_mode,omitempty"`
 	Timestamp  time.Time         `json:"timestamp"`
 	Messages   []llm.Message     `json:"messages,omitempty"` // For chat_history
+	Channel    string            `json:"channel,omitempty"`   // "speak" or "data" on text_delta frames
+	AudioData  string            `json:"audio_data,omitempty"` // base64 audio on audio_chunk frames
+}
+
+// VoiceConfig is sent by the Flutter client with every user_message frame.
+type VoiceConfig struct {
+	Persona      string `json:"persona"`
+	Mode         string `json:"mode"`
+	VoiceEnabled bool   `json:"voice_enabled"`
 }
 
 // chatSession holds the state for a single chat WebSocket connection.
