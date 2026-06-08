@@ -370,7 +370,7 @@ func (s *Server) handleCopilotMessage(session *copilotChatSession, content strin
 
 	if voiceEnabled {
 		voiceID := s.cfg.ElevenLabs.Voices.ForPersona(persona)
-		s.logger.Info(fmt.Sprintf("voice_session_start fid=%s persona=%s voice_id=%s", session.user.FID, persona, voiceID))
+		s.logger.Info(fmt.Sprintf("voice_session_start fid=%s persona=%s voice_id=%s key_len=%d key_prefix=%s", session.user.FID, persona, voiceID, len(s.cfg.ElevenLabs.APIKey), s.cfg.ElevenLabs.APIKey[:min(8, len(s.cfg.ElevenLabs.APIKey))]))
 		elCfg := voice.ElevenLabsConfig{
 			APIKey:  s.cfg.ElevenLabs.APIKey,
 			VoiceID: voiceID,
