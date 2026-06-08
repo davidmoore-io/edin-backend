@@ -307,7 +307,7 @@ func (s *Server) handleCopilotSwitchSession(session *copilotChatSession, targetS
 
 // handleCopilotMessage processes a user message for the copilot and streams the response.
 func (s *Server) handleCopilotMessage(session *copilotChatSession, content string, sessionRunner *assistant.Runner, voiceCfg *VoiceConfig) {
-	s.logger.Info(fmt.Sprintf("copilot_message fid=%s session=%s message=\"%s\"", session.user.FID, session.sessionID, truncate(content, 160)))
+	s.logger.Info(fmt.Sprintf("copilot_message fid=%s session=%s voice_cfg=%+v message=\"%s\"", session.user.FID, session.sessionID, voiceCfg, truncate(content, 160)))
 
 	// Add user message to history.
 	userMsg := llm.Message{
