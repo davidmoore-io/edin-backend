@@ -17,7 +17,7 @@
 
 - name: Sync EDIN personality templates to server
   ansible.posix.synchronize:
-    src: "{{ playbook_dir }}/../../../../edin-personality/system-prompts/"
+    src: "{{ playbook_dir }}/../../edin-personality/system-prompts/"
     dest: "{{ personality_templates_host_dir }}/"
     delete: true
     recursive: true
