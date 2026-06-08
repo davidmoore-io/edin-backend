@@ -82,12 +82,23 @@
   notify: Restart control API
   tags: [control_api, compose]
 
-# Build and start
-- name: Build and start control API
+# Build and start.
+# We always --no-cache the build step so that Go source changes are never
+# silently skipped by Docker's layer cache. The build and up steps are
+# intentionally separate: `build` never touches running containers or volumes;
+# `up -d` recreates only services whose image changed, preserving all volumes.
+- name: Build control API image (no cache)
   ansible.builtin.command:
-    cmd: "docker compose -f {{ control_api_compose_file }} up -d --build --remove-orphans"
+    cmd: "docker compose -f {{ control_api_compose_file }} build --no-cache control-api"
+  register: api_build
+  changed_when: true
+  tags: [control_api, deploy]
+
+- name: Start control API
+  ansible.builtin.command:
+    cmd: "docker compose -f {{ control_api_compose_file }} up -d --remove-orphans"
   register: api_up
-  changed_when: "'Started' in api_up.stderr or 'Built' in api_up.stderr or 'Created' in api_up.stderr"
+  changed_when: "'Started' in api_up.stderr or 'Recreated' in api_up.stderr or 'Created' in api_up.stderr"
   tags: [control_api, deploy]
 
 - name: Wait for control API health
