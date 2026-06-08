@@ -370,6 +370,7 @@ func (s *Server) handleCopilotMessage(session *copilotChatSession, content strin
 
 	if voiceEnabled {
 		voiceID := s.cfg.ElevenLabs.Voices.ForPersona(persona)
+		s.logger.Info(fmt.Sprintf("voice_session_start fid=%s persona=%s voice_id=%s", session.user.FID, persona, voiceID))
 		elCfg := voice.ElevenLabsConfig{
 			APIKey:  s.cfg.ElevenLabs.APIKey,
 			VoiceID: voiceID,
@@ -382,6 +383,7 @@ func (s *Server) handleCopilotMessage(session *copilotChatSession, content strin
 			s.logger.Warn(fmt.Sprintf("voice_session_start_failed fid=%s: %v — continuing without voice", session.user.FID, vsErr))
 			voiceEnabled = false
 		} else {
+			s.logger.Info(fmt.Sprintf("voice_session_ready fid=%s", session.user.FID))
 			defer vs.Dispose()
 			// Forward audio chunks to the client under the session write mutex.
 			// copilotChatSession.send holds writeMu internally, so concurrent calls

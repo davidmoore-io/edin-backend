@@ -76,6 +76,13 @@ func (c *ElevenLabsClient) Flush() error {
 	return c.send(map[string]any{"text": " ", "flush": true})
 }
 
+// SendEndOfInput signals ElevenLabs that no more text will be sent.
+// EL finishes generating remaining audio and sends isFinal: true.
+// Does NOT close the WebSocket — call Close() after ReadAudioChunks returns.
+func (c *ElevenLabsClient) SendEndOfInput() error {
+	return c.send(map[string]any{"text": ""})
+}
+
 func (c *ElevenLabsClient) ReadAudioChunks(ctx context.Context, out chan<- []byte) error {
 	for {
 		select {

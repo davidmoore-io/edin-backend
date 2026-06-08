@@ -3,6 +3,7 @@ package voice
 import (
 	"context"
 	"sync"
+	"time"
 )
 
 // VoiceSession manages TTS for one chat turn.
@@ -38,10 +39,27 @@ func (vs *VoiceSession) SendSpeakContent(text string) error {
 
 func (vs *VoiceSession) Dispose() {
 	vs.once.Do(func() {
-		vs.cancelCtx()
-		vs.client.Flush()  //nolint:errcheck
-		vs.client.Close()  //nolint:errcheck
-		vs.wg.Wait()
+		// Tell EL we're done sending text. It will finish generating audio and
+		// send isFinal: true. We must NOT cancel the read context yet — that
+		// would kill ReadAudioChunks before the audio arrives.
+		vs.client.Flush()          //nolint:errcheck
+		vs.client.SendEndOfInput() //nolint:errcheck
+
+		// Wait for ReadAudioChunks to complete naturally (isFinal: true received),
+		// with a 10s ceiling so a stalled EL session can't block forever.
+		done := make(chan struct{})
+		go func() {
+			vs.wg.Wait()
+			close(done)
+		}()
+		select {
+		case <-done:
+		case <-time.After(10 * time.Second):
+			vs.cancelCtx() // force exit on timeout
+			<-done
+		}
+
+		vs.client.Close() //nolint:errcheck
 		close(vs.audioCh)
 	})
 }
