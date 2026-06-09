@@ -25,7 +25,9 @@ func (c ElevenLabsConfig) wsEndpoint() string {
 		return c.WSURL
 	}
 	return fmt.Sprintf(
-		"wss://api.elevenlabs.io/v1/text-to-speech/%s/stream-input?xi_api_key=%s&model_id=%s&output_format=%s",
+		// inactivity_timeout=600 — default is 20s which kills the WS during tool calls.
+		// 600s (10 min) covers any realistic multi-tool response duration.
+		"wss://api.elevenlabs.io/v1/text-to-speech/%s/stream-input?xi_api_key=%s&model_id=%s&output_format=%s&inactivity_timeout=600",
 		c.VoiceID, c.APIKey, c.ModelID, c.Format,
 	)
 }
