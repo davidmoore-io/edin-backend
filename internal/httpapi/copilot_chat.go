@@ -459,10 +459,17 @@ func (s *Server) handleCopilotMessage(session *copilotChatSession, content strin
 		return
 	}
 
-	// Add assistant reply to history and persist.
+	// Store speak-only content in history — strip channel tags so that history
+	// replay never shows raw <speak>/<data> markup. Data tables are transient;
+	// they're not reconstructable from the stored string and aren't needed for
+	// conversation context passed back to the LLM.
+	speakOnly := voice.SpeakContent(voice.ParseTaggedText(reply))
+	if speakOnly == "" {
+		speakOnly = reply // fallback for untagged responses
+	}
 	assistantMsg := llm.Message{
 		Role:      "assistant",
-		Content:   reply,
+		Content:   speakOnly,
 		CreatedAt: time.Now().UTC(),
 	}
 	session.history = append(session.history, assistantMsg)
