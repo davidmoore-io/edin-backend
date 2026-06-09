@@ -433,6 +433,9 @@ func (s *Server) handleCopilotMessage(session *copilotChatSession, content strin
 	reply, runErr := turnRunner.RunWithStreaming(ctx, historyForAPI, content, assistant.StreamingRunnerCallbacks{
 		OnTextDelta: func(string) {}, // raw tokens not forwarded; speak/data callbacks handle it
 		OnSpeakChunk: func(chunk string) {
+			// speak_start signals Flutter to open a fresh bubble for this segment.
+			// Ignored by the client when there is no existing content (first bubble).
+			session.send(ChatWSMessage{Type: ChatWSTypeSpeakStart}) //nolint:errcheck
 			session.send(ChatWSMessage{Type: ChatWSTypeTextDelta, Content: chunk, Channel: "speak"}) //nolint:errcheck
 			if voiceEnabled && vs != nil {
 				vs.SendSpeakContent(chunk) //nolint:errcheck

@@ -31,6 +31,9 @@ const (
 	ChatWSTypeChatHistory  ChatWSMessageType = "chat_history"
 	ChatWSTypeChatCleared  ChatWSMessageType = "chat_cleared"
 	ChatWSTypeAudioChunk   ChatWSMessageType = "audio_chunk"
+	// speak_start is sent immediately before each speak text_delta burst.
+	// Flutter uses it to start a new chat bubble for each discrete <speak> segment.
+	ChatWSTypeSpeakStart   ChatWSMessageType = "speak_start"
 )
 
 // ChatWSMessage represents a WebSocket message for the chat interface.
