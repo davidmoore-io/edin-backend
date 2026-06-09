@@ -83,10 +83,16 @@
   tags: [control_api, compose]
 
 # Build and start.
-# We always --no-cache the build step so that Go source changes are never
-# silently skipped by Docker's layer cache. The build and up steps are
-# intentionally separate: `build` never touches running containers or volumes;
-# `up -d` recreates only services whose image changed, preserving all volumes.
+# SAFETY: these commands only affect containers defined in control_api_compose_file
+# (/srv/control-api/docker-compose.yml). All other services — memgraph, Redis,
+# TimescaleDB, Authentik — are in separate compose files on separate networks and
+# are never touched. No `down` and no `-v` flag appear anywhere in this playbook;
+# volumes are only destroyed by `docker compose down -v` which we never run here.
+#
+# We always --no-cache the build step so Go source changes are never silently
+# skipped by Docker's layer cache. The build and up steps are intentionally
+# separate: `build` only rebuilds the image; `up -d` recreates only containers
+# whose image changed, preserving all volumes.
 - name: Build control API image (no cache)
   ansible.builtin.command:
     cmd: "docker compose -f {{ control_api_compose_file }} build --no-cache control-api"
