@@ -243,4 +243,102 @@ Do NOT assume, presuppose, infer, extrapolate, or draw on any other knowledge ab
 Dangerous Powerplay, even if you believe you know the answer. If the returned chunks do not
 contain enough information to answer the user's question, say so explicitly and offer to
 search with a different keyword. Quote or paraphrase the chunks directly; do not embellish.`,
+
+	ToolCommanderEvents: `commander_events — Query the commander's synced Elite Dangerous journal events.
+
+Returns events with timestamp, event_type, and event_data payload. Use event_types to filter
+efficiently — always filter when you know what you're looking for.
+
+Key event types and their useful fields:
+
+LOCATION / TRAVEL
+- Docked: StationName, StarSystem, StationType, MarketID, StationFaction, DistFromStarLS
+- FSDJump: StarSystem, JumpDist, FuelUsed, FuelLevel, SystemAllegiance, Powers
+- Location: StarSystem, StationName (if docked on login)
+- Undocked: StationName, StarSystem
+
+COLONISATION
+- ColonisationConstructionDepot: fires when the commander opens a construction depot UI.
+  Compacted payload: {market_id, progress (0.0–1.0), complete, failed,
+  resources:[{name, required, provided, remaining, payment}]}
+  This IS the shopping list. Always query this when asked about construction depot needs,
+  resource requirements, or what a colony needs. Filter: event_types=ColonisationConstructionDepot.
+  The most recent event reflects current depot state (resources update as deliveries are made).
+
+CARGO / TRADE
+- Cargo: current cargo manifest — {vessel, total, items:[{name, count}]}
+- MarketBuy / MarketSell: commodity, count, price, market_id, station
+
+MISSIONS
+- MissionAccepted: Name, Faction, Reward, Expiry, DestinationSystem, DestinationStation
+- MissionCompleted / MissionFailed / MissionAbandoned: MissionID, Name, Reward
+
+SHIP
+- Loadout: ship type, name, ident, cargo capacity, jump range (modules elided in compacted form)
+- StoredShips / StoredModules: where the commander's ships and modules are stored
+
+Common patterns:
+- "What does this construction depot need?" → event_types=ColonisationConstructionDepot, limit=1
+- "Where am I?" → event_types=Docked,FSDJump,Location, limit=5
+- "What's in my cargo?" → event_types=Cargo, limit=1
+- "Recent activity" → no filter, limit=20
+
+NEVER claim that journal data is unavailable without querying first. If a ColonisationConstructionDepot
+event is not present, the commander has not yet opened the depot UI in-game — say so, and ask them
+to approach and open the depot panel so the journal fires the event.
+
+POWERPLAY
+- Powerplay: fires at game startup. Fields: Power (name), Rank (1–50), Merits (lifetime total),
+  TimePledged (seconds). Use for "what power am I pledged to?", "what's my rank?", current merit baseline.
+  Filter: event_types=Powerplay, limit=1.
+- PowerplayMerits: fires each time merits are earned. Fields: Power, MeritsGained, TotalMerits.
+  Use for "how many merits did I earn this session?" — sum MeritsGained since last Powerplay event,
+  or diff TotalMerits between earliest and latest. Filter: event_types=PowerplayMerits.
+- PowerplayRank: fires on rank change. Fields: Power, Rank (new rank).
+  Filter: event_types=PowerplayRank, limit=1.
+Common patterns:
+- "What's my merit count?" → event_types=Powerplay, limit=1 (for baseline) then event_types=PowerplayMerits (for session gains)
+- "Did I rank up?" → event_types=PowerplayRank, limit=5
+
+COLONISATION (continued)
+- ColonisationContribution: fires when the commander delivers goods to a construction depot.
+  Fields: contributions:[{name, nameLocalised, amount}]. Use this to answer "what did I just deliver?"
+  or "what have I delivered this session?". Pair with ColonisationConstructionDepot to show
+  remaining requirements after deliveries. Filter: event_types=ColonisationContribution.
+
+MATERIALS (for engineering / synthesis)
+- Materials: bulk inventory fired at startup. Contains Raw, Manufactured, Encoded arrays, each with
+  {Name, Count} entries. Use for "what materials do I have?" / "do I have enough X to craft Y?".
+  Filter: event_types=Materials, limit=1.
+- MaterialCollected: single collection event. Fields: Category (Raw/Manufactured/Encoded), Name, Count.
+- MaterialDiscarded: Fields: Category, Name, Count.
+- MaterialTrade: traded at a material trader. Fields: TraderType, Paid {Material, Category, Quantity},
+  Received {Material, Category, Quantity}.
+Common pattern: "What materials do I have?" → event_types=Materials, limit=1
+
+FLEET CARRIER
+- CarrierStats: fired when carrier panel opened. Key fields: Callsign, Name, FuelLevel (tonnes),
+  JumpRangeCurr (LY), JumpRangeMax (LY), Finance:{CarrierBalance, ReserveBalance, AvailableBalance},
+  SpaceUsage:{FreeSpace (tonnes)}. Use for carrier status questions.
+  Filter: event_types=CarrierStats, limit=1.
+- CarrierLocation: Fields: StarSystem. Use for "where is my carrier?".
+  Filter: event_types=CarrierLocation,CarrierJump, limit=1.
+- CarrierJumpRequest: Fields: SystemName, Body (optional), DepartureTime. Pending jump.
+  Filter: event_types=CarrierJumpRequest, limit=1.
+- CarrierJumpCancelled: jump was cancelled.
+- CarrierJump: carrier completed a jump. Fields: StarSystem, StationName, StationType, MarketID, Population.
+Common patterns:
+- "Where's my carrier?" → event_types=CarrierLocation,CarrierJump, limit=1
+- "Is my carrier jumping?" → event_types=CarrierJumpRequest,CarrierJumpCancelled, limit=5
+
+NAVIGATION
+- NavRoute: fired when a route is plotted or cleared. Fields: Route:[{StarSystem, StarClass}].
+  Route is empty when cleared. Use for "where am I headed?" / "how many jumps to destination?".
+  Filter: event_types=NavRoute, limit=1.
+- StartJump: fired as FSD spools up. Fields: JumpType (Hyperspace/Supercruise), StarSystem, StarClass.
+
+COMBAT EARNINGS
+- Bounty: Fields: TotalReward (credits), VictimFaction, Target (ship type). Combat kill bounty.
+- FactionKillBond: Fields: reward (credits), awardingFaction. CZ kill bond.
+Common pattern: "How much did I earn from that fight?" → event_types=Bounty,FactionKillBond, limit=20`,
 }
