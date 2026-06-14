@@ -92,7 +92,7 @@ type CommanderAuthConfig struct {
 // CopilotConfig holds WebSocket tuning and AI call parameters for the Copilot chat feature.
 type CopilotConfig struct {
 	WSAuthTimeout       time.Duration // 5s  — wait for auth frame after upgrade
-	WSReadDeadline      time.Duration // 60s — read deadline reset on each message/ping
+	WSReadDeadline      time.Duration // 900s — must exceed worst-case turn length (handler is synchronous; see default below)
 	WSPingInterval      time.Duration // 30s — server ping interval
 	WSWriteDeadline     time.Duration // 10s — write deadline for outgoing frames
 	WSReadLimitBytes    int64         // 65536 (64 KB) — max incoming message size
@@ -701,7 +701,13 @@ func loadCopilotConfig() CopilotConfig {
 	}
 	return CopilotConfig{
 		WSAuthTimeout:       getEnvDuration("COPILOT_WS_AUTH_TIMEOUT", 5*time.Second),
-		WSReadDeadline:      getEnvDuration("COPILOT_WS_READ_DEADLINE", 60*time.Second),
+		// 15 min: handleCopilotMessage runs synchronously in the read loop, so the
+		// read deadline is not extended (via pong) while a turn is in flight. It must
+		// therefore exceed the worst-case turn duration, or the socket is closed the
+		// instant a long multi-tool turn completes. Between turns, the 30s ping/pong
+		// keeps the deadline fresh, so a large value does not delay dead-peer cleanup
+		// in practice.
+		WSReadDeadline:      getEnvDuration("COPILOT_WS_READ_DEADLINE", 900*time.Second),
 		WSPingInterval:      getEnvDuration("COPILOT_WS_PING_INTERVAL", 30*time.Second),
 		WSWriteDeadline:     getEnvDuration("COPILOT_WS_WRITE_DEADLINE", 10*time.Second),
 		WSReadLimitBytes:    wsReadLimit,

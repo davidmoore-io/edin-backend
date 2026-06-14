@@ -6,3 +6,6 @@ dev-keys/
 *.retry
 .DS_Store
 ansible/ansible.log
+
+# SpecStory chat history (local, not version controlled)
+.specstory/
