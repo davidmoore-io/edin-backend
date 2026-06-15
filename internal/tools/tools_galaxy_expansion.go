@@ -31,7 +31,7 @@ func (e *Executor) galaxyExpansionCheck(ctx context.Context, args map[string]any
 		OPTIONAL MATCH (p:Power {name: $power_name})-[:CONTROLS]->(fort:System)
 		WHERE fort.powerplay_state = 'Fortified'
 		WITH target, fort,
-		     sqrt((target.x - fort.x)*(target.x - fort.x) + (target.y - fort.y)*(target.y - fort.y) + (target.z - fort.z)*(target.z - fort.z)) AS fort_dist
+		     point.distance(target.location, fort.location) AS fort_dist
 		ORDER BY fort_dist
 		WITH target, collect({system: fort.name, distance: fort_dist})[0] AS nearest_fortified
 
@@ -39,7 +39,7 @@ func (e *Executor) galaxyExpansionCheck(ctx context.Context, args map[string]any
 		OPTIONAL MATCH (p2:Power {name: $power_name})-[:CONTROLS]->(strong:System)
 		WHERE strong.powerplay_state = 'Stronghold'
 		WITH target, nearest_fortified, strong,
-		     sqrt((target.x - strong.x)*(target.x - strong.x) + (target.y - strong.y)*(target.y - strong.y) + (target.z - strong.z)*(target.z - strong.z)) AS strong_dist
+		     point.distance(target.location, strong.location) AS strong_dist
 		ORDER BY strong_dist
 		WITH target, nearest_fortified, collect({system: strong.name, distance: strong_dist})[0] AS nearest_stronghold
 
@@ -158,7 +158,7 @@ func (e *Executor) galaxyNearbyPowerplay(ctx context.Context, args map[string]an
 		    WITH target
 		    MATCH (p:Power {name: $power_name})-[:CONTROLS]->(controlled:System)
 		    WITH target, controlled,
-		         sqrt((target.x - controlled.x)*(target.x - controlled.x) + (target.y - controlled.y)*(target.y - controlled.y) + (target.z - controlled.z)*(target.z - controlled.z)) AS dist
+		         point.distance(target.location, controlled.location) AS dist
 		    WHERE dist <= $max_distance
 		    RETURN controlled.name AS c_name, controlled.powerplay_state AS c_state, dist AS c_dist
 		    ORDER BY c_dist
@@ -173,7 +173,7 @@ func (e *Executor) galaxyNearbyPowerplay(ctx context.Context, args map[string]an
 		    WHERE acq.powerplay_state IN ['Expansion', 'Contested']
 		      AND $power_name IN acq.powers
 		    WITH target, acq,
-		         sqrt((target.x - acq.x)*(target.x - acq.x) + (target.y - acq.y)*(target.y - acq.y) + (target.z - acq.z)*(target.z - acq.z)) AS dist
+		         point.distance(target.location, acq.location) AS dist
 		    WHERE dist <= $max_distance
 		    RETURN acq.name AS a_name, acq.powerplay_state AS a_state, acq.powers AS a_powers, dist AS a_dist
 		    ORDER BY a_dist
@@ -302,7 +302,7 @@ func (e *Executor) galaxyExpansionFrontier(ctx context.Context, args map[string]
 		MATCH (s:System)
 		WHERE s.name <> ctrl.name
 		WITH ctrl, max_range, power_name, s,
-		     sqrt((s.x - ctrl.x)*(s.x - ctrl.x) + (s.y - ctrl.y)*(s.y - ctrl.y) + (s.z - ctrl.z)*(s.z - ctrl.z)) AS dist
+		     point.distance(s.location, ctrl.location) AS dist
 		WHERE dist >= max_range - 5 AND dist <= max_range + 10  // Edge zone: 5Ly inside to 10Ly outside
 
 		// Check if controlled by any power

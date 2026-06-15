@@ -318,9 +318,7 @@ func (e *Executor) queryCommodityBuy(ctx context.Context, commodity, refSystem s
 		MATCH (c:Commodity)<-[t:TRADES]-(m:Market)<-[:HAS_MARKET]-(st:Station)<-[:HAS_STATION]-(sys:System)
 		WHERE c.name CONTAINS $commodity AND t.stock > $min_stock AND t.buy_price > 0` + carrierFilter + stationFilters + `
 		WITH sys, st, m, t, c, ref,
-		     sqrt((sys.x - ref.x)*(sys.x - ref.x) +
-		          (sys.y - ref.y)*(sys.y - ref.y) +
-		          (sys.z - ref.z)*(sys.z - ref.z)) AS distance
+		     point.distance(sys.location, ref.location) AS distance
 		WHERE distance <= $max_distance
 	`
 
@@ -392,9 +390,7 @@ func (e *Executor) queryCommoditySell(ctx context.Context, commodity, refSystem 
 		MATCH (c:Commodity)<-[t:TRADES]-(m:Market)<-[:HAS_MARKET]-(st:Station)<-[:HAS_STATION]-(sys:System)
 		WHERE c.name CONTAINS $commodity AND t.demand > $min_demand AND t.sell_price > 0` + carrierFilter + stationFilters + `
 		WITH sys, st, m, t, c, ref,
-		     sqrt((sys.x - ref.x)*(sys.x - ref.x) +
-		          (sys.y - ref.y)*(sys.y - ref.y) +
-		          (sys.z - ref.z)*(sys.z - ref.z)) AS distance
+		     point.distance(sys.location, ref.location) AS distance
 		WHERE distance <= $max_distance
 	`
 
@@ -466,9 +462,7 @@ func (e *Executor) queryCommodityOverview(ctx context.Context, commodity, refSys
 		MATCH (c:Commodity)<-[t:TRADES]-(m:Market)<-[:HAS_MARKET]-(st:Station)<-[:HAS_STATION]-(sys:System)
 		WHERE c.name CONTAINS $commodity AND (t.buy_price > 0 OR t.sell_price > 0)` + carrierFilter + stationFilters + `
 		WITH sys, st, m, t, c, ref,
-		     sqrt((sys.x - ref.x)*(sys.x - ref.x) +
-		          (sys.y - ref.y)*(sys.y - ref.y) +
-		          (sys.z - ref.z)*(sys.z - ref.z)) AS distance
+		     point.distance(sys.location, ref.location) AS distance
 		WHERE distance <= $max_distance
 		RETURN sys.name AS system, st.name AS station, CASE WHEN st.large_pads > 0 THEN 'L' WHEN st.medium_pads > 0 THEN 'M' ELSE 'S' END AS pad,
 		       st.type AS station_type, st.distance_ls AS distance_ls,
