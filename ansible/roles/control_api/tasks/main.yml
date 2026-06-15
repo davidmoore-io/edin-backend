@@ -33,6 +33,7 @@
   environment:
     GIT_SSH_COMMAND: "ssh -o StrictHostKeyChecking=accept-new"
   when: not personality_repo_state.stat.exists
+  notify: Restart control API
   tags: [control_api, personality]
 
 - name: Pull latest personality templates
@@ -45,6 +46,7 @@
   when: personality_repo_state.stat.exists
   register: personality_pull
   changed_when: "'Already up to date' not in personality_pull.stdout"
+  notify: Restart control API
   tags: [control_api, personality]
 
 - name: Ensure edin-app Docker network exists
