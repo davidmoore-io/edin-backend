@@ -412,6 +412,7 @@ func (s *Server) handleCopilotMessage(session *copilotChatSession, content strin
 			session.send(ChatWSMessage{
 				Type:     ChatWSTypeToolStart,
 				ToolName: event.ToolName,
+				ToolID:   event.ToolID,
 				Content:  event.Message,
 			})
 		case assistant.ProgressToolComplete:
@@ -420,6 +421,7 @@ func (s *Server) handleCopilotMessage(session *copilotChatSession, content strin
 			session.send(ChatWSMessage{
 				Type:     ChatWSTypeToolComplete,
 				ToolName: event.ToolName,
+				ToolID:   event.ToolID,
 				Content:  event.Message,
 				Duration: event.Message,
 				Error:    event.Error,

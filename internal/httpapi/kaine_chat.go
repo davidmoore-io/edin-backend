@@ -42,6 +42,7 @@ type ChatWSMessage struct {
 	SessionID  string            `json:"session_id,omitempty"`
 	Content    string            `json:"content,omitempty"`
 	ToolName   string            `json:"tool_name,omitempty"`
+	ToolID     string            `json:"tool_id,omitempty"`
 	ToolInput  any               `json:"tool_input,omitempty"`  // Only sent to debug users
 	ToolOutput any               `json:"tool_output,omitempty"` // Only sent to debug users
 	Duration   string            `json:"duration,omitempty"`

@@ -43,6 +43,7 @@ const (
 type ProgressEvent struct {
 	Type     ProgressEventType
 	ToolName string
+	ToolID   string // stable tool_use id from the model; pairs start/complete for one call
 	Message  string
 	Error    bool
 }
@@ -404,6 +405,7 @@ func (r *Runner) invokeBetaToolsWithProgress(ctx context.Context, blocks []betaT
 			onProgress(ProgressEvent{
 				Type:     ProgressToolStart,
 				ToolName: block.Name,
+				ToolID:   block.ID,
 				Message:  fmt.Sprintf("Running %s...", block.Name),
 			})
 		}
@@ -436,6 +438,7 @@ func (r *Runner) invokeBetaToolsWithProgress(ctx context.Context, blocks []betaT
 			onProgress(ProgressEvent{
 				Type:     ProgressToolComplete,
 				ToolName: block.Name,
+				ToolID:   block.ID,
 				Message:  fmt.Sprintf("%s completed in %s", block.Name, elapsed.Round(time.Millisecond)),
 				Error:    isError,
 			})

@@ -116,6 +116,7 @@ func (r *Runner) RunWithStreaming(ctx context.Context, history []llm.Message, us
 						cb.OnProgress(ProgressEvent{
 							Type:     ProgressToolStart,
 							ToolName: e.ContentBlock.Name,
+							ToolID:   e.ContentBlock.ID,
 							Message:  fmt.Sprintf("Running %s...", e.ContentBlock.Name),
 						})
 					}
