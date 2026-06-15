@@ -707,6 +707,13 @@ func loadCopilotConfig() CopilotConfig {
 		// instant a long multi-tool turn completes. Between turns, the 30s ping/pong
 		// keeps the deadline fresh, so a large value does not delay dead-peer cleanup
 		// in practice.
+		//
+		// HEADS-UP (prod): this default is OVERRIDDEN at runtime. The deployed value
+		// comes from COPILOT_WS_READ_DEADLINE, which Ansible sets from the
+		// `copilot_ws_read_deadline` var in
+		// edin-backend/ansible/group_vars/all.yml (~line 121), rendered into the
+		// container env via roles/control_api/templates/control-api.env.j2 (line 127).
+		// Changing this Go default alone will NOT change prod — edit the Ansible var too.
 		WSReadDeadline:      getEnvDuration("COPILOT_WS_READ_DEADLINE", 900*time.Second),
 		WSPingInterval:      getEnvDuration("COPILOT_WS_PING_INTERVAL", 30*time.Second),
 		WSWriteDeadline:     getEnvDuration("COPILOT_WS_WRITE_DEADLINE", 10*time.Second),

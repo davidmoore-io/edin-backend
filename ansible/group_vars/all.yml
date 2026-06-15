@@ -7,8 +7,12 @@ control_api_repo_url: "git@github.com:davidmoore-io/edin-backend.git"
 control_api_repo_branch: main
 control_api_src_dir: /srv/edin-backend/src
 
-# EDIN personality templates (synced from local by Ansible — no remote repo)
-personality_templates_host_dir: /srv/edin-personality/system-prompts
+# EDIN personality templates — cloned/pulled from main on the server (like the
+# backend source), so deploys reflect the repo, not the operator's local tree.
+personality_repo_url: "git@github.com:davidmoore-io/edin-personality.git"
+personality_repo_branch: main
+personality_src_dir: /srv/edin-personality/src
+personality_templates_host_dir: "{{ personality_src_dir }}/system-prompts"
 personality_templates_container_dir: /srv/personality/system-prompts
 
 # Control API
@@ -118,7 +122,13 @@ commander_auth_initiate_rate_window: 1m
 
 # Copilot WebSocket tuning
 copilot_ws_auth_timeout: 5s
-copilot_ws_read_deadline: 60s
+# 15 min. This is the AUTHORITATIVE prod value for COPILOT_WS_READ_DEADLINE
+# (rendered into control-api.env.j2 line 127); it overrides the Go default in
+# internal/config/config.go. The copilot turn handler runs synchronously in the
+# WS read loop, so the deadline is not extended (via pong) mid-turn and must
+# exceed the worst-case turn duration, or a long multi-tool turn drops the
+# socket on completion and the client loses its bubbles on the lossy reconnect.
+copilot_ws_read_deadline: 900s
 copilot_ws_ping_interval: 30s
 copilot_ws_write_deadline: 10s
 copilot_ws_read_limit_bytes: 65536

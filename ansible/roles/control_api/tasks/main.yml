@@ -11,18 +11,40 @@
   loop:
     - { path: "{{ control_api_dir }}" }
     - { path: "{{ control_api_src_dir | dirname }}", owner: "{{ ansible_user }}", group: "{{ ansible_user }}" }
-    - { path: "{{ personality_templates_host_dir | dirname }}", owner: "root", group: "root" }
-    - { path: "{{ personality_templates_host_dir }}", owner: "root", group: "root" }
+    # Parent of the personality clone — owned by the connecting user so the
+    # `git clone` below (run with become: false) can create the checkout.
+    - { path: "{{ personality_src_dir | dirname }}", owner: "{{ ansible_user }}", group: "{{ ansible_user }}" }
   tags: [control_api, directories]
 
-- name: Sync EDIN personality templates to server
-  ansible.posix.synchronize:
-    src: "{{ playbook_dir }}/../../edin-personality/system-prompts/"
-    dest: "{{ personality_templates_host_dir }}/"
-    delete: true
-    recursive: true
-    rsync_opts:
-      - "--exclude=.git"
+# Personality templates — clone/pull from main, mirroring the backend source
+# tasks. Run as the connecting user (become: false) so the SSH deploy key is used.
+- name: Check if personality repo exists
+  ansible.builtin.stat:
+    path: "{{ personality_src_dir }}/.git"
+  register: personality_repo_state
+  become: false
+  tags: [control_api, personality]
+
+- name: Clone personality repo
+  ansible.builtin.command:
+    cmd: "git clone --branch {{ personality_repo_branch }} {{ personality_repo_url }} {{ personality_src_dir }}"
+    creates: "{{ personality_src_dir }}/.git"
+  become: false
+  environment:
+    GIT_SSH_COMMAND: "ssh -o StrictHostKeyChecking=accept-new"
+  when: not personality_repo_state.stat.exists
+  tags: [control_api, personality]
+
+- name: Pull latest personality templates
+  ansible.builtin.command:
+    cmd: "git pull origin {{ personality_repo_branch }}"
+    chdir: "{{ personality_src_dir }}"
+  become: false
+  environment:
+    GIT_SSH_COMMAND: "ssh -o StrictHostKeyChecking=accept-new"
+  when: personality_repo_state.stat.exists
+  register: personality_pull
+  changed_when: "'Already up to date' not in personality_pull.stdout"
   tags: [control_api, personality]
 
 - name: Ensure edin-app Docker network exists
