@@ -19,7 +19,7 @@ import (
 	"github.com/edin-space/edin-backend/internal/config"
 	"github.com/edin-space/edin-backend/internal/dayz"
 	"github.com/edin-space/edin-backend/internal/edsm"
-	"github.com/edin-space/edin-backend/internal/gameservers"
+	// "github.com/edin-space/edin-backend/internal/gameservers" // disabled: old SSG game-server collector (see tasks/todo.md for full removal)
 	"github.com/edin-space/edin-backend/internal/httpapi"
 	"github.com/edin-space/edin-backend/internal/kaine"
 	"github.com/edin-space/edin-backend/internal/llm"
@@ -153,11 +153,14 @@ func main() {
 	go wsHub.Run()
 	logger.Info("WebSocket hub started")
 
-	// Initialize game server metrics and collector
-	gsMetrics := gameservers.InitMetrics("ssg")
-	gsCollector := gameservers.NewCollector(nil, gsMetrics, observability.NewLogger("gameservers"))
-	gsCollector.Start(ctx)
-	defer gsCollector.Stop()
+	// Game server metrics/collector disabled: it polled the old SSG box
+	// (54.37.128.230 — DayZ :2305, Satisfactory :7777) every 30s, which we no
+	// longer run. Left commented rather than deleted; tasks/todo.md tracks the
+	// full removal of the gameservers/DayZ code.
+	// gsMetrics := gameservers.InitMetrics("ssg")
+	// gsCollector := gameservers.NewCollector(nil, gsMetrics, observability.NewLogger("gameservers"))
+	// gsCollector.Start(ctx)
+	// defer gsCollector.Stop()
 
 	// Initialize DayZ service for map/spawn data
 	dayzConfig := dayz.DefaultConfig()
