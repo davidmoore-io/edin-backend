@@ -131,7 +131,7 @@ copilot_ws_auth_timeout: 5s
 copilot_ws_read_deadline: 900s
 copilot_ws_ping_interval: 30s
 copilot_ws_write_deadline: 10s
-copilot_ws_read_limit_bytes: 65536
+copilot_ws_read_limit_bytes: 2097152  # 2 MB — headroom for image attachments (client compresses to ~50-300 KB)
 copilot_message_history_limit: 20
 copilot_events_default_limit: 20
 copilot_events_max_limit: 100
