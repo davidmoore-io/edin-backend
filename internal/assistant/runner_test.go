@@ -137,12 +137,55 @@ func TestRunnerToolDefsForScope_UsesFullForOps(t *testing.T) {
 func TestRunnerBuildBetaMessageParams(t *testing.T) {
 	runner := NewRunner(nil, nil, "", 5)
 
-	params := runner.buildBetaMessageParams(nil, "hello")
+	params := runner.buildBetaMessageParams(nil, "hello", nil)
 	if len(params) != 1 {
 		t.Fatalf("expected 1 message param, got %d", len(params))
 	}
 	if params[0].Role != "user" {
 		t.Fatalf("expected user role, got %q", params[0].Role)
+	}
+	// Text-only turn → a single text content block, no image.
+	if len(params[0].Content) != 1 || params[0].Content[0].OfImage != nil {
+		t.Fatalf("expected a single non-image content block, got %d (image=%v)",
+			len(params[0].Content), params[0].Content[0].OfImage != nil)
+	}
+}
+
+func TestRunnerBuildBetaMessageParams_WithImage(t *testing.T) {
+	runner := NewRunner(nil, nil, "", 5)
+	img := &ImageInput{Base64: "aGVsbG8=", MediaType: "image/png"}
+
+	params := runner.buildBetaMessageParams(nil, "look at this", img)
+	if len(params) != 1 {
+		t.Fatalf("expected 1 message param, got %d", len(params))
+	}
+	// Image + text → two content blocks, image first.
+	if len(params[0].Content) != 2 {
+		t.Fatalf("expected 2 content blocks (image+text), got %d", len(params[0].Content))
+	}
+	imgBlock := params[0].Content[0].OfImage
+	if imgBlock == nil || imgBlock.Source.OfBase64 == nil {
+		t.Fatal("expected first block to be a base64 image block")
+	}
+	if imgBlock.Source.OfBase64.Data != "aGVsbG8=" {
+		t.Fatalf("expected image data passed through, got %q", imgBlock.Source.OfBase64.Data)
+	}
+	if string(imgBlock.Source.OfBase64.MediaType) != "image/png" {
+		t.Fatalf("expected media type image/png, got %q", imgBlock.Source.OfBase64.MediaType)
+	}
+}
+
+func TestRunnerBuildBetaMessageParams_ImageOnly(t *testing.T) {
+	runner := NewRunner(nil, nil, "", 5)
+	img := &ImageInput{Base64: "aGVsbG8=", MediaType: "image/png"}
+
+	params := runner.buildBetaMessageParams(nil, "", img)
+	if len(params) != 1 {
+		t.Fatalf("expected 1 message param, got %d", len(params))
+	}
+	// Image-only turn → exactly one block, and it is the image (no empty text block).
+	if len(params[0].Content) != 1 || params[0].Content[0].OfImage == nil {
+		t.Fatalf("expected a single image block for an image-only turn, got %d blocks", len(params[0].Content))
 	}
 }
 

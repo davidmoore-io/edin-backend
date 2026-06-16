@@ -138,7 +138,7 @@ func (r *Runner) RunWithProgress(ctx context.Context, history []llm.Message, use
 	start := time.Now()
 	r.logger.Info(fmt.Sprintf("run_start session=%s user=%s history=%d message=\"%s\"", sessionID, userID, len(history), observability.Sanitize(userMessage, 160)))
 
-	messageParams := r.buildBetaMessageParams(history, userMessage)
+	messageParams := r.buildBetaMessageParams(history, userMessage, nil)
 
 	var lastAssistant string
 	exhausted := true
@@ -265,7 +265,31 @@ func (r *Runner) RunWithProgress(ctx context.Context, history []llm.Message, use
 	return lastAssistant, nil
 }
 
-func (r *Runner) buildBetaMessageParams(history []llm.Message, userMessage string) []sdk.BetaMessageParam {
+// ImageInput is an image attached to the current user turn. Base64 is the raw
+// base64 payload (no data-URI prefix); MediaType is an HTTP image media type
+// such as "image/png". It is sent only on the turn it is attached — images are
+// not persisted into conversation history (send-per-turn).
+type ImageInput struct {
+	Base64    string
+	MediaType string
+}
+
+// imageMediaType maps an HTTP media-type string to the SDK's base64 image
+// media-type constant, defaulting to PNG (the client encodes screenshots as PNG).
+func imageMediaType(s string) sdk.BetaBase64ImageSourceMediaType {
+	switch s {
+	case "image/jpeg":
+		return sdk.BetaBase64ImageSourceMediaTypeImageJPEG
+	case "image/gif":
+		return sdk.BetaBase64ImageSourceMediaTypeImageGIF
+	case "image/webp":
+		return sdk.BetaBase64ImageSourceMediaTypeImageWebP
+	default:
+		return sdk.BetaBase64ImageSourceMediaTypeImagePNG
+	}
+}
+
+func (r *Runner) buildBetaMessageParams(history []llm.Message, userMessage string, image *ImageInput) []sdk.BetaMessageParam {
 	params := make([]sdk.BetaMessageParam, 0, len(history)+1)
 	for _, msg := range history {
 		content := sdk.NewBetaTextBlock(msg.Content)
@@ -281,7 +305,29 @@ func (r *Runner) buildBetaMessageParams(history []llm.Message, userMessage strin
 			params = append(params, sdk.NewBetaUserMessage(content))
 		}
 	}
-	params = append(params, sdk.NewBetaUserMessage(sdk.NewBetaTextBlock(userMessage)))
+
+	// Final (current) user turn. When an image is attached, send it as an image
+	// content block alongside the text (image first, then any text). An
+	// image-only turn (empty userMessage) is valid — the Messages API accepts a
+	// user message containing only an image block.
+	if image != nil && image.Base64 != "" {
+		blocks := []sdk.BetaContentBlockParamUnion{
+			{OfImage: &sdk.BetaImageBlockParam{
+				Source: sdk.BetaImageBlockParamSourceUnion{
+					OfBase64: &sdk.BetaBase64ImageSourceParam{
+						Data:      image.Base64,
+						MediaType: imageMediaType(image.MediaType),
+					},
+				},
+			}},
+		}
+		if userMessage != "" {
+			blocks = append(blocks, sdk.NewBetaTextBlock(userMessage))
+		}
+		params = append(params, sdk.NewBetaUserMessage(blocks...))
+	} else {
+		params = append(params, sdk.NewBetaUserMessage(sdk.NewBetaTextBlock(userMessage)))
+	}
 	return params
 }
 

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -216,6 +217,7 @@ func (s *Server) handleCopilotChatWebSocket(w http.ResponseWriter, r *http.Reque
 		var incoming struct {
 			Type      string       `json:"type"`
 			Content   string       `json:"content"`
+			ImageData string       `json:"image_data"`
 			SessionID string       `json:"session_id"`
 			Voice     *VoiceConfig `json:"voice"`
 		}
@@ -230,8 +232,8 @@ func (s *Server) handleCopilotChatWebSocket(w http.ResponseWriter, r *http.Reque
 
 		switch incoming.Type {
 		case "user_message":
-			if incoming.Content != "" {
-				s.handleCopilotMessage(session, incoming.Content, sessionRunner, incoming.Voice)
+			if incoming.Content != "" || incoming.ImageData != "" {
+				s.handleCopilotMessage(session, incoming.Content, incoming.ImageData, sessionRunner, incoming.Voice)
 			}
 		case "new_chat":
 			s.handleCopilotNewChat(session)
@@ -306,21 +308,31 @@ func (s *Server) handleCopilotSwitchSession(session *copilotChatSession, targetS
 }
 
 // handleCopilotMessage processes a user message for the copilot and streams the response.
-func (s *Server) handleCopilotMessage(session *copilotChatSession, content string, sessionRunner *assistant.Runner, voiceCfg *VoiceConfig) {
-	s.logger.Info(fmt.Sprintf("copilot_message fid=%s session=%s message=\"%s\"", session.user.FID, session.sessionID, truncate(content, 160)))
-
-	// Add user message to history.
-	userMsg := llm.Message{
-		Role:      "user",
-		Content:   content,
-		CreatedAt: time.Now().UTC(),
+// splitImageDataURI parses a "data:image/png;base64,XXXX" data URI into the raw
+// base64 payload and the media type (e.g. "image/png"). If s is not a data URI,
+// it is returned unchanged with a PNG default (the client encodes as PNG).
+func splitImageDataURI(s string) (b64 string, mediaType string) {
+	mediaType = "image/png"
+	if !strings.HasPrefix(s, "data:") {
+		return s, mediaType
 	}
-	session.history = append(session.history, userMsg)
+	if semi := strings.IndexByte(s, ';'); semi > len("data:") {
+		mediaType = s[len("data:"):semi]
+	}
+	if i := strings.Index(s, "base64,"); i >= 0 {
+		return s[i+len("base64,"):], mediaType
+	}
+	return s, mediaType
+}
 
-	// Persist user message to store.
-	s.llmStore.AppendMessage(session.sessionID, userMsg)
+func (s *Server) handleCopilotMessage(session *copilotChatSession, content string, imageData string, sessionRunner *assistant.Runner, voiceCfg *VoiceConfig) {
+	s.logger.Info(fmt.Sprintf("copilot_message fid=%s session=%s message=\"%s\" image=%t", session.user.FID, session.sessionID, truncate(content, 160), imageData != ""))
 
-	// Trim in-memory history for the API call.
+	// Snapshot the PRIOR conversation for the API call BEFORE adding the current
+	// message. RunWithStreaming appends the current user message itself (see
+	// buildBetaMessageParams in internal/assistant), so historyForAPI must
+	// contain only prior turns — otherwise the user's message is sent to the
+	// model twice and the assistant sees every message duplicated.
 	historyLimit := s.cfg.Copilot.MessageHistoryLimit
 	if historyLimit <= 0 {
 		historyLimit = 20
@@ -328,6 +340,30 @@ func (s *Server) handleCopilotMessage(session *copilotChatSession, content strin
 	historyForAPI := session.history
 	if len(historyForAPI) > historyLimit {
 		historyForAPI = historyForAPI[len(historyForAPI)-historyLimit:]
+	}
+
+	// Now add the user message to history and persist it (text only). An attached
+	// image is sent on this turn (below) but not stored — send-per-turn keeps
+	// base64 image data out of the persisted history. For an image-only message,
+	// store a placeholder so history has no empty user turn.
+	storedContent := content
+	if storedContent == "" && imageData != "" {
+		storedContent = "[image attached]"
+	}
+	userMsg := llm.Message{
+		Role:      "user",
+		Content:   storedContent,
+		CreatedAt: time.Now().UTC(),
+	}
+	session.history = append(session.history, userMsg)
+	s.llmStore.AppendMessage(session.sessionID, userMsg)
+
+	// Decode the optional attached image (client sends a "data:image/...;base64,"
+	// data URI). nil when no image was attached.
+	var image *assistant.ImageInput
+	if imageData != "" {
+		b64, mediaType := splitImageDataURI(imageData)
+		image = &assistant.ImageInput{Base64: b64, MediaType: mediaType}
 	}
 
 	// Send thinking indicator.
@@ -432,7 +468,7 @@ func (s *Server) handleCopilotMessage(session *copilotChatSession, content strin
 	// Run the copilot with streaming. The voice session is already connected so
 	// the ElevenLabs WS is ready the instant the first <speak> segment closes.
 	start := time.Now()
-	reply, runErr := turnRunner.RunWithStreaming(ctx, historyForAPI, content, assistant.StreamingRunnerCallbacks{
+	reply, runErr := turnRunner.RunWithStreaming(ctx, historyForAPI, content, image, assistant.StreamingRunnerCallbacks{
 		OnTextDelta: func(string) {}, // raw tokens not forwarded; speak/data callbacks handle it
 		OnSpeakChunk: func(chunk string) {
 			// speak_start signals Flutter to open a fresh bubble for this segment.

@@ -30,7 +30,7 @@ type streamingToolUse struct {
 
 // RunWithStreaming executes a conversational turn using Anthropic token streaming.
 // ADDITIVE: RunWithProgress is untouched. Same helpers are reused.
-func (r *Runner) RunWithStreaming(ctx context.Context, history []llm.Message, userMessage string, cb StreamingRunnerCallbacks) (string, error) {
+func (r *Runner) RunWithStreaming(ctx context.Context, history []llm.Message, userMessage string, image *ImageInput, cb StreamingRunnerCallbacks) (string, error) {
 	if r.client == nil {
 		return "", fmt.Errorf("anthropic client unavailable")
 	}
@@ -53,7 +53,7 @@ func (r *Runner) RunWithStreaming(ctx context.Context, history []llm.Message, us
 	start := time.Now()
 	r.logger.Info(fmt.Sprintf("stream_start session=%s user=%s history=%d", sessionID, userID, len(history)))
 
-	messageParams := r.buildBetaMessageParams(history, userMessage)
+	messageParams := r.buildBetaMessageParams(history, userMessage, image)
 	var lastAssistant string
 	exhausted := true
 
