@@ -493,8 +493,9 @@ func TestKaineChatScopeDerivation_ApprovedUser_SeesLegacyKaineTools(t *testing.T
 	}
 	sort.Strings(got)
 
-	// Legacy kaine-approved tool surface — 24 entries. Kept in sync with
-	// internal/tools/convert_test.go's legacyKaineTools.
+	// Kaine-approved tool surface. Kept in sync with
+	// internal/tools/convert_test.go's legacyKaineTools; W5.5 deliberately
+	// adds galaxy_surface_sites to the old legacy set.
 	want := []string{
 		"bgs_guide_search",
 		"describe_tool",
@@ -516,6 +517,7 @@ func TestKaineChatScopeDerivation_ApprovedUser_SeesLegacyKaineTools(t *testing.T
 		"galaxy_signals",
 		"galaxy_station",
 		"galaxy_stats",
+		"galaxy_surface_sites",
 		"galaxy_system",
 		"powerplay_guide_search",
 		"retrieve_carrier_route",

@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/edin-space/edin-backend/internal/memgraph"
+	"github.com/edin-space/edin-backend/internal/galaxystore"
 )
 
 // systemProfile queries EDIN (Elite Dangerous Intel Network) for system data.
@@ -23,8 +23,8 @@ func (e *Executor) systemProfile(ctx context.Context, args map[string]any) (any,
 	name := firstNonEmpty(systemName, systemID)
 	generatedAt := time.Now().UTC()
 
-	// Query EDIN (authoritative source)
-	if e.memgraph == nil {
+	store, err := e.requireGalaxyStore()
+	if err != nil {
 		return map[string]any{
 			"system":       name,
 			"generated_at": generatedAt.Format(time.RFC3339),
@@ -33,7 +33,7 @@ func (e *Executor) systemProfile(ctx context.Context, args map[string]any) (any,
 		}, nil
 	}
 
-	sys, err := e.memgraph.GetSystem(ctx, name)
+	full, err := store.GetSystemFull(ctx, name)
 	if err != nil {
 		return map[string]any{
 			"system":       name,
@@ -43,7 +43,7 @@ func (e *Executor) systemProfile(ctx context.Context, args map[string]any) (any,
 		}, nil
 	}
 
-	if sys == nil {
+	if full == nil || full.System == nil {
 		return map[string]any{
 			"system":       name,
 			"generated_at": generatedAt.Format(time.RFC3339),
@@ -52,8 +52,8 @@ func (e *Executor) systemProfile(ctx context.Context, args map[string]any) (any,
 		}, nil
 	}
 
-	// Build response
-	markdown := buildMemgraphSystemMarkdown(sys, generatedAt)
+	sys := full.System
+	markdown := buildSystemMarkdown(sys, generatedAt)
 
 	response := map[string]any{
 		"system":       sys.Name,
@@ -72,7 +72,7 @@ func (e *Executor) systemProfile(ctx context.Context, args map[string]any) (any,
 	return response, nil
 }
 
-func buildMemgraphSystemMarkdown(sys *memgraph.SystemData, generatedAt time.Time) string {
+func buildSystemMarkdown(sys *galaxystore.SystemData, generatedAt time.Time) string {
 	var sb strings.Builder
 
 	sb.WriteString(fmt.Sprintf("# System Profile: %s\n\n", sys.Name))

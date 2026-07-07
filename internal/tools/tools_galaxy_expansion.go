@@ -4,15 +4,17 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"math"
 	"strings"
+
+	"github.com/jackc/pgx/v5"
 )
 
 // galaxyExpansionCheck validates if a system is a valid expansion target for a power.
 // It checks distances to nearest Fortified (20 Ly range) and Stronghold (30 Ly range) systems.
 func (e *Executor) galaxyExpansionCheck(ctx context.Context, args map[string]any) (any, error) {
-	if e.memgraph == nil {
-		return nil, errors.New("memgraph not available")
+	store, err := e.requireGalaxyStore()
+	if err != nil {
+		return nil, err
 	}
 
 	systemName := strings.TrimSpace(getString(args, "system_name"))
@@ -24,116 +26,116 @@ func (e *Executor) galaxyExpansionCheck(ctx context.Context, args map[string]any
 		powerName = "Nakato Kaine"
 	}
 
-	query := `
-		MATCH (target:System {name: $system_name})
-
-		// Find nearest Fortified for this power
-		OPTIONAL MATCH (p:Power {name: $power_name})-[:CONTROLS]->(fort:System)
-		WHERE fort.powerplay_state = 'Fortified'
-		WITH target, fort,
-		     point.distance(target.location, fort.location) AS fort_dist
-		ORDER BY fort_dist
-		WITH target, collect({system: fort.name, distance: fort_dist})[0] AS nearest_fortified
-
-		// Find nearest Stronghold for this power
-		OPTIONAL MATCH (p2:Power {name: $power_name})-[:CONTROLS]->(strong:System)
-		WHERE strong.powerplay_state = 'Stronghold'
-		WITH target, nearest_fortified, strong,
-		     point.distance(target.location, strong.location) AS strong_dist
-		ORDER BY strong_dist
-		WITH target, nearest_fortified, collect({system: strong.name, distance: strong_dist})[0] AS nearest_stronghold
-
-		RETURN
-		    target.name AS system,
-		    target.powerplay_state AS current_state,
-		    target.powers AS powers_active,
-		    target.x AS x, target.y AS y, target.z AS z,
-		    nearest_fortified.system AS nearest_fortified_system,
-		    nearest_fortified.distance AS fortified_distance_ly,
-		    nearest_fortified.distance <= 20 AS fortified_in_range,
-		    nearest_stronghold.system AS nearest_stronghold_system,
-		    nearest_stronghold.distance AS stronghold_distance_ly,
-		    nearest_stronghold.distance <= 30 AS stronghold_in_range,
-		    (nearest_fortified.distance <= 20 OR nearest_stronghold.distance <= 30) AS is_valid_target
-	`
-
-	params := map[string]any{
-		"system_name": systemName,
-		"power_name":  powerName,
+	var row struct {
+		systemName     string
+		state          *string
+		powers         []string
+		x, y, z        float64
+		fortSystem     *string
+		fortDistance   *float64
+		strongSystem   *string
+		strongDistance *float64
 	}
 
-	results, err := e.memgraph.ExecuteQuery(ctx, query, params)
+	err = store.QueryRow(ctx, `
+WITH target AS (
+	SELECT c.id64, c.name, c.x::float8 AS x, c.y::float8 AS y, c.z::float8 AS z,
+	       sp.powerplay_state, COALESCE(sp.powers_present, '{}') AS powers_present
+	FROM galaxy.system_catalog c
+	LEFT JOIN galaxy.system_power sp ON sp.system_id64 = c.id64
+	WHERE lower(c.name) = lower($1)
+	LIMIT 1
+)
+SELECT
+	target.name,
+	target.powerplay_state,
+	target.powers_present,
+	target.x,
+	target.y,
+	target.z,
+	fort.name,
+	fort.distance_ly,
+	strong.name,
+	strong.distance_ly
+FROM target
+LEFT JOIN LATERAL (
+	SELECT c.name, sqrt(power(c.x::float8-target.x, 2)+power(c.y::float8-target.y, 2)+power(c.z::float8-target.z, 2)) AS distance_ly
+	FROM galaxy.system_power sp
+	JOIN galaxy.system_catalog c ON c.id64 = sp.system_id64
+	WHERE sp.power_name = $2 AND sp.powerplay_state = 'Fortified'
+	ORDER BY distance_ly
+	LIMIT 1
+) fort ON true
+LEFT JOIN LATERAL (
+	SELECT c.name, sqrt(power(c.x::float8-target.x, 2)+power(c.y::float8-target.y, 2)+power(c.z::float8-target.z, 2)) AS distance_ly
+	FROM galaxy.system_power sp
+	JOIN galaxy.system_catalog c ON c.id64 = sp.system_id64
+	WHERE sp.power_name = $2 AND sp.powerplay_state = 'Stronghold'
+	ORDER BY distance_ly
+	LIMIT 1
+) strong ON true`, systemName, powerName).Scan(
+		&row.systemName, &row.state, &row.powers, &row.x, &row.y, &row.z,
+		&row.fortSystem, &row.fortDistance, &row.strongSystem, &row.strongDistance,
+	)
 	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return map[string]any{"error": "system not found", "system_name": systemName, "power_name": powerName, "source": "postgres"}, nil
+		}
 		return nil, fmt.Errorf("failed to query expansion check: %w", err)
 	}
 
-	if len(results) == 0 {
-		return map[string]any{
-			"error":       "system not found",
-			"system_name": systemName,
-			"power_name":  powerName,
-			"source":      "memgraph",
-		}, nil
+	fortDist := 0.0
+	if row.fortDistance != nil {
+		fortDist = *row.fortDistance
 	}
+	strongDist := 0.0
+	if row.strongDistance != nil {
+		strongDist = *row.strongDistance
+	}
+	fortInRange := row.fortDistance != nil && fortDist <= 20
+	strongInRange := row.strongDistance != nil && strongDist <= 30
+	isValid := fortInRange || strongInRange
 
-	row := results[0]
-	isValidTarget, _ := row["is_valid_target"].(bool)
-	fortInRange, _ := row["fortified_in_range"].(bool)
-	strongInRange, _ := row["stronghold_in_range"].(bool)
-	fortDist, _ := row["fortified_distance_ly"].(float64)
-	strongDist, _ := row["stronghold_distance_ly"].(float64)
-
-	// Build reason string
-	var reason string
-	if isValidTarget {
+	reason := "Outside control bubble"
+	if isValid {
 		if strongInRange {
-			reason = fmt.Sprintf("Within Stronghold range: %.1f Ly from %v (max 30 Ly)", strongDist, row["nearest_stronghold_system"])
-		} else if fortInRange {
-			reason = fmt.Sprintf("Within Fortified range: %.1f Ly from %v (max 20 Ly)", fortDist, row["nearest_fortified_system"])
+			reason = fmt.Sprintf("Within Stronghold range: %.1f Ly from %v (max 30 Ly)", strongDist, derefString(row.strongSystem))
+		} else {
+			reason = fmt.Sprintf("Within Fortified range: %.1f Ly from %v (max 20 Ly)", fortDist, derefString(row.fortSystem))
 		}
 	} else {
-		reason = fmt.Sprintf("Outside control bubble - nearest Stronghold is %.1f Ly (max 30 Ly), nearest Fortified is %.1f Ly (max 20 Ly)",
-			strongDist, fortDist)
-	}
-
-	// Parse powers_active
-	var powersActive []string
-	if pw, ok := row["powers_active"].([]any); ok {
-		for _, p := range pw {
-			if pname, ok := p.(string); ok && pname != "" {
-				powersActive = append(powersActive, pname)
-			}
-		}
+		reason = fmt.Sprintf("Outside control bubble - nearest Stronghold is %.1f Ly (max 30 Ly), nearest Fortified is %.1f Ly (max 20 Ly)", strongDist, fortDist)
 	}
 
 	return map[string]any{
-		"system":          row["system"],
+		"system":          row.systemName,
 		"power":           powerName,
-		"is_valid_target": isValidTarget,
-		"current_state":   row["current_state"],
-		"powers_active":   powersActive,
-		"coordinates":     map[string]any{"x": row["x"], "y": row["y"], "z": row["z"]},
+		"is_valid_target": isValid,
+		"current_state":   derefString(row.state),
+		"powers_active":   row.powers,
+		"coordinates":     map[string]any{"x": row.x, "y": row.y, "z": row.z},
 		"nearest_fortified": map[string]any{
-			"system":       row["nearest_fortified_system"],
-			"distance_ly":  fortDist,
+			"system":       derefString(row.fortSystem),
+			"distance_ly":  round1(fortDist),
 			"within_range": fortInRange,
 			"max_range":    20,
 		},
 		"nearest_stronghold": map[string]any{
-			"system":       row["nearest_stronghold_system"],
-			"distance_ly":  strongDist,
+			"system":       derefString(row.strongSystem),
+			"distance_ly":  round1(strongDist),
 			"within_range": strongInRange,
 			"max_range":    30,
 		},
 		"reason": reason,
-		"source": "memgraph",
+		"source": "postgres",
 	}, nil
 }
 
 // galaxyNearbyPowerplay finds powerplay activity near a system for a specific power.
 func (e *Executor) galaxyNearbyPowerplay(ctx context.Context, args map[string]any) (any, error) {
-	if e.memgraph == nil {
-		return nil, errors.New("memgraph not available")
+	store, err := e.requireGalaxyStore()
+	if err != nil {
+		return nil, err
 	}
 
 	systemName := strings.TrimSpace(getString(args, "system_name"))
@@ -149,114 +151,38 @@ func (e *Executor) galaxyNearbyPowerplay(ctx context.Context, args map[string]an
 		maxDistance = 100
 	}
 
-	query := `
-		MATCH (target:System {name: $system_name})
-		WITH target
-
-		// Subquery for nearby controlled systems
-		CALL {
-		    WITH target
-		    MATCH (p:Power {name: $power_name})-[:CONTROLS]->(controlled:System)
-		    WITH target, controlled,
-		         point.distance(target.location, controlled.location) AS dist
-		    WHERE dist <= $max_distance
-		    RETURN controlled.name AS c_name, controlled.powerplay_state AS c_state, dist AS c_dist
-		    ORDER BY c_dist
-		    LIMIT 10
-		}
-		WITH target, collect({system: c_name, state: c_state, distance: c_dist}) AS nearby_controlled
-
-		// Subquery for nearby acquisition systems
-		CALL {
-		    WITH target
-		    MATCH (acq:System)
-		    WHERE acq.powerplay_state IN ['Expansion', 'Contested']
-		      AND $power_name IN acq.powers
-		    WITH target, acq,
-		         point.distance(target.location, acq.location) AS dist
-		    WHERE dist <= $max_distance
-		    RETURN acq.name AS a_name, acq.powerplay_state AS a_state, acq.powers AS a_powers, dist AS a_dist
-		    ORDER BY a_dist
-		    LIMIT 10
-		}
-		WITH target, nearby_controlled, collect({system: a_name, state: a_state, powers: a_powers, distance: a_dist}) AS nearby_acquisition
-
-		RETURN
-		    target.name AS reference_system,
-		    target.x AS x, target.y AS y, target.z AS z,
-		    target.powerplay_state AS reference_state,
-		    nearby_controlled,
-		    nearby_acquisition
-	`
-
-	params := map[string]any{
-		"system_name":  systemName,
-		"power_name":   powerName,
-		"max_distance": maxDistance,
+	var ref struct {
+		id64    int64
+		name    string
+		x, y, z float64
+		state   *string
 	}
-
-	results, err := e.memgraph.ExecuteQuery(ctx, query, params)
+	err = store.QueryRow(ctx, `
+SELECT c.id64, c.name, c.x::float8, c.y::float8, c.z::float8, sp.powerplay_state
+FROM galaxy.system_catalog c
+LEFT JOIN galaxy.system_power sp ON sp.system_id64 = c.id64
+WHERE lower(c.name) = lower($1)
+LIMIT 1`, systemName).Scan(&ref.id64, &ref.name, &ref.x, &ref.y, &ref.z, &ref.state)
 	if err != nil {
-		return nil, fmt.Errorf("failed to query nearby powerplay: %w", err)
-	}
-
-	if len(results) == 0 {
-		return map[string]any{
-			"error":       "system not found",
-			"system_name": systemName,
-			"power_name":  powerName,
-			"source":      "memgraph",
-		}, nil
-	}
-
-	row := results[0]
-
-	// Process nearby_controlled
-	var nearbyControlled []map[string]any
-	if nc, ok := row["nearby_controlled"].([]any); ok {
-		for _, item := range nc {
-			if m, ok := item.(map[string]any); ok {
-				if m["system"] != nil {
-					nearbyControlled = append(nearbyControlled, map[string]any{
-						"system":      m["system"],
-						"state":       m["state"],
-						"distance_ly": math.Round(m["distance"].(float64)*10) / 10,
-					})
-				}
-			}
+		if errors.Is(err, pgx.ErrNoRows) {
+			return map[string]any{"error": "system not found", "system_name": systemName, "power_name": powerName, "source": "postgres"}, nil
 		}
+		return nil, fmt.Errorf("failed to query nearby powerplay reference: %w", err)
 	}
 
-	// Process nearby_acquisition
-	var nearbyAcquisition []map[string]any
-	if na, ok := row["nearby_acquisition"].([]any); ok {
-		for _, item := range na {
-			if m, ok := item.(map[string]any); ok {
-				if m["system"] != nil {
-					entry := map[string]any{
-						"system":      m["system"],
-						"state":       m["state"],
-						"distance_ly": math.Round(m["distance"].(float64)*10) / 10,
-					}
-					if powers, ok := m["powers"].([]any); ok {
-						var powerList []string
-						for _, p := range powers {
-							if ps, ok := p.(string); ok {
-								powerList = append(powerList, ps)
-							}
-						}
-						entry["powers"] = powerList
-					}
-					nearbyAcquisition = append(nearbyAcquisition, entry)
-				}
-			}
-		}
+	nearbyControlled, err := queryNearbyPowerSystems(ctx, store, ref.id64, ref.x, ref.y, ref.z, powerName, maxDistance, []string{"Fortified", "Stronghold"}, false, 10)
+	if err != nil {
+		return nil, err
+	}
+	nearbyAcquisition, err := queryNearbyPowerSystems(ctx, store, ref.id64, ref.x, ref.y, ref.z, powerName, maxDistance, []string{"Expansion", "Contested"}, true, 10)
+	if err != nil {
+		return nil, err
 	}
 
 	return map[string]any{
-		"reference_system": row["reference_system"],
-		"reference_state":  row["reference_state"],
-		"coordinates":      map[string]any{"x": row["x"], "y": row["y"], "z": row["z"]},
+		"reference_system": ref.name,
+		"reference_state":  derefString(ref.state),
+		"coordinates":      map[string]any{"x": ref.x, "y": ref.y, "z": ref.z},
 		"power":            powerName,
 		"max_distance":     maxDistance,
 		"nearby_controlled": map[string]any{
@@ -267,14 +193,15 @@ func (e *Executor) galaxyNearbyPowerplay(ctx context.Context, args map[string]an
 			"count":   len(nearbyAcquisition),
 			"systems": nearbyAcquisition,
 		},
-		"source": "memgraph",
+		"source": "postgres",
 	}, nil
 }
 
 // galaxyExpansionFrontier finds systems on the edge of a power's control bubble around a specific control system.
 func (e *Executor) galaxyExpansionFrontier(ctx context.Context, args map[string]any) (any, error) {
-	if e.memgraph == nil {
-		return nil, errors.New("memgraph not available")
+	store, err := e.requireGalaxyStore()
+	if err != nil {
+		return nil, err
 	}
 
 	controlSystem := strings.TrimSpace(getString(args, "control_system"))
@@ -290,129 +217,155 @@ func (e *Executor) galaxyExpansionFrontier(ctx context.Context, args map[string]
 		showType = "both"
 	}
 
-	// Query for systems at the edge of the control bubble
-	query := `
-		MATCH (ctrl:System {name: $control_system})
-		WHERE ctrl.powerplay_state IN ['Fortified', 'Stronghold']
-		WITH ctrl,
-		     CASE WHEN ctrl.powerplay_state = 'Stronghold' THEN 30 ELSE 20 END AS max_range,
-		     ctrl.controlling_power AS power_name
-
-		// Find systems at the edge of this control system's bubble
-		MATCH (s:System)
-		WHERE s.name <> ctrl.name
-		WITH ctrl, max_range, power_name, s,
-		     point.distance(s.location, ctrl.location) AS dist
-		WHERE dist >= max_range - 5 AND dist <= max_range + 10  // Edge zone: 5Ly inside to 10Ly outside
-
-		// Check if controlled by any power
-		OPTIONAL MATCH (p:Power)-[r:CONTROLS]->(s)
-		WITH ctrl, max_range, power_name, s, dist, p IS NOT NULL AS is_controlled
-		WHERE NOT is_controlled
-
-		RETURN
-		    s.name AS system,
-		    s.powerplay_state AS state,
-		    s.powers AS powers,
-		    ctrl.name AS control_system,
-		    ctrl.powerplay_state AS control_type,
-		    max_range AS range_limit,
-		    dist AS distance_ly,
-		    dist <= max_range AS in_range
-		ORDER BY dist
-		LIMIT 30
-	`
-
-	params := map[string]any{
-		"control_system": controlSystem,
-		"power_name":     powerName,
-	}
-
-	results, err := e.memgraph.ExecuteQuery(ctx, query, params)
+	rows, err := store.Query(ctx, `
+WITH ctrl AS (
+	SELECT c.id64, c.name, c.x::float8 AS x, c.y::float8 AS y, c.z::float8 AS z,
+	       sp.powerplay_state,
+	       CASE WHEN sp.powerplay_state = 'Stronghold' THEN 30.0 ELSE 20.0 END AS max_range
+	FROM galaxy.system_catalog c
+	JOIN galaxy.system_power sp ON sp.system_id64 = c.id64
+	WHERE lower(c.name) = lower($1)
+	  AND sp.power_name = $2
+	  AND sp.powerplay_state IN ('Fortified','Stronghold')
+	LIMIT 1
+)
+SELECT
+	c.name AS system,
+	sp.powerplay_state AS state,
+	COALESCE(sp.powers_present, '{}') AS powers,
+	ctrl.name AS control_system,
+	ctrl.powerplay_state AS control_type,
+	ctrl.max_range::int AS range_limit,
+	sqrt(power(c.x::float8-ctrl.x, 2)+power(c.y::float8-ctrl.y, 2)+power(c.z::float8-ctrl.z, 2)) AS distance_ly,
+	sqrt(power(c.x::float8-ctrl.x, 2)+power(c.y::float8-ctrl.y, 2)+power(c.z::float8-ctrl.z, 2)) <= ctrl.max_range AS in_range
+FROM ctrl
+JOIN galaxy.system_catalog c ON c.id64 <> ctrl.id64
+LEFT JOIN galaxy.system_power sp ON sp.system_id64 = c.id64
+WHERE (sp.powerplay_state IS NULL OR sp.powerplay_state NOT IN ('Fortified','Stronghold','Exploited'))
+  AND c.x BETWEEN ctrl.x - (ctrl.max_range + 10) AND ctrl.x + (ctrl.max_range + 10)
+  AND c.y BETWEEN ctrl.y - (ctrl.max_range + 10) AND ctrl.y + (ctrl.max_range + 10)
+  AND c.z BETWEEN ctrl.z - (ctrl.max_range + 10) AND ctrl.z + (ctrl.max_range + 10)
+  AND sqrt(power(c.x::float8-ctrl.x, 2)+power(c.y::float8-ctrl.y, 2)+power(c.z::float8-ctrl.z, 2)) BETWEEN ctrl.max_range - 5 AND ctrl.max_range + 10
+ORDER BY distance_ly
+LIMIT 30`, controlSystem, powerName)
 	if err != nil {
 		return nil, fmt.Errorf("failed to query expansion frontier: %w", err)
 	}
-
+	results, err := scanGalaxyRows(ctx, rows)
+	if err != nil {
+		return nil, err
+	}
 	if len(results) == 0 {
-		return map[string]any{
-			"error":          "no frontier systems found or control system not found",
-			"control_system": controlSystem,
-			"power_name":     powerName,
-			"source":         "memgraph",
-		}, nil
+		return map[string]any{"error": "no frontier systems found or control system not found", "control_system": controlSystem, "power_name": powerName, "source": "postgres"}, nil
 	}
 
-	// Separate into inside (valid targets) and outside (future targets)
 	var insideFrontier, outsideFrontier []map[string]any
-
 	for _, row := range results {
-		inRange, _ := row["in_range"].(bool)
-		dist, _ := row["distance_ly"].(float64)
-		rangeLimit, _ := row["range_limit"].(int64)
-
+		dist := toFloat(row["distance_ly"])
+		rangeLimit := int(toFloat(row["range_limit"]))
 		entry := map[string]any{
 			"system":      row["system"],
 			"state":       row["state"],
-			"distance_ly": math.Round(dist*10) / 10,
+			"distance_ly": round1(dist),
 		}
-
-		// Add powers if present
-		if powers, ok := row["powers"].([]any); ok {
-			var powerList []string
-			for _, p := range powers {
-				if ps, ok := p.(string); ok && ps != "" {
-					powerList = append(powerList, ps)
-				}
-			}
-			if len(powerList) > 0 {
-				entry["powers"] = powerList
-			}
+		if powers, ok := row["powers"].([]string); ok && len(powers) > 0 {
+			entry["powers"] = powers
 		}
-
-		if inRange {
+		if inRange, _ := row["in_range"].(bool); inRange {
 			entry["status"] = fmt.Sprintf("VALID - %.1f Ly inside range", float64(rangeLimit)-dist)
 			insideFrontier = append(insideFrontier, entry)
 		} else {
 			entry["status"] = fmt.Sprintf("OUTSIDE - %.1f Ly beyond range", dist-float64(rangeLimit))
-			entry["gap_ly"] = math.Round((dist-float64(rangeLimit))*10) / 10
+			entry["gap_ly"] = round1(dist - float64(rangeLimit))
 			outsideFrontier = append(outsideFrontier, entry)
 		}
 	}
 
-	// Filter based on showType
 	result := map[string]any{
 		"control_system": controlSystem,
 		"control_type":   results[0]["control_type"],
 		"range_limit":    results[0]["range_limit"],
 		"power":          powerName,
-		"source":         "memgraph",
+		"source":         "postgres",
 	}
-
 	switch showType {
 	case "inside":
-		result["frontier_inside"] = map[string]any{
-			"count":       len(insideFrontier),
-			"description": "Valid expansion targets just inside the control bubble",
-			"systems":     insideFrontier,
-		}
+		result["frontier_inside"] = map[string]any{"count": len(insideFrontier), "description": "Valid expansion targets just inside the control bubble", "systems": insideFrontier}
 	case "outside":
-		result["frontier_outside"] = map[string]any{
-			"count":       len(outsideFrontier),
-			"description": "Potential future targets just outside the control bubble",
-			"systems":     outsideFrontier,
-		}
-	default: // "both"
-		result["frontier_inside"] = map[string]any{
-			"count":       len(insideFrontier),
-			"description": "Valid expansion targets just inside the control bubble",
-			"systems":     insideFrontier,
-		}
-		result["frontier_outside"] = map[string]any{
-			"count":       len(outsideFrontier),
-			"description": "Potential future targets just outside the control bubble",
-			"systems":     outsideFrontier,
-		}
+		result["frontier_outside"] = map[string]any{"count": len(outsideFrontier), "description": "Potential future targets just outside the control bubble", "systems": outsideFrontier}
+	default:
+		result["frontier_inside"] = map[string]any{"count": len(insideFrontier), "description": "Valid expansion targets just inside the control bubble", "systems": insideFrontier}
+		result["frontier_outside"] = map[string]any{"count": len(outsideFrontier), "description": "Potential future targets just outside the control bubble", "systems": outsideFrontier}
 	}
-
 	return result, nil
+}
+
+func queryNearbyPowerSystems(ctx context.Context, store interface {
+	Query(context.Context, string, ...any) (pgx.Rows, error)
+}, refID64 int64, x, y, z float64, powerName string, maxDistance float64, states []string, matchPowersArray bool, limit int) ([]map[string]any, error) {
+	powerFilter := "sp.power_name = @power_name"
+	if matchPowersArray {
+		powerFilter = "@power_name = ANY(COALESCE(sp.powers_present, '{}'))"
+	}
+	rows, err := store.Query(ctx, `
+SELECT
+	c.name AS system,
+	sp.powerplay_state AS state,
+	COALESCE(sp.powers_present, '{}') AS powers,
+	sqrt(power(c.x::float8-@x, 2)+power(c.y::float8-@y, 2)+power(c.z::float8-@z, 2)) AS distance_ly
+FROM galaxy.system_power sp
+JOIN galaxy.system_catalog c ON c.id64 = sp.system_id64
+WHERE c.id64 <> @ref_id64
+  AND sp.powerplay_state = ANY(@states)
+  AND `+powerFilter+`
+  AND c.x BETWEEN @x - @max_distance AND @x + @max_distance
+  AND c.y BETWEEN @y - @max_distance AND @y + @max_distance
+  AND c.z BETWEEN @z - @max_distance AND @z + @max_distance
+  AND sqrt(power(c.x::float8-@x, 2)+power(c.y::float8-@y, 2)+power(c.z::float8-@z, 2)) <= @max_distance
+ORDER BY distance_ly
+LIMIT @limit`, pgx.NamedArgs{
+		"ref_id64":     refID64,
+		"x":            x,
+		"y":            y,
+		"z":            z,
+		"power_name":   powerName,
+		"states":       states,
+		"max_distance": maxDistance,
+		"limit":        limit,
+	})
+	if err != nil {
+		return nil, err
+	}
+	results, err := scanGalaxyRows(ctx, rows)
+	if err != nil {
+		return nil, err
+	}
+	for _, row := range results {
+		row["distance_ly"] = round1(toFloat(row["distance_ly"]))
+	}
+	return results, nil
+}
+
+func derefString(s *string) string {
+	if s == nil {
+		return ""
+	}
+	return *s
+}
+
+func toFloat(v any) float64 {
+	switch n := v.(type) {
+	case float64:
+		return n
+	case float32:
+		return float64(n)
+	case int:
+		return float64(n)
+	case int32:
+		return float64(n)
+	case int64:
+		return float64(n)
+	default:
+		return 0
+	}
 }

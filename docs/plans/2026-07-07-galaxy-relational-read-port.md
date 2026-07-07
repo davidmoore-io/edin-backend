@@ -104,11 +104,34 @@ rule.
 - Tests: `GOWORK=off go test ./internal/kaine ./internal/galaxystore ./internal/tools ./internal/httpapi ./cmd/control-api`
 - Tests: `GOWORK=off go test ./...`
 
+## W5.5 Evidence
+
+- Rewired the remaining `galaxy_*` MCP read tools that were still calling
+  Memgraph: `galaxy_system`, `galaxy_station`, `galaxy_fleet_carrier`,
+  `galaxy_bodies`, `galaxy_signals`, `galaxy_market`,
+  `galaxy_expansion_check`, `galaxy_nearby_powerplay`,
+  `galaxy_expansion_frontier`, `galaxy_faction`, `galaxy_stats`, and
+  `galaxy_schema`.
+- Added the new `galaxy_surface_sites` MCP tool for radius/kind/name searches
+  over `galaxy.surface_site` joined to `galaxy.system_catalog`, proving the W4
+  corrective entity is queryable for Ancient/Biological/Geological/Visitor
+  Beacon/Crash Site style questions.
+- Removed W5.5-owned Memgraph fallbacks rather than dual-reading. The remaining
+  tools package graph dependency is the explicit W5.6 holdback:
+  `galaxy_query`/Cypher plus executor wiring for the still-present client.
+- Ported `system_profile` to `galaxystore` as a W5.5 cleanup because it is a
+  galaxy-read user surface even though it is not named `galaxy_*`.
+- Intentional diagnostic value change continues: relational paths report
+  `source: postgres`.
+- Tests: `GOWORK=off GALAXY_TEST_DSN=postgres://eddn_admin:eddn-local-dev@localhost:5433/eddn_raw go test -count=1 -run TestGalaxyRelationalToolsSmoke -v ./internal/tools`
+- Tests: `GOWORK=off go test ./internal/galaxystore ./internal/tools ./internal/httpapi ./cmd/control-api`
+- Tests: `GOWORK=off go test ./...`
+
 ## Remaining W5 Order
 
 1. Record graph-era responses for the W5.7 contract harness before each cutover.
 2. Port powerplay APIs/tools onto `galaxystore`. Done for W5.2 current-state surfaces.
 3. Port Kaine system intel and watcher endpoints. Done for W5.3.
-4. Port mining/expansion tools and surface-site radius query. Done for W5.4.
-5. Port remaining MCP galaxy tools.
+4. Port mining/expansion tools. Done for W5.4.
+5. Port remaining MCP galaxy tools and surface-site radius query. Done for W5.5.
 6. Implement `galaxy_query` with the parser-enforced SQL sandbox.

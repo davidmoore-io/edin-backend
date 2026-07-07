@@ -35,6 +35,7 @@ var toolScopes = map[ToolName]authz.Scope{
 	ToolGalaxyFleetCarrier:      authz.ScopeGalaxyRead,
 	ToolGalaxyBodies:            authz.ScopeGalaxyRead,
 	ToolGalaxySignals:           authz.ScopeGalaxyRead,
+	ToolGalaxySurfaceSites:      authz.ScopeGalaxyRead,
 	ToolGalaxyPower:             authz.ScopeGalaxyRead,
 	ToolGalaxyFaction:           authz.ScopeGalaxyRead,
 	ToolGalaxyStats:             authz.ScopeGalaxyRead,

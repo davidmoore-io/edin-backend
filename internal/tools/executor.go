@@ -34,7 +34,7 @@ const (
 	ToolRetrieveRoute ToolName = "retrieve_carrier_route"
 	ToolSystemProfile ToolName = "system_profile"
 
-	// Galaxy database tools (Memgraph)
+	// Galaxy database tools.
 	ToolGalaxySystem            ToolName = "galaxy_system"
 	ToolGalaxyStation           ToolName = "galaxy_station"
 	ToolGalaxyFleetCarrier      ToolName = "galaxy_fleet_carrier"
@@ -54,6 +54,7 @@ const (
 	ToolGalaxyLTDBuyers         ToolName = "galaxy_ltd_buyers"
 	ToolGalaxyExpansionTargets  ToolName = "galaxy_expansion_targets"
 	ToolGalaxySchema            ToolName = "galaxy_schema"
+	ToolGalaxySurfaceSites      ToolName = "galaxy_surface_sites"
 
 	// Background Simulation reference material.
 	ToolBgsGuideSearch ToolName = "bgs_guide_search"
@@ -223,6 +224,8 @@ func (e *Executor) Invoke(ctx context.Context, name string, args map[string]any)
 		return e.galaxyBodies(ctx, args)
 	case ToolGalaxySignals:
 		return e.galaxySignals(ctx, args)
+	case ToolGalaxySurfaceSites:
+		return e.galaxySurfaceSites(ctx, args)
 
 	// Galaxy powerplay tools
 	case ToolGalaxyPower:

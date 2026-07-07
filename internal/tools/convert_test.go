@@ -227,9 +227,9 @@ func TestBetaToolDefinitionsForScopes_KaineFiltersCorrectly(t *testing.T) {
 // truth for the parity test below so that any drift in scope-driven filtering
 // fails the test with a byte-for-byte diff.
 //
-// These 24 strings match the MCP tool Name field (what reaches the model), not
-// Go identifiers. See the "kaine-approved" group in authz/groups.go for the
-// scope set that must reproduce this list.
+// These strings match the MCP tool Name field (what reaches the model), not
+// Go identifiers. W5.5 deliberately adds galaxy_surface_sites to the galaxy_read
+// set after the legacy snapshot.
 var legacyKaineTools = []string{
 	"bgs_guide_search",
 	"describe_tool",
@@ -251,6 +251,7 @@ var legacyKaineTools = []string{
 	"galaxy_signals",
 	"galaxy_station",
 	"galaxy_stats",
+	"galaxy_surface_sites",
 	"galaxy_system",
 	"powerplay_guide_search",
 	"retrieve_carrier_route",
@@ -259,8 +260,9 @@ var legacyKaineTools = []string{
 }
 
 // legacyCopilotTools pins the exact set of tool names that the deleted
-// copilotAllowedTools map used to allow. 23 entries — copilot is kaine minus
-// the mining-intel tools (plasmium, LTD, schema) plus the commander tools.
+// copilotAllowedTools map used to allow, plus the W5.5 galaxy_surface_sites
+// expansion. Copilot is kaine minus the mining-intel tools (plasmium, LTD,
+// schema) plus the commander tools.
 var legacyCopilotTools = []string{
 	"bgs_guide_search",
 	"commander_events",
@@ -281,6 +283,7 @@ var legacyCopilotTools = []string{
 	"galaxy_signals",
 	"galaxy_station",
 	"galaxy_stats",
+	"galaxy_surface_sites",
 	"galaxy_system",
 	"powerplay_guide_search",
 	"retrieve_carrier_route",

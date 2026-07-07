@@ -4,7 +4,7 @@ package tools
 // This guidance was formerly embedded in the system prompt and is now served
 // on demand via the describe_tool meta-tool, saving ~4K tokens per turn.
 var ToolGuidance = map[ToolName]string{
-	ToolGalaxyMarket: `galaxy_market — Commodity market queries from Memgraph.
+	ToolGalaxyMarket: `galaxy_market — Commodity market queries from the relational galaxy database.
 
 Usage modes:
 1. Station inventory: system_name + station_name → all commodities at that station
@@ -141,6 +141,19 @@ Parameters:
 - power_name (string): power name (default: "Nakato Kaine")
 - show (string): "inside", "outside", or "both" (default: "both")`,
 
+	ToolGalaxySurfaceSites: `galaxy_surface_sites — Surface-site radius search from the relational galaxy database.
+
+Use for finding reported landable-surface sites near a reference system: Ancient Ruins, Biological Sites, geysers/fumaroles, visitor beacons, crash sites, and similar entries from EDDN ApproachSettlement data.
+
+Parameters:
+- system_name (string, required): reference system
+- radius (number): search radius in Ly (default 100, max 500)
+- site_kind (string): optional coarse kind filter, e.g. Ancient, Biological, Geological, VisitorBeacon, CrashSite
+- name (string): optional reported-name filter, e.g. Ancient Ruins, Biological Site, Ice Geysers
+- limit (number): max results (default 50, max 200)
+
+Use this when a user asks for "systems within 100 Ly of X with Ancient Ruins / Biological Sites". Results include system, body, site name/kind, latitude/longitude, first_seen, last_seen, and distance_ly.`,
+
 	ToolGalaxyPlasmiumBuyers: `galaxy_plasmium_buyers — Mining intel for Platinum/Osmium buyers.
 
 No parameters needed. Returns Boom-state stations near Kaine mining maps that buy Platinum/Osmium.
@@ -180,8 +193,7 @@ Common patterns:
 - Mining / exploration:        include=["system", "bodies", "signals"]
 - Full intel:                  omit include (or use system_profile tool instead)
 
-For multi-system distance calculations, prefer galaxy_query with a Cypher distance formula
-over calling galaxy_system 6 times.`,
+For multi-system distance calculations, prefer a dedicated galaxy tool (for example galaxy_surface_sites, galaxy_market, or galaxy_nearby_powerplay) when one fits. Use galaxy_query only for ad-hoc cases not covered by a dedicated tool.`,
 
 	ToolBgsGuideSearch: `bgs_guide_search — Keyword search over the Elite Dangerous Background Simulation (BGS) reference guide. Returns ~2000-token text chunks around match clusters.
 
