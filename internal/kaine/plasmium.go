@@ -6,10 +6,9 @@ import (
 	"fmt"
 	"math"
 	"sort"
-	"strings"
 	"time"
 
-	"github.com/neo4j/neo4j-go-driver/v5/neo4j"
+	"github.com/jackc/pgx/v5"
 )
 
 // ============================================================================
@@ -19,7 +18,7 @@ import (
 
 // PlasmiumBuyer represents a station that can buy Platinum/Osmium near a mining map.
 type PlasmiumBuyer struct {
-	// Station info (from Memgraph)
+	// Station info (from galaxy.*)
 	SystemName   string   `json:"system_name"`
 	StationName  string   `json:"station_name"`
 	Faction      string   `json:"faction"`
@@ -32,23 +31,23 @@ type PlasmiumBuyer struct {
 	// "system_boom" = another faction in the system is in Boom (station may also benefit, needs in-game check)
 	BoomMatch string `json:"boom_match"`
 
-	// Powerplay info (from Memgraph)
+	// Powerplay info (from galaxy.*)
 	PowerplayState  string   `json:"powerplay_state"`             // Unoccupied, Expansion, Contested (null shown as Unoccupied)
 	DistanceToKaine float64  `json:"distance_to_kaine,omitempty"` // Distance to nearest Kaine Fortified/Stronghold
 	KaineProgress   *float64 `json:"kaine_progress,omitempty"`    // Nakato Kaine's acquisition progress (0-1) for this system
 
-	// Landing pads (from Memgraph)
+	// Landing pads (from galaxy.*)
 	LargePads  int    `json:"large_pads,omitempty"`
 	MediumPads int    `json:"medium_pads,omitempty"`
 	SmallPads  int    `json:"small_pads,omitempty"`
 	LargestPad string `json:"largest_pad"` // "L", "M", "S", or ""
 
-	// Coordinates (from Memgraph)
+	// Coordinates (from galaxy.*)
 	X float64 `json:"x,omitempty"`
 	Y float64 `json:"y,omitempty"`
 	Z float64 `json:"z,omitempty"`
 
-	// Market info (from Memgraph)
+	// Market info (from galaxy.*)
 	PlatinumDemand int64 `json:"platinum_demand,omitempty"`
 	PlatinumPrice  int64 `json:"platinum_price,omitempty"`
 	OsmiumDemand   int64 `json:"osmium_demand,omitempty"`
@@ -67,13 +66,13 @@ type PlasmiumBuyer struct {
 // PlasmiumMapResult represents a mining map with its nearby buyers.
 type PlasmiumMapResult struct {
 	// Map info (from TimescaleDB)
-	SystemName   string   `json:"system_name"`
-	Body         string   `json:"body"`
-	RingType     string   `json:"ring_type"`
-	ReserveLevel string   `json:"reserve_level"`
-	PowerState   string   `json:"power_state"`
-	RESNotes     string   `json:"res_notes,omitempty"`
-	Hotspots     []string `json:"hotspots,omitempty"`
+	SystemName    string   `json:"system_name"`
+	Body          string   `json:"body"`
+	RingType      string   `json:"ring_type"`
+	ReserveLevel  string   `json:"reserve_level"`
+	PowerState    string   `json:"power_state"`
+	RESNotes      string   `json:"res_notes,omitempty"`
+	Hotspots      []string `json:"hotspots,omitempty"`
 	Map1          string   `json:"map_1,omitempty"`
 	Map1Title     string   `json:"map_1_title,omitempty"`
 	Map1Commodity []string `json:"map_1_commodity,omitempty"` // Commodities this map produces
@@ -84,13 +83,13 @@ type PlasmiumMapResult struct {
 	Map3Title     string   `json:"map_3_title,omitempty"`
 	Map3Commodity []string `json:"map_3_commodity,omitempty"` // Commodities this map produces
 
-	// Map coordinates (from Memgraph)
+	// Map coordinates (from galaxy.*)
 	X float64 `json:"x"`
 	Y float64 `json:"y"`
 	Z float64 `json:"z"`
 
-	// Live power state (from Memgraph) - the map system IS the source
-	LivePowerState string `json:"live_power_state"` // Fortified or Stronghold (from Memgraph, live)
+	// Live power state (from galaxy.*) - the map system IS the source
+	LivePowerState string `json:"live_power_state"` // Fortified or Stronghold (live)
 	SearchRadiusLY int    `json:"search_radius_ly"` // 20 for Fortified, 30 for Stronghold
 
 	// Nearby buyers sorted by score
@@ -105,26 +104,28 @@ type PlasmiumBuyersResponse struct {
 	TotalBuyers int                 `json:"total_buyers"`
 }
 
-// MemgraphClient is the interface needed for Memgraph queries.
-// This allows for testing with mocks.
-type MemgraphClient interface {
-	NewSession(ctx context.Context, config neo4j.SessionConfig) neo4j.SessionWithContext
+// GalaxyQuerier is the relational galaxy read interface needed by Kaine mining.
+// It is deliberately SQL-shaped because the Kaine package owns the response
+// structs and scoring rules while galaxy.* owns the live universe snapshot.
+type GalaxyQuerier interface {
+	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
 }
 
 // mapSearchParams holds the search parameters for a map.
 type mapSearchParams struct {
 	Map            *MiningMap
 	X, Y, Z        float64
-	LivePowerState string // Fortified or Stronghold (from Memgraph)
+	LivePowerState string // Fortified or Stronghold (from galaxy.*)
 	SearchRadius   int    // 20 for Fortified, 30 for Stronghold
 }
 
 // anchorCoverage represents an anchor system that covers a map.
 type anchorCoverage struct {
-	Name        string
-	X, Y, Z     float64
-	Radius      int    // 20 for Fortified, 30 for Stronghold
-	PowerState  string // "Fortified" or "Stronghold"
+	Name       string
+	X, Y, Z    float64
+	Radius     int    // 20 for Fortified, 30 for Stronghold
+	PowerState string // "Fortified" or "Stronghold"
 }
 
 // FindPlasmiumBuyers finds stations in Boom state that buy Platinum/Osmium near Kaine mining maps.
@@ -133,7 +134,7 @@ type anchorCoverage struct {
 // The map system IS the source (same model as LTD). No anchor intermediary.
 // Maps must be Fortified (20 LY radius) or Stronghold (30 LY radius).
 // Buyer stations must be in acquisition target systems within that radius.
-func (s *Store) FindPlasmiumBuyers(ctx context.Context, memgraph MemgraphClient, progress ProgressFunc) (*PlasmiumBuyersResponse, error) {
+func (s *Store) FindPlasmiumBuyers(ctx context.Context, galaxy GalaxyQuerier, progress ProgressFunc) (*PlasmiumBuyersResponse, error) {
 	if progress == nil {
 		progress = func(int, int, string) {}
 	}
@@ -154,25 +155,25 @@ func (s *Store) FindPlasmiumBuyers(ctx context.Context, memgraph MemgraphClient,
 		}, nil
 	}
 
-	// Step 2: Get live power state and coordinates for each map system from Memgraph
-	progress(2, 5, fmt.Sprintf("Querying Memgraph for %d map system coordinates and power states", len(maps)))
+	// Step 2: Get live power state and coordinates for each map system from galaxy.*
+	progress(2, 5, fmt.Sprintf("Querying galaxy store for %d map system coordinates and power states", len(maps)))
 	systemNames := make([]string, len(maps))
 	for i, m := range maps {
 		systemNames[i] = m.SystemName
 	}
 
-	coords, err := getSystemCoords(ctx, memgraph, systemNames)
+	coords, err := getSystemCoords(ctx, galaxy, systemNames)
 	if err != nil {
 		return nil, fmt.Errorf("get system coords: %w", err)
 	}
 
-	powerStates, err := getPowerStates(ctx, memgraph, systemNames)
+	powerStates, err := getPowerStates(ctx, galaxy, systemNames)
 	if err != nil {
 		return nil, fmt.Errorf("get power states: %w", err)
 	}
 
 	// Get Kaine systems for DistanceToKaine display field on buyers
-	kaineSystems, err := getKaineFortifiedSystems(ctx, memgraph)
+	kaineSystems, err := getKaineFortifiedSystems(ctx, galaxy)
 	if err != nil {
 		return nil, fmt.Errorf("get kaine systems: %w", err)
 	}
@@ -219,7 +220,7 @@ func (s *Store) FindPlasmiumBuyers(ctx context.Context, memgraph MemgraphClient,
 
 	// Step 4: Get ALL Boom stations globally, then filter by distance to each map
 	progress(4, 5, fmt.Sprintf("Scanning Boom stations within range of %d qualifying maps", len(searchParams)))
-	allBoomStations, err := getAllBoomStations(ctx, memgraph)
+	allBoomStations, err := getAllBoomStations(ctx, galaxy)
 	if err != nil {
 		return nil, fmt.Errorf("get boom stations: %w", err)
 	}
@@ -348,7 +349,7 @@ func (s *Store) FindPlasmiumBuyers(ctx context.Context, memgraph MemgraphClient,
 
 // getPlasmiumMaps retrieves mining maps that produce Platinum or Osmium.
 // Uses commodity data extracted from map documents (map_1_commodity/map_2_commodity arrays).
-// Note: power_state filtering (Fortified/Stronghold) is done in FindPlasmiumBuyers after Memgraph lookup.
+// Note: power_state filtering (Fortified/Stronghold) is done in FindPlasmiumBuyers after galaxy lookup.
 func (s *Store) getPlasmiumMaps(ctx context.Context) ([]MiningMap, error) {
 	query := `
 		SELECT
@@ -396,87 +397,74 @@ type systemCoord struct {
 	X, Y, Z float64
 }
 
-// getSystemCoords fetches coordinates for systems from Memgraph.
-func getSystemCoords(ctx context.Context, client MemgraphClient, systemNames []string) (map[string]systemCoord, error) {
-	session := client.NewSession(ctx, neo4j.SessionConfig{AccessMode: neo4j.AccessModeRead})
-	defer session.Close(ctx)
-
+// getSystemCoords fetches coordinates for systems from galaxy.system_catalog.
+func getSystemCoords(ctx context.Context, galaxy GalaxyQuerier, systemNames []string) (map[string]systemCoord, error) {
+	if len(systemNames) == 0 {
+		return map[string]systemCoord{}, nil
+	}
 	query := `
-		UNWIND $names AS name
-		MATCH (s:System {name: name})
-		WHERE s.location IS NOT NULL
-		RETURN s.name AS name, s.location.x AS x, s.location.y AS y, s.location.z AS z
+		SELECT name, x::float8, y::float8, z::float8
+		FROM galaxy.system_catalog
+		WHERE name = ANY($1)
+		  AND x IS NOT NULL
 	`
 
-	result, err := session.Run(ctx, query, map[string]any{"names": systemNames})
+	rows, err := galaxy.Query(ctx, query, systemNames)
 	if err != nil {
 		return nil, fmt.Errorf("query system coords: %w", err)
 	}
+	defer rows.Close()
 
 	coords := make(map[string]systemCoord)
-	for result.Next(ctx) {
-		record := result.Record()
-		name, _ := record.Get("name")
-		x, _ := record.Get("x")
-		y, _ := record.Get("y")
-		z, _ := record.Get("z")
-
-		if nameStr, ok := name.(string); ok {
-			coords[nameStr] = systemCoord{
-				X: toFloat64(x),
-				Y: toFloat64(y),
-				Z: toFloat64(z),
-			}
+	for rows.Next() {
+		var name string
+		var coord systemCoord
+		if err := rows.Scan(&name, &coord.X, &coord.Y, &coord.Z); err != nil {
+			return nil, err
 		}
+		coords[name] = coord
 	}
 
-	return coords, result.Err()
+	return coords, rows.Err()
 }
 
-// getPowerStates fetches powerplay states for systems from Memgraph.
-func getPowerStates(ctx context.Context, client MemgraphClient, systemNames []string) (map[string]string, error) {
+// getPowerStates fetches powerplay states for systems from galaxy.system_power.
+func getPowerStates(ctx context.Context, galaxy GalaxyQuerier, systemNames []string) (map[string]string, error) {
 	if len(systemNames) == 0 {
 		return map[string]string{}, nil
 	}
 
-	session := client.NewSession(ctx, neo4j.SessionConfig{AccessMode: neo4j.AccessModeRead})
-	defer session.Close(ctx)
-
 	query := `
-		UNWIND $names AS name
-		MATCH (s:System {name: name})
-		RETURN s.name AS name, s.powerplay_state AS powerplay_state
+		SELECT c.name, COALESCE(sp.powerplay_state, '')
+		FROM galaxy.system_catalog c
+		LEFT JOIN galaxy.system_power sp ON sp.system_id64 = c.id64
+		WHERE c.name = ANY($1)
 	`
 
-	result, err := session.Run(ctx, query, map[string]any{"names": systemNames})
+	rows, err := galaxy.Query(ctx, query, systemNames)
 	if err != nil {
 		return nil, fmt.Errorf("query power states: %w", err)
 	}
+	defer rows.Close()
 
 	states := make(map[string]string)
-	for result.Next(ctx) {
-		record := result.Record()
-		name, _ := record.Get("name")
-		state, _ := record.Get("powerplay_state")
-
-		if nameStr, ok := name.(string); ok {
-			stateStr := ""
-			if state != nil {
-				stateStr, _ = state.(string)
-			}
-			states[nameStr] = stateStr
+	for rows.Next() {
+		var name, state string
+		if err := rows.Scan(&name, &state); err != nil {
+			return nil, err
 		}
+		states[name] = state
 	}
 
-	return states, result.Err()
+	return states, rows.Err()
 }
 
 // getAllBoomStations fetches ALL stations in ACQUISITION TARGET systems where Boom is present.
 //
 // Returns two types of matches (indicated by BoomMatch field):
-// - "controlling_faction": The station's controlling faction is in Boom (verified match)
-// - "system_boom": Another faction in the system is in Boom but not the controlling faction
-//   (the station may still benefit - worth checking in-game, especially if no market data yet)
+//   - "controlling_faction": The station's controlling faction is in Boom (verified match)
+//   - "system_boom": Another faction in the system is in Boom but not the controlling faction
+//     (the station may still benefit - worth checking in-game, especially if no market data yet)
 //
 // IMPORTANT: Only returns stations in systems that are acquisition targets:
 // - Acquisition targets: powerplay_state is NULL, "Unoccupied", "Expansion", or "Contested"
@@ -484,72 +472,84 @@ func getPowerStates(ctx context.Context, client MemgraphClient, systemNames []st
 //
 // Market data (Platinum/Osmium demand) is fetched where available but is NOT a filter.
 // We may not have market data if nobody has docked at the station recently.
-func getAllBoomStations(ctx context.Context, client MemgraphClient) ([]PlasmiumBuyer, error) {
-	session := client.NewSession(ctx, neo4j.SessionConfig{AccessMode: neo4j.AccessModeRead})
-	defer session.Close(ctx)
-
+func getAllBoomStations(ctx context.Context, galaxy GalaxyQuerier) ([]PlasmiumBuyer, error) {
 	// Find all stations in acquisition target systems where ANY faction has Boom.
 	// We track whether the station's own controlling faction is the one in Boom.
 	query := `
-		// Find systems that have at least one faction in Boom and are acquisition targets
-		MATCH (f:Faction)-[p:PRESENT_IN]->(s:System)
-		WHERE 'Boom' IN p.active_states
-		  AND s.location IS NOT NULL
-		  AND (s.powerplay_state IS NULL
-		       OR s.powerplay_state = ''
-		       OR s.powerplay_state IN ['Unoccupied', 'Expansion', 'Contested'])
-
-		// Find ALL stations in those systems (not just ones controlled by the Boom faction)
-		MATCH (s)-[:HAS_STATION]->(st:Station)
-		WHERE st.controlling_faction IS NOT NULL
-
-		// Check if the station's controlling faction is the Boom faction
-		WITH s, st, f, p,
-		     CASE WHEN st.controlling_faction = f.name THEN true ELSE false END AS is_controlling
-
-		// Get market data for Platinum and Osmium (optional - not a filter)
-		OPTIONAL MATCH (st)-[:HAS_MARKET]->(m:Market)
-		OPTIONAL MATCH (m)-[t_plat:TRADES]->(c_plat:Commodity {name: 'platinum'})
-		OPTIONAL MATCH (m)-[t_osm:TRADES]->(c_osm:Commodity {name: 'osmium'})
-
-		RETURN DISTINCT
-			s.name AS system_name,
-			s.location.x AS x, s.location.y AS y, s.location.z AS z,
-			s.powerplay_state AS powerplay_state,
-			s.powerplay_conflict_progress AS conflict_progress,
-			st.name AS station_name,
-			st.controlling_faction AS faction,
-			is_controlling AS is_controlling_faction_boom,
-			st.economies AS economies,
-			COALESCE(st.landing_pads_large, st.large_pads, 0) AS large_pads,
-			COALESCE(st.landing_pads_medium, st.medium_pads, 0) AS medium_pads,
-			COALESCE(st.landing_pads_small, st.small_pads, 0) AS small_pads,
-			t_plat.demand AS platinum_demand,
-			t_plat.sell_price AS platinum_price,
-			t_osm.demand AS osmium_demand,
-			t_osm.sell_price AS osmium_price,
-			m.last_event_time AS market_updated_at
+WITH boom_systems AS (
+	SELECT
+		sf.system_id64,
+		st.market_id,
+		bool_or(sf.faction_id = st.controlling_faction_id) AS controlling_boom
+	FROM galaxy.system_faction sf
+	JOIN galaxy.system_catalog c ON c.id64 = sf.system_id64
+	LEFT JOIN galaxy.system_power sp ON sp.system_id64 = sf.system_id64
+	JOIN galaxy.station st ON st.system_id64 = sf.system_id64
+	WHERE 'Boom' = ANY(sf.active_states)
+	  AND c.x IS NOT NULL
+	  AND COALESCE(sp.powerplay_state, 'Unoccupied') IN ('', 'Unoccupied', 'Expansion', 'Contested')
+	  AND st.controlling_faction_id IS NOT NULL
+	GROUP BY sf.system_id64, st.market_id
+)
+SELECT
+	COALESCE(sys.name, c.name) AS system_name,
+	c.x::float8, c.y::float8, c.z::float8,
+	COALESCE(sp.powerplay_state, '') AS powerplay_state,
+	sp.conflict_progress,
+	st.name AS station_name,
+	COALESCE(f.name, '') AS faction,
+	bs.controlling_boom AS is_controlling_faction_boom,
+	COALESCE(st.economies, '{}') AS economies,
+	COALESCE(st.large_pads, 0) AS large_pads,
+	COALESCE(st.medium_pads, 0) AS medium_pads,
+	COALESCE(st.small_pads, 0) AS small_pads,
+	COALESCE(mc_plat.demand, 0) AS platinum_demand,
+	COALESCE(mc_plat.sell_price, 0) AS platinum_price,
+	COALESCE(mc_osm.demand, 0) AS osmium_demand,
+	COALESCE(mc_osm.sell_price, 0) AS osmium_price,
+	m.last_event_time AS market_updated_at
+FROM boom_systems bs
+JOIN galaxy.station st ON st.market_id = bs.market_id
+JOIN galaxy.system_catalog c ON c.id64 = st.system_id64
+LEFT JOIN galaxy.system sys ON sys.id64 = st.system_id64
+LEFT JOIN galaxy.system_power sp ON sp.system_id64 = st.system_id64
+LEFT JOIN galaxy.faction f ON f.faction_id = st.controlling_faction_id
+LEFT JOIN galaxy.market m ON m.market_id = st.market_id
+LEFT JOIN galaxy.commodity c_plat ON c_plat.name = 'platinum'
+LEFT JOIN galaxy.market_commodity mc_plat ON mc_plat.market_id = st.market_id AND mc_plat.commodity_id = c_plat.commodity_id
+LEFT JOIN galaxy.commodity c_osm ON c_osm.name = 'osmium'
+LEFT JOIN galaxy.market_commodity mc_osm ON mc_osm.market_id = st.market_id AND mc_osm.commodity_id = c_osm.commodity_id
+WHERE st.controlling_faction_id IS NOT NULL
 	`
 
-	result, err := session.Run(ctx, query, nil)
+	rows, err := galaxy.Query(ctx, query)
 	if err != nil {
 		return nil, fmt.Errorf("query all boom stations: %w", err)
 	}
+	defer rows.Close()
 
 	var stations []PlasmiumBuyer
 	seen := make(map[string]bool) // Dedupe: same station may appear via multiple Boom factions
-	for result.Next(ctx) {
-		record := result.Record()
-
-		systemName := toString(record, "system_name")
-		stationName := toString(record, "station_name")
-		stationKey := systemName + "|" + stationName
-
-		// Determine boom match type
-		isControlling := false
-		if val, ok := getRecordValue(record, "is_controlling_faction_boom").(bool); ok {
-			isControlling = val
+	for rows.Next() {
+		var systemName, powerplayState, stationName, faction string
+		var x, y, z float64
+		var conflictProgress []byte
+		var isControlling bool
+		var economies []string
+		var largePads, mediumPads, smallPads int
+		var platinumDemand, platinumPrice, osmiumDemand, osmiumPrice int64
+		var marketUpdatedAt *time.Time
+		if err := rows.Scan(
+			&systemName, &x, &y, &z,
+			&powerplayState, &conflictProgress,
+			&stationName, &faction, &isControlling, &economies,
+			&largePads, &mediumPads, &smallPads,
+			&platinumDemand, &platinumPrice, &osmiumDemand, &osmiumPrice,
+			&marketUpdatedAt,
+		); err != nil {
+			return nil, err
 		}
+		stationKey := systemName + "|" + stationName
 
 		// If we've already seen this station, only upgrade from system_boom to controlling_faction
 		if seen[stationKey] {
@@ -570,11 +570,6 @@ func getAllBoomStations(ctx context.Context, client MemgraphClient) ([]PlasmiumB
 		}
 		seen[stationKey] = true
 
-		largePads := int(toInt64(getRecordValue(record, "large_pads")))
-		mediumPads := int(toInt64(getRecordValue(record, "medium_pads")))
-		smallPads := int(toInt64(getRecordValue(record, "small_pads")))
-
-		powerplayState := toString(record, "powerplay_state")
 		if powerplayState == "" {
 			powerplayState = "Unoccupied"
 		}
@@ -589,7 +584,7 @@ func getAllBoomStations(ctx context.Context, client MemgraphClient) ([]PlasmiumB
 		buyer := PlasmiumBuyer{
 			SystemName:     systemName,
 			StationName:    stationName,
-			Faction:        toString(record, "faction"),
+			Faction:        faction,
 			FactionState:   factionState,
 			BoomMatch:      boomMatch,
 			PowerplayState: powerplayState,
@@ -597,38 +592,26 @@ func getAllBoomStations(ctx context.Context, client MemgraphClient) ([]PlasmiumB
 			MediumPads:     mediumPads,
 			SmallPads:      smallPads,
 			LargestPad:     largestPad(largePads, mediumPads, smallPads),
-			X:              toFloat64(getRecordValue(record, "x")),
-			Y:              toFloat64(getRecordValue(record, "y")),
-			Z:              toFloat64(getRecordValue(record, "z")),
-			PlatinumDemand: toInt64(getRecordValue(record, "platinum_demand")),
-			PlatinumPrice:  toInt64(getRecordValue(record, "platinum_price")),
-			OsmiumDemand:   toInt64(getRecordValue(record, "osmium_demand")),
-			OsmiumPrice:    toInt64(getRecordValue(record, "osmium_price")),
+			Economies:      economies,
+			X:              x,
+			Y:              y,
+			Z:              z,
+			PlatinumDemand: platinumDemand,
+			PlatinumPrice:  platinumPrice,
+			OsmiumDemand:   osmiumDemand,
+			OsmiumPrice:    osmiumPrice,
 		}
 
-		// Parse economies array
-		if econ, ok := getRecordValue(record, "economies").([]any); ok {
-			for _, e := range econ {
-				if es, ok := e.(string); ok {
-					buyer.Economies = append(buyer.Economies, es)
-				}
-			}
-		}
+		buyer.KaineProgress = parseKaineProgress(conflictProgress)
 
-		// Parse Kaine's acquisition progress from conflict_progress
-		// Stored as JSON string: '[{"Power":"Nakato Kaine","ConflictProgress":0.5}, ...]'
-		// or possibly as []any if driver parses it
-		buyer.KaineProgress = parseKaineProgress(getRecordValue(record, "conflict_progress"))
-
-		// Parse timestamps
-		if t := toTime(getRecordValue(record, "market_updated_at")); !t.IsZero() {
-			buyer.MarketUpdatedAt = &t
+		if marketUpdatedAt != nil && !marketUpdatedAt.IsZero() {
+			buyer.MarketUpdatedAt = marketUpdatedAt
 		}
 
 		stations = append(stations, buyer)
 	}
 
-	return stations, result.Err()
+	return stations, rows.Err()
 }
 
 // calculatePlasmiumScore calculates the score for a station based on Orok's formula.
@@ -755,79 +738,6 @@ func largestPad(large, medium, small int) string {
 	return ""
 }
 
-// Helper functions for Neo4j type conversion
-
-func getRecordValue(record *neo4j.Record, key string) any {
-	val, _ := record.Get(key)
-	return val
-}
-
-func toString(record *neo4j.Record, key string) string {
-	val, _ := record.Get(key)
-	if s, ok := val.(string); ok {
-		return s
-	}
-	return ""
-}
-
-func toFloat64(val any) float64 {
-	switch v := val.(type) {
-	case float64:
-		return v
-	case int64:
-		return float64(v)
-	case int:
-		return float64(v)
-	default:
-		return 0
-	}
-}
-
-func toInt64(val any) int64 {
-	switch v := val.(type) {
-	case int64:
-		return v
-	case float64:
-		return int64(v)
-	case int:
-		return int64(v)
-	default:
-		return 0
-	}
-}
-
-func toTime(val any) time.Time {
-	switch v := val.(type) {
-	case time.Time:
-		return v
-	case neo4j.LocalDateTime:
-		return v.Time()
-	case neo4j.Date:
-		return v.Time()
-	case neo4j.Time: // ZonedTime - has timezone info
-		return v.Time()
-	case neo4j.LocalTime:
-		return v.Time()
-	case string:
-		// Handle ISO-8601 string format (fallback if Memgraph returns string)
-		if t, err := time.Parse(time.RFC3339, v); err == nil {
-			return t
-		}
-		if t, err := time.Parse("2006-01-02T15:04:05", v); err == nil {
-			return t
-		}
-		// Handle Memgraph ZonedDateTime format: "2026-02-01T19:42:33.000000+00:00[Etc/UTC]"
-		if idx := strings.Index(v, "["); idx > 0 {
-			if t, err := time.Parse(time.RFC3339, v[:idx]); err == nil {
-				return t
-			}
-		}
-		return time.Time{}
-	default:
-		return time.Time{}
-	}
-}
-
 // kaineSystem represents a Kaine-controlled Fortified/Stronghold system for distance calculation.
 type kaineSystem struct {
 	Name    string
@@ -836,75 +746,69 @@ type kaineSystem struct {
 
 // getKaineAnchors fetches all Nakato Kaine Fortified and Stronghold systems as anchors.
 // Anchors provide the acquisition range: 20 LY for Fortified, 30 LY for Stronghold.
-func getKaineAnchors(ctx context.Context, client MemgraphClient) ([]anchorCoverage, error) {
-	session := client.NewSession(ctx, neo4j.SessionConfig{AccessMode: neo4j.AccessModeRead})
-	defer session.Close(ctx)
-
+func getKaineAnchors(ctx context.Context, galaxy GalaxyQuerier) ([]anchorCoverage, error) {
 	query := `
-		MATCH (s:System)
-		WHERE s.controlling_power = 'Nakato Kaine'
-		  AND s.powerplay_state IN ['Fortified', 'Stronghold']
-		  AND s.location IS NOT NULL
-		RETURN s.name AS name, s.location.x AS x, s.location.y AS y, s.location.z AS z, s.powerplay_state AS powerplay_state
+		SELECT COALESCE(sys.name, c.name) AS name, c.x::float8, c.y::float8, c.z::float8, sp.powerplay_state
+		FROM galaxy.system_power sp
+		JOIN galaxy.system_catalog c ON c.id64 = sp.system_id64
+		LEFT JOIN galaxy.system sys ON sys.id64 = sp.system_id64
+		WHERE sp.power_name = 'Nakato Kaine'
+		  AND sp.powerplay_state IN ('Fortified', 'Stronghold')
+		  AND c.x IS NOT NULL
 	`
 
-	result, err := session.Run(ctx, query, nil)
+	rows, err := galaxy.Query(ctx, query)
 	if err != nil {
 		return nil, fmt.Errorf("query kaine anchors: %w", err)
 	}
+	defer rows.Close()
 
 	var anchors []anchorCoverage
-	for result.Next(ctx) {
-		record := result.Record()
-		powerState := toString(record, "powerplay_state")
+	for rows.Next() {
+		var anchor anchorCoverage
+		if err := rows.Scan(&anchor.Name, &anchor.X, &anchor.Y, &anchor.Z, &anchor.PowerState); err != nil {
+			return nil, err
+		}
 		radius := 20 // Fortified
-		if powerState == "Stronghold" {
+		if anchor.PowerState == "Stronghold" {
 			radius = 30
 		}
-		anchors = append(anchors, anchorCoverage{
-			Name:       toString(record, "name"),
-			X:          toFloat64(getRecordValue(record, "x")),
-			Y:          toFloat64(getRecordValue(record, "y")),
-			Z:          toFloat64(getRecordValue(record, "z")),
-			Radius:     radius,
-			PowerState: powerState,
-		})
+		anchor.Radius = radius
+		anchors = append(anchors, anchor)
 	}
 
-	return anchors, result.Err()
+	return anchors, rows.Err()
 }
 
 // getKaineFortifiedSystems fetches all Nakato Kaine Fortified and Stronghold systems.
 // Used for calculating DistanceToKaine display field.
-func getKaineFortifiedSystems(ctx context.Context, client MemgraphClient) ([]kaineSystem, error) {
-	session := client.NewSession(ctx, neo4j.SessionConfig{AccessMode: neo4j.AccessModeRead})
-	defer session.Close(ctx)
-
+func getKaineFortifiedSystems(ctx context.Context, galaxy GalaxyQuerier) ([]kaineSystem, error) {
 	query := `
-		MATCH (s:System)
-		WHERE s.controlling_power = 'Nakato Kaine'
-		  AND s.powerplay_state IN ['Fortified', 'Stronghold']
-		  AND s.location IS NOT NULL
-		RETURN s.name AS name, s.location.x AS x, s.location.y AS y, s.location.z AS z
+		SELECT COALESCE(sys.name, c.name) AS name, c.x::float8, c.y::float8, c.z::float8
+		FROM galaxy.system_power sp
+		JOIN galaxy.system_catalog c ON c.id64 = sp.system_id64
+		LEFT JOIN galaxy.system sys ON sys.id64 = sp.system_id64
+		WHERE sp.power_name = 'Nakato Kaine'
+		  AND sp.powerplay_state IN ('Fortified', 'Stronghold')
+		  AND c.x IS NOT NULL
 	`
 
-	result, err := session.Run(ctx, query, nil)
+	rows, err := galaxy.Query(ctx, query)
 	if err != nil {
 		return nil, fmt.Errorf("query kaine systems: %w", err)
 	}
+	defer rows.Close()
 
 	var systems []kaineSystem
-	for result.Next(ctx) {
-		record := result.Record()
-		systems = append(systems, kaineSystem{
-			Name: toString(record, "name"),
-			X:    toFloat64(getRecordValue(record, "x")),
-			Y:    toFloat64(getRecordValue(record, "y")),
-			Z:    toFloat64(getRecordValue(record, "z")),
-		})
+	for rows.Next() {
+		var system kaineSystem
+		if err := rows.Scan(&system.Name, &system.X, &system.Y, &system.Z); err != nil {
+			return nil, err
+		}
+		systems = append(systems, system)
 	}
 
-	return systems, result.Err()
+	return systems, rows.Err()
 }
 
 // progressScoreBonus returns a ranking bonus that prioritizes systems with LOW Kaine acquisition progress.
@@ -957,16 +861,13 @@ func parseKaineProgress(v any) *float64 {
 		return nil
 	}
 
-	// Try as []any first (if neo4j driver parsed it)
-	entries, ok := v.([]any)
-	if !ok {
-		// Try as JSON string
-		str, ok := v.(string)
-		if !ok || str == "" {
+	switch raw := v.(type) {
+	case []byte:
+		if len(raw) == 0 {
 			return nil
 		}
 		var parsed []map[string]any
-		if err := json.Unmarshal([]byte(str), &parsed); err != nil {
+		if err := json.Unmarshal(raw, &parsed); err != nil {
 			return nil
 		}
 		for _, m := range parsed {
@@ -976,6 +877,28 @@ func parseKaineProgress(v any) *float64 {
 				}
 			}
 		}
+		return nil
+	case string:
+		if raw == "" {
+			return nil
+		}
+		var parsed []map[string]any
+		if err := json.Unmarshal([]byte(raw), &parsed); err != nil {
+			return nil
+		}
+		for _, m := range parsed {
+			if power, _ := m["Power"].(string); power == "Nakato Kaine" {
+				if prog, ok := m["ConflictProgress"].(float64); ok {
+					return &prog
+				}
+			}
+		}
+		return nil
+	}
+
+	// Keep support for already-decoded fixture data.
+	entries, ok := v.([]any)
+	if !ok {
 		return nil
 	}
 

@@ -5,8 +5,6 @@ import (
 	"fmt"
 	"sort"
 	"time"
-
-	"github.com/neo4j/neo4j-go-driver/v5/neo4j"
 )
 
 // ============================================================================
@@ -18,7 +16,7 @@ import (
 
 // LTDBuyer represents a station in Expansion state that can buy LTDs.
 type LTDBuyer struct {
-	// Station info (from Memgraph)
+	// Station info (from galaxy.*)
 	SystemName   string   `json:"system_name"`
 	StationName  string   `json:"station_name"`
 	Faction      string   `json:"faction"`
@@ -26,23 +24,23 @@ type LTDBuyer struct {
 	Economies    []string `json:"economies,omitempty"`
 	DistanceLY   float64  `json:"distance_ly"`
 
-	// Powerplay info (from Memgraph)
+	// Powerplay info (from galaxy.*)
 	PowerplayState  string   `json:"powerplay_state"`             // Unoccupied, Expansion, Contested
 	DistanceToKaine float64  `json:"distance_to_kaine,omitempty"` // Distance to nearest Kaine Fortified/Stronghold
 	KaineProgress   *float64 `json:"kaine_progress,omitempty"`    // Nakato Kaine's acquisition progress (0-1) for this system
 
-	// Landing pads (from Memgraph)
+	// Landing pads (from galaxy.*)
 	LargePads  int    `json:"large_pads,omitempty"`
 	MediumPads int    `json:"medium_pads,omitempty"`
 	SmallPads  int    `json:"small_pads,omitempty"`
 	LargestPad string `json:"largest_pad"` // "L", "M", "S", or ""
 
-	// Coordinates (from Memgraph)
+	// Coordinates (from galaxy.*)
 	X float64 `json:"x,omitempty"`
 	Y float64 `json:"y,omitempty"`
 	Z float64 `json:"z,omitempty"`
 
-	// Market info (from Memgraph)
+	// Market info (from galaxy.*)
 	LTDDemand int64 `json:"ltd_demand,omitempty"`
 	LTDPrice  int64 `json:"ltd_price,omitempty"` // Often stale - verify in-game
 
@@ -73,7 +71,7 @@ type LTDMapResult struct {
 	Map3         string   `json:"map_3,omitempty"`
 	Map3Title    string   `json:"map_3_title,omitempty"`
 
-	// Map coordinates (from Memgraph)
+	// Map coordinates (from galaxy.*)
 	X float64 `json:"x"`
 	Y float64 `json:"y"`
 	Z float64 `json:"z"`
@@ -100,7 +98,7 @@ type LTDBuyersResponse struct {
 // The map system IS the source — it must be Fortified or Stronghold. Buyers must be within
 // the source system's acquisition radius (20 LY for Fortified, 30 LY for Stronghold).
 // See: eddn-listener/docs/kaine-directors-processes/orok-pseudocode.md
-func (s *Store) FindLTDBuyers(ctx context.Context, memgraph MemgraphClient, progress ProgressFunc) (*LTDBuyersResponse, error) {
+func (s *Store) FindLTDBuyers(ctx context.Context, galaxy GalaxyQuerier, progress ProgressFunc) (*LTDBuyersResponse, error) {
 	if progress == nil {
 		progress = func(int, int, string) {}
 	}
@@ -122,24 +120,24 @@ func (s *Store) FindLTDBuyers(ctx context.Context, memgraph MemgraphClient, prog
 	}
 
 	// Step 2: Get Kaine Fortified/Stronghold systems (for DistanceToKaine display field)
-	progress(2, 5, fmt.Sprintf("Querying Memgraph for %d map system coordinates and power states", len(maps)))
-	kaineSystems, err := getKaineFortifiedSystems(ctx, memgraph)
+	progress(2, 5, fmt.Sprintf("Querying galaxy store for %d map system coordinates and power states", len(maps)))
+	kaineSystems, err := getKaineFortifiedSystems(ctx, galaxy)
 	if err != nil {
 		return nil, fmt.Errorf("get kaine systems: %w", err)
 	}
 
-	// Step 3: Get map system coordinates and live power states from Memgraph
+	// Step 3: Get map system coordinates and live power states from galaxy.*
 	systemNames := make([]string, len(maps))
 	for i, m := range maps {
 		systemNames[i] = m.SystemName
 	}
 
-	coords, err := getSystemCoords(ctx, memgraph, systemNames)
+	coords, err := getSystemCoords(ctx, galaxy, systemNames)
 	if err != nil {
 		return nil, fmt.Errorf("get system coords: %w", err)
 	}
 
-	powerStates, err := getPowerStates(ctx, memgraph, systemNames)
+	powerStates, err := getPowerStates(ctx, galaxy, systemNames)
 	if err != nil {
 		return nil, fmt.Errorf("get power states: %w", err)
 	}
@@ -149,8 +147,8 @@ func (s *Store) FindLTDBuyers(ctx context.Context, memgraph MemgraphClient, prog
 	type ltdSourceMap struct {
 		Map          *MiningMap
 		X, Y, Z      float64
-		LiveState     string
-		SearchRadius  int // 20 for Fortified, 30 for Stronghold
+		LiveState    string
+		SearchRadius int // 20 for Fortified, 30 for Stronghold
 	}
 
 	var sourceMaps []ltdSourceMap
@@ -193,7 +191,7 @@ func (s *Store) FindLTDBuyers(ctx context.Context, memgraph MemgraphClient, prog
 
 	// Step 5: Get ALL Expansion stations globally
 	progress(4, 5, fmt.Sprintf("Scanning Expansion stations within range of %d qualifying maps", len(sourceMaps)))
-	allExpansionStations, err := getAllExpansionStations(ctx, memgraph)
+	allExpansionStations, err := getAllExpansionStations(ctx, galaxy)
 	if err != nil {
 		return nil, fmt.Errorf("get expansion stations: %w", err)
 	}
@@ -276,8 +274,8 @@ func (s *Store) FindLTDBuyers(ctx context.Context, memgraph MemgraphClient, prog
 			X:                src.X,
 			Y:                src.Y,
 			Z:                src.Z,
-			AnchorName:       m.SystemName,    // Source is the map itself
-			AnchorState:      src.LiveState,    // Live power state from Memgraph
+			AnchorName:       m.SystemName,     // Source is the map itself
+			AnchorState:      src.LiveState,    // Live power state from galaxy.*
 			DistanceToAnchor: 0,                // Map IS the source — distance is 0
 			SearchRadiusLY:   src.SearchRadius, // 20 for Fortified, 30 for Stronghold
 			Buyers:           validBuyers,
@@ -352,113 +350,106 @@ func (s *Store) getLTDMaps(ctx context.Context) ([]MiningMap, error) {
 	return maps, rows.Err()
 }
 
-
 // getAllExpansionStations fetches ALL stations with Expansion faction state in ACQUISITION TARGET systems.
-func getAllExpansionStations(ctx context.Context, client MemgraphClient) ([]LTDBuyer, error) {
-	session := client.NewSession(ctx, neo4j.SessionConfig{AccessMode: neo4j.AccessModeRead})
-	defer session.Close(ctx)
-
+func getAllExpansionStations(ctx context.Context, galaxy GalaxyQuerier) ([]LTDBuyer, error) {
 	query := `
-		// Find factions in Expansion state in ACQUISITION TARGET systems
-		MATCH (f:Faction)-[p:PRESENT_IN]->(s:System)
-		WHERE 'Expansion' IN p.active_states
-		  AND s.location IS NOT NULL
-		  AND (s.powerplay_state IS NULL
-		       OR s.powerplay_state = ''
-		       OR s.powerplay_state IN ['Unoccupied', 'Expansion', 'Contested'])
-
-		// Find stations controlled by these Expansion factions
-		MATCH (s)-[:HAS_STATION]->(st:Station)
-		WHERE st.controlling_faction = f.name
-
-		// Get market data - split OPTIONAL MATCHes so we get market timestamp even without LTD trade
-		OPTIONAL MATCH (st)-[:HAS_MARKET]->(m:Market)
-		OPTIONAL MATCH (m)-[t:TRADES]->(c:Commodity {name: 'lowtemperaturediamond'})
-
-		RETURN DISTINCT
-			s.name AS system_name,
-			s.location.x AS x, s.location.y AS y, s.location.z AS z,
-			s.powerplay_state AS powerplay_state,
-			s.powerplay_conflict_progress AS conflict_progress,
-			st.name AS station_name,
-			st.controlling_faction AS faction,
-			p.active_states AS active_states,
-			st.economies AS economies,
-			COALESCE(st.landing_pads_large, st.large_pads, 0) AS large_pads,
-			COALESCE(st.landing_pads_medium, st.medium_pads, 0) AS medium_pads,
-			COALESCE(st.landing_pads_small, st.small_pads, 0) AS small_pads,
-			t.demand AS ltd_demand,
-			t.sell_price AS ltd_price,
-			p.last_event_time AS bgs_updated_at,
-			m.last_event_time AS market_updated_at
+SELECT DISTINCT
+	COALESCE(sys.name, c.name) AS system_name,
+	c.x::float8, c.y::float8, c.z::float8,
+	COALESCE(sp.powerplay_state, '') AS powerplay_state,
+	sp.conflict_progress,
+	st.name AS station_name,
+	COALESCE(f.name, '') AS faction,
+	sf.active_states,
+	COALESCE(st.economies, '{}') AS economies,
+	COALESCE(st.large_pads, 0) AS large_pads,
+	COALESCE(st.medium_pads, 0) AS medium_pads,
+	COALESCE(st.small_pads, 0) AS small_pads,
+	COALESCE(mc_ltd.demand, 0) AS ltd_demand,
+	COALESCE(mc_ltd.sell_price, 0) AS ltd_price,
+	sf.last_event_time AS bgs_updated_at,
+	m.last_event_time AS market_updated_at
+FROM galaxy.system_faction sf
+JOIN galaxy.faction f ON f.faction_id = sf.faction_id
+JOIN galaxy.system_catalog c ON c.id64 = sf.system_id64
+LEFT JOIN galaxy.system sys ON sys.id64 = sf.system_id64
+LEFT JOIN galaxy.system_power sp ON sp.system_id64 = sf.system_id64
+JOIN galaxy.station st ON st.system_id64 = sf.system_id64 AND st.controlling_faction_id = sf.faction_id
+LEFT JOIN galaxy.market m ON m.market_id = st.market_id
+LEFT JOIN galaxy.commodity c_ltd ON c_ltd.name = 'lowtemperaturediamond'
+LEFT JOIN galaxy.market_commodity mc_ltd ON mc_ltd.market_id = st.market_id AND mc_ltd.commodity_id = c_ltd.commodity_id
+WHERE 'Expansion' = ANY(sf.active_states)
+  AND c.x IS NOT NULL
+  AND COALESCE(sp.powerplay_state, 'Unoccupied') IN ('', 'Unoccupied', 'Expansion', 'Contested')
 	`
 
-	result, err := session.Run(ctx, query, nil)
+	rows, err := galaxy.Query(ctx, query)
 	if err != nil {
 		return nil, fmt.Errorf("query all expansion stations: %w", err)
 	}
+	defer rows.Close()
 
 	var stations []LTDBuyer
-	for result.Next(ctx) {
-		record := result.Record()
+	for rows.Next() {
+		var systemName, powerplayState, stationName, faction string
+		var x, y, z float64
+		var conflictProgress []byte
+		var activeStates []string
+		var economies []string
+		var largePads, mediumPads, smallPads int
+		var ltdDemand, ltdPrice int64
+		var bgsUpdatedAt, marketUpdatedAt *time.Time
+		if err := rows.Scan(
+			&systemName, &x, &y, &z,
+			&powerplayState, &conflictProgress,
+			&stationName, &faction, &activeStates, &economies,
+			&largePads, &mediumPads, &smallPads,
+			&ltdDemand, &ltdPrice,
+			&bgsUpdatedAt, &marketUpdatedAt,
+		); err != nil {
+			return nil, err
+		}
 
-		largePads := int(toInt64(getRecordValue(record, "large_pads")))
-		mediumPads := int(toInt64(getRecordValue(record, "medium_pads")))
-		smallPads := int(toInt64(getRecordValue(record, "small_pads")))
-
-		powerplayState := toString(record, "powerplay_state")
 		if powerplayState == "" {
 			powerplayState = "Unoccupied"
 		}
 
 		factionState := "Expansion"
-		if activeStates, ok := getRecordValue(record, "active_states").([]any); ok && len(activeStates) > 0 {
-			if firstState, ok := activeStates[0].(string); ok {
-				factionState = firstState
-			}
+		if len(activeStates) > 0 && activeStates[0] != "" {
+			factionState = activeStates[0]
 		}
 
 		buyer := LTDBuyer{
-			SystemName:     toString(record, "system_name"),
-			StationName:    toString(record, "station_name"),
-			Faction:        toString(record, "faction"),
+			SystemName:     systemName,
+			StationName:    stationName,
+			Faction:        faction,
 			FactionState:   factionState,
+			Economies:      economies,
 			PowerplayState: powerplayState,
 			LargePads:      largePads,
 			MediumPads:     mediumPads,
 			SmallPads:      smallPads,
 			LargestPad:     largestPad(largePads, mediumPads, smallPads),
-			X:              toFloat64(getRecordValue(record, "x")),
-			Y:              toFloat64(getRecordValue(record, "y")),
-			Z:              toFloat64(getRecordValue(record, "z")),
-			LTDDemand:      toInt64(getRecordValue(record, "ltd_demand")),
-			LTDPrice:       toInt64(getRecordValue(record, "ltd_price")),
+			X:              x,
+			Y:              y,
+			Z:              z,
+			LTDDemand:      ltdDemand,
+			LTDPrice:       ltdPrice,
 		}
 
-		// Parse economies array
-		if econ, ok := getRecordValue(record, "economies").([]any); ok {
-			for _, e := range econ {
-				if es, ok := e.(string); ok {
-					buyer.Economies = append(buyer.Economies, es)
-				}
-			}
-		}
+		buyer.KaineProgress = parseKaineProgress(conflictProgress)
 
-		// Parse Kaine's acquisition progress
-		buyer.KaineProgress = parseKaineProgress(getRecordValue(record, "conflict_progress"))
-
-		// Parse timestamps
-		if t := toTime(getRecordValue(record, "bgs_updated_at")); !t.IsZero() {
-			buyer.BGSUpdatedAt = &t
+		if bgsUpdatedAt != nil && !bgsUpdatedAt.IsZero() {
+			buyer.BGSUpdatedAt = bgsUpdatedAt
 		}
-		if t := toTime(getRecordValue(record, "market_updated_at")); !t.IsZero() {
-			buyer.MarketUpdatedAt = &t
+		if marketUpdatedAt != nil && !marketUpdatedAt.IsZero() {
+			buyer.MarketUpdatedAt = marketUpdatedAt
 		}
 
 		stations = append(stations, buyer)
 	}
 
-	return stations, result.Err()
+	return stations, rows.Err()
 }
 
 // calculateLTDScore calculates the score for an LTD station.

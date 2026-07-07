@@ -7,14 +7,14 @@ import (
 
 // galaxyLTDBuyers finds stations that buy Low Temperature Diamonds near Kaine mining maps.
 func (e *Executor) galaxyLTDBuyers(ctx context.Context, args map[string]any) (any, error) {
-	if e.memgraph == nil {
-		return nil, errors.New("memgraph not available")
+	if e.galaxyStore == nil {
+		return nil, errors.New("galaxy store not available")
 	}
 	if e.kaineStore == nil {
 		return nil, errors.New("kaine store not available - mining maps required")
 	}
 
-	result, err := e.kaineStore.FindLTDBuyers(ctx, e.memgraph, nil)
+	result, err := e.kaineStore.FindLTDBuyers(ctx, e.galaxyStore, nil)
 	if err != nil {
 		return nil, err
 	}

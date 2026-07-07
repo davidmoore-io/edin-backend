@@ -34,3 +34,15 @@ func New(pool *pgxpool.Pool) *Store {
 func newWithQuerier(db querier) *Store {
 	return &Store{db: db}
 }
+
+// Query exposes the underlying read-only querier for domain packages that own
+// their result types but read from galaxy.*.
+func (s *Store) Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error) {
+	return s.db.Query(ctx, sql, args...)
+}
+
+// QueryRow exposes the underlying read-only querier for domain packages that
+// own their result types but read from galaxy.*.
+func (s *Store) QueryRow(ctx context.Context, sql string, args ...any) pgx.Row {
+	return s.db.QueryRow(ctx, sql, args...)
+}

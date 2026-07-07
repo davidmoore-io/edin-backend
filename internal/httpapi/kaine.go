@@ -1199,7 +1199,7 @@ func (s *Server) handleKaineCarrierMarket(w http.ResponseWriter, r *http.Request
 // ============================================================================
 
 // handleKaineMiningMaps handles GET /api/kaine/mining-maps - list mining maps.
-// Power state is fetched live from Memgraph (not stored in TimescaleDB).
+// Power state is fetched live from galaxy.* (not stored in the EDIN table).
 func (s *Server) handleKaineMiningMaps(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		s.writeError(w, http.StatusMethodNotAllowed, "only GET allowed")
@@ -1220,7 +1220,7 @@ func (s *Server) handleKaineMiningMaps(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Get filter params (power_state filter applied after Memgraph enrichment)
+	// Get filter params (power_state filter applied after relational enrichment)
 	powerStateFilter := r.URL.Query().Get("power_state")
 	filter := kaine.ListMiningMapsFilter{
 		SystemName:   r.URL.Query().Get("system"),
@@ -1236,16 +1236,16 @@ func (s *Server) handleKaineMiningMaps(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Enrich with live power state from Memgraph
-	if s.memgraph != nil && len(maps) > 0 {
+	// Enrich with live power state from galaxy.*
+	if s.galaxyStore != nil && len(maps) > 0 {
 		systemNames := make([]string, len(maps))
 		for i, m := range maps {
 			systemNames[i] = m.SystemName
 		}
 
-		powerStates, err := s.memgraph.GetSystemPowerStates(r.Context(), systemNames)
+		powerStates, err := kainePowerStates(r.Context(), s.galaxyStore, systemNames)
 		if err != nil {
-			s.logger.Warn(fmt.Sprintf("failed to get power states from memgraph: %v", err))
+			s.logger.Warn(fmt.Sprintf("failed to get power states from galaxy store: %v", err))
 			// Continue without power state data rather than failing
 		} else {
 			for i := range maps {
@@ -1256,7 +1256,7 @@ func (s *Server) handleKaineMiningMaps(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Apply power state filter (after Memgraph enrichment)
+	// Apply power state filter (after relational enrichment)
 	if powerStateFilter != "" {
 		filtered := make([]kaine.MiningMap, 0)
 		for _, m := range maps {
@@ -1275,7 +1275,7 @@ func (s *Server) handleKaineMiningMaps(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleKaineMiningMapStats handles GET /api/kaine/mining-maps/stats
-// Power state counts come from Memgraph (live data), ring type counts from TimescaleDB.
+// Power state counts come from galaxy.* (live data), ring type counts from TimescaleDB.
 func (s *Server) handleKaineMiningMapStats(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		s.writeError(w, http.StatusMethodNotAllowed, "only GET allowed")
@@ -1299,8 +1299,8 @@ func (s *Server) handleKaineMiningMapStats(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	// Get power state counts from Memgraph (live data)
-	if s.memgraph != nil {
+	// Get power state counts from galaxy.* (live data)
+	if s.galaxyStore != nil {
 		// Get all mining maps to enumerate system names
 		maps, err := s.kaineStore.ListMiningMaps(r.Context(), kaine.ListMiningMapsFilter{})
 		if err == nil && len(maps) > 0 {
@@ -1309,7 +1309,7 @@ func (s *Server) handleKaineMiningMapStats(w http.ResponseWriter, r *http.Reques
 				systemNames[i] = m.SystemName
 			}
 
-			powerStates, err := s.memgraph.GetSystemPowerStates(r.Context(), systemNames)
+			powerStates, err := kainePowerStates(r.Context(), s.galaxyStore, systemNames)
 			if err == nil {
 				byPowerState := make(map[string]int)
 				for _, m := range maps {
@@ -1325,6 +1325,31 @@ func (s *Server) handleKaineMiningMapStats(w http.ResponseWriter, r *http.Reques
 	}
 
 	s.writeJSON(w, http.StatusOK, stats)
+}
+
+func kainePowerStates(ctx context.Context, galaxy kaine.GalaxyQuerier, systemNames []string) (map[string]string, error) {
+	if len(systemNames) == 0 {
+		return map[string]string{}, nil
+	}
+	rows, err := galaxy.Query(ctx, `
+SELECT c.name, COALESCE(sp.powerplay_state, '')
+FROM galaxy.system_catalog c
+LEFT JOIN galaxy.system_power sp ON sp.system_id64 = c.id64
+WHERE c.name = ANY($1)`, systemNames)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := make(map[string]string)
+	for rows.Next() {
+		var name, state string
+		if err := rows.Scan(&name, &state); err != nil {
+			return nil, err
+		}
+		out[name] = state
+	}
+	return out, rows.Err()
 }
 
 // handleKaineCreateMiningMap handles POST /api/kaine/mining-maps/create
@@ -1373,7 +1398,7 @@ func (s *Server) handleKaineCreateMiningMap(w http.ResponseWriter, r *http.Reque
 
 // handleKaineImportMiningMaps handles POST /api/kaine/mining-maps/import
 // Accepts a multipart/form-data upload with an .xlsx file, parses it,
-// validates systems against Memgraph, and upserts each row.
+// validates systems against galaxy.*, and upserts each row.
 func (s *Server) handleKaineImportMiningMaps(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		s.writeError(w, http.StatusMethodNotAllowed, "only POST allowed")
@@ -1515,7 +1540,7 @@ func (s *Server) handleKaineImportMiningMaps(w http.ResponseWriter, r *http.Requ
 		return keys, warnings
 	}
 
-	// Collect unique system names for batch Memgraph validation
+	// Collect unique system names for batch galaxy validation
 	systemNames := make(map[string]bool)
 	dataRows := rows[1:]
 	for _, row := range dataRows {
@@ -1525,18 +1550,18 @@ func (s *Server) handleKaineImportMiningMaps(w http.ResponseWriter, r *http.Requ
 		}
 	}
 
-	// Batch validate against Memgraph
+	// Batch validate against galaxy.*
 	validSystems := make(map[string]bool)
 	var invalidSystems []string
-	if s.memgraph != nil && len(systemNames) > 0 {
+	if s.galaxyStore != nil && len(systemNames) > 0 {
 		nameList := make([]string, 0, len(systemNames))
 		for name := range systemNames {
 			nameList = append(nameList, name)
 		}
-		powerStates, err := s.memgraph.GetSystemPowerStates(r.Context(), nameList)
+		powerStates, err := kainePowerStates(r.Context(), s.galaxyStore, nameList)
 		if err != nil {
-			s.logger.Warn(fmt.Sprintf("import: memgraph validation failed: %v", err))
-			// If Memgraph is down, allow all systems through with a warning
+			s.logger.Warn(fmt.Sprintf("import: galaxy validation failed: %v", err))
+			// If the galaxy store is down, allow all systems through with a warning
 			for name := range systemNames {
 				validSystems[name] = true
 			}
@@ -1550,7 +1575,7 @@ func (s *Server) handleKaineImportMiningMaps(w http.ResponseWriter, r *http.Requ
 			}
 		}
 	} else {
-		// No Memgraph, allow all systems
+		// No galaxy store, allow all systems
 		for name := range systemNames {
 			validSystems[name] = true
 		}
@@ -1586,7 +1611,7 @@ func (s *Server) handleKaineImportMiningMaps(w http.ResponseWriter, r *http.Requ
 			continue
 		}
 
-		// Validate system exists in Memgraph
+		// Validate system exists in galaxy data
 		if !validSystems[sysName] {
 			result.Action = "error"
 			result.Error = "system not found in galaxy data"
@@ -1759,13 +1784,13 @@ func (s *Server) handlePlasmiumBuyers(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if s.memgraph == nil {
-		s.writeError(w, http.StatusServiceUnavailable, "memgraph not configured")
+	if s.galaxyStore == nil {
+		s.writeError(w, http.StatusServiceUnavailable, "galaxy store not configured")
 		return
 	}
 
 	progress := s.sseProgressFunc(w, r)
-	result, err := s.kaineStore.FindPlasmiumBuyers(r.Context(), s.memgraph, progress)
+	result, err := s.kaineStore.FindPlasmiumBuyers(r.Context(), s.galaxyStore, progress)
 	if err != nil {
 		s.logger.Error(fmt.Sprintf("failed to find plasmium buyers: %v", err), nil)
 		if progress != nil {
@@ -1797,13 +1822,13 @@ func (s *Server) handleLTDBuyers(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if s.memgraph == nil {
-		s.writeError(w, http.StatusServiceUnavailable, "memgraph not configured")
+	if s.galaxyStore == nil {
+		s.writeError(w, http.StatusServiceUnavailable, "galaxy store not configured")
 		return
 	}
 
 	progress := s.sseProgressFunc(w, r)
-	result, err := s.kaineStore.FindLTDBuyers(r.Context(), s.memgraph, progress)
+	result, err := s.kaineStore.FindLTDBuyers(r.Context(), s.galaxyStore, progress)
 	if err != nil {
 		s.logger.Error(fmt.Sprintf("failed to find LTD buyers: %v", err), nil)
 		if progress != nil {
@@ -1835,13 +1860,13 @@ func (s *Server) handleExpansionTargets(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	if s.memgraph == nil {
-		s.writeError(w, http.StatusServiceUnavailable, "memgraph not configured")
+	if s.galaxyStore == nil {
+		s.writeError(w, http.StatusServiceUnavailable, "galaxy store not configured")
 		return
 	}
 
 	progress := s.sseProgressFunc(w, r)
-	result, err := s.kaineStore.FindExpansionTargets(r.Context(), s.memgraph, progress)
+	result, err := s.kaineStore.FindExpansionTargets(r.Context(), s.galaxyStore, progress)
 	if err != nil {
 		s.logger.Error(fmt.Sprintf("failed to find expansion targets: %v", err), nil)
 		if progress != nil {
@@ -1873,13 +1898,13 @@ func (s *Server) handleSurveyExport(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if s.memgraph == nil {
-		s.writeError(w, http.StatusServiceUnavailable, "memgraph not configured")
+	if s.galaxyStore == nil {
+		s.writeError(w, http.StatusServiceUnavailable, "galaxy store not configured")
 		return
 	}
 
 	progress := s.sseProgressFunc(w, r)
-	result, err := s.kaineStore.SurveyExport(r.Context(), s.memgraph, progress)
+	result, err := s.kaineStore.SurveyExport(r.Context(), s.galaxyStore, progress)
 	if err != nil {
 		s.logger.Error(fmt.Sprintf("failed to generate survey export: %v", err), nil)
 		if progress != nil {

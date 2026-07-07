@@ -544,7 +544,7 @@ func nullableString(s string) *string {
 // ============================================================================
 
 // ListMiningMaps retrieves mining maps based on the filter.
-// Note: power_state is NOT in the database - it comes from Memgraph via the HTTP handler.
+// Note: power_state is NOT in the database - it comes from galaxy.* via the HTTP handler.
 func (s *Store) ListMiningMaps(ctx context.Context, filter ListMiningMapsFilter) ([]MiningMap, error) {
 	query := `
 		SELECT
@@ -569,7 +569,7 @@ func (s *Store) ListMiningMaps(ctx context.Context, filter ListMiningMapsFilter)
 		argNum++
 	}
 
-	// Note: PowerState filter is applied in HTTP handler after Memgraph enrichment
+	// Note: PowerState filter is applied in HTTP handler after relational enrichment
 
 	if filter.RingType != "" {
 		query += fmt.Sprintf(" AND ring_type = $%d", argNum)
@@ -610,7 +610,7 @@ func (s *Store) ListMiningMaps(ctx context.Context, filter ListMiningMapsFilter)
 }
 
 // GetMiningMap retrieves a single mining map by ID.
-// Note: power_state is NOT in the database - it comes from Memgraph.
+// Note: power_state is NOT in the database - it comes from galaxy.*.
 func (s *Store) GetMiningMap(ctx context.Context, id int) (*MiningMap, error) {
 	query := `
 		SELECT
@@ -641,7 +641,7 @@ func (s *Store) GetMiningMap(ctx context.Context, id int) (*MiningMap, error) {
 }
 
 // GetMiningMapBySystemBody retrieves a mining map by system name and body.
-// Note: power_state is NOT in the database - it comes from Memgraph.
+// Note: power_state is NOT in the database - it comes from galaxy.*.
 func (s *Store) GetMiningMapBySystemBody(ctx context.Context, systemName, body string) (*MiningMap, error) {
 	query := `
 		SELECT
@@ -672,7 +672,7 @@ func (s *Store) GetMiningMapBySystemBody(ctx context.Context, systemName, body s
 }
 
 // scanMiningMap scans a row into a MiningMap struct.
-// Note: power_state is NOT in the query - it comes from Memgraph.
+// Note: power_state is NOT in the query - it comes from galaxy.*.
 func scanMiningMap(rows pgx.Rows) (*MiningMap, error) {
 	var m MiningMap
 	var hotspots []string
@@ -699,12 +699,12 @@ func scanMiningMap(rows pgx.Rows) (*MiningMap, error) {
 	m.Map1Commodity = map1Commodity
 	m.Map2Commodity = map2Commodity
 	m.Map3Commodity = map3Commodity
-	// m.PowerState is populated from Memgraph by the HTTP handler
+	// m.PowerState is populated from galaxy.* by the HTTP handler
 	return &m, nil
 }
 
 // CreateMiningMap creates a new mining map and returns it.
-// Note: power_state is NOT stored - it comes from Memgraph.
+// Note: power_state is NOT stored - it comes from galaxy.*.
 func (s *Store) CreateMiningMap(ctx context.Context, input CreateMiningMapInput, userID string) (*MiningMap, error) {
 	// Validate required fields
 	if input.SystemName == "" {
@@ -755,7 +755,7 @@ func (s *Store) CreateMiningMap(ctx context.Context, input CreateMiningMapInput,
 	m.Body = input.Body
 	m.RingType = input.RingType
 	m.ReserveLevel = input.ReserveLevel
-	// m.PowerState is populated from Memgraph by the HTTP handler
+	// m.PowerState is populated from galaxy.* by the HTTP handler
 	m.RESSites = input.RESSites
 	m.Hotspots = input.Hotspots
 	m.Map1 = input.Map1
@@ -802,7 +802,7 @@ func (s *Store) UpdateMiningMap(ctx context.Context, id int, input UpdateMiningM
 		args = append(args, nullableString(*input.ReserveLevel))
 		argNum++
 	}
-	// Note: PowerState is not stored in TimescaleDB - it comes from Memgraph
+		// Note: PowerState is not stored in TimescaleDB - it comes from galaxy.*
 	if input.RESSites != nil {
 		setParts = append(setParts, fmt.Sprintf("res_sites = $%d", argNum))
 		args = append(args, nullableString(*input.RESSites))
@@ -952,7 +952,7 @@ func (s *Store) DeleteMiningMap(ctx context.Context, id int) error {
 }
 
 // GetMiningMapStats returns summary statistics for mining maps.
-// Note: by_power_state is calculated in the HTTP handler from Memgraph data.
+// Note: by_power_state is calculated in the HTTP handler from galaxy.* data.
 func (s *Store) GetMiningMapStats(ctx context.Context) (map[string]interface{}, error) {
 	stats := make(map[string]interface{})
 
@@ -964,7 +964,7 @@ func (s *Store) GetMiningMapStats(ctx context.Context) (map[string]interface{}, 
 	}
 	stats["total"] = total
 
-	// Note: by_power_state is calculated in the HTTP handler from Memgraph data
+	// Note: by_power_state is calculated in the HTTP handler from galaxy.* data
 
 	// By ring type
 	rows, err := s.pool.Query(ctx, `

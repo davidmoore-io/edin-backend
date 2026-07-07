@@ -237,7 +237,7 @@ type MiningMap struct {
 }
 
 // CreateMiningMapInput represents the input for creating a new mining map.
-// Note: power_state is not stored here - it comes from Memgraph live data.
+// Note: power_state is not stored here - it comes from galaxy.* live data.
 type CreateMiningMapInput struct {
 	SystemName       string   `json:"system_name"`
 	Body             string   `json:"body"`
@@ -260,7 +260,7 @@ type CreateMiningMapInput struct {
 }
 
 // UpdateMiningMapInput represents the input for updating a mining map.
-// Note: power_state is not stored here - it comes from Memgraph live data.
+// Note: power_state is not stored here - it comes from galaxy.* live data.
 type UpdateMiningMapInput struct {
 	SystemName       *string  `json:"system_name,omitempty"`
 	Body             *string  `json:"body,omitempty"`

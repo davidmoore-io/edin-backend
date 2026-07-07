@@ -7,33 +7,31 @@ import (
 	"sort"
 	"strings"
 	"time"
-
-	"github.com/neo4j/neo4j-go-driver/v5/neo4j"
 )
 
 // SurveyRow represents one row in the survey export: a (map, system, station) tuple.
 type SurveyRow struct {
-	MapSystem      string     `json:"map_system"`
-	MapPowerState  string     `json:"map_power_state"`
-	SearchRadiusLY int        `json:"search_radius_ly"`
-	MapBody        string     `json:"map_body"`
-	MapRingType    string     `json:"map_ring_type,omitempty"`
-	MapReserveLevel string   `json:"map_reserve_level,omitempty"`
-	MapRESSites    string     `json:"map_res_sites,omitempty"`
-	MapHotspots    string     `json:"map_hotspots,omitempty"`
-	SystemName     string     `json:"system_name"`
-	DistanceLY     float64    `json:"distance_ly"`
-	HasData        bool       `json:"has_data"`
-	StationName    string     `json:"station_name,omitempty"`
-	LargestPad     string     `json:"largest_pad,omitempty"`
-	LastBGSUpdate  *time.Time `json:"last_bgs_update,omitempty"`
-	LastMarketUp   *time.Time `json:"last_market_update,omitempty"`
-	FactionStates  string     `json:"faction_states,omitempty"`
-	PowerplayState string     `json:"powerplay_state,omitempty"`
-	Population     int64      `json:"population,omitempty"`
-	RingSummary    string     `json:"ring_summary,omitempty"`
-	RingHotspots   string     `json:"ring_hotspots,omitempty"`
-	RingReserves   string     `json:"ring_reserves,omitempty"`
+	MapSystem       string     `json:"map_system"`
+	MapPowerState   string     `json:"map_power_state"`
+	SearchRadiusLY  int        `json:"search_radius_ly"`
+	MapBody         string     `json:"map_body"`
+	MapRingType     string     `json:"map_ring_type,omitempty"`
+	MapReserveLevel string     `json:"map_reserve_level,omitempty"`
+	MapRESSites     string     `json:"map_res_sites,omitempty"`
+	MapHotspots     string     `json:"map_hotspots,omitempty"`
+	SystemName      string     `json:"system_name"`
+	DistanceLY      float64    `json:"distance_ly"`
+	HasData         bool       `json:"has_data"`
+	StationName     string     `json:"station_name,omitempty"`
+	LargestPad      string     `json:"largest_pad,omitempty"`
+	LastBGSUpdate   *time.Time `json:"last_bgs_update,omitempty"`
+	LastMarketUp    *time.Time `json:"last_market_update,omitempty"`
+	FactionStates   string     `json:"faction_states,omitempty"`
+	PowerplayState  string     `json:"powerplay_state,omitempty"`
+	Population      int64      `json:"population,omitempty"`
+	RingSummary     string     `json:"ring_summary,omitempty"`
+	RingHotspots    string     `json:"ring_hotspots,omitempty"`
+	RingReserves    string     `json:"ring_reserves,omitempty"`
 }
 
 // SurveyExportResponse wraps the full survey export result.
@@ -59,7 +57,7 @@ type surveyMap struct {
 
 // SurveyExport generates a complete survey of ALL systems within range of each mining map,
 // regardless of faction state. This reveals "dark" systems with no EDDN data coverage.
-func (s *Store) SurveyExport(ctx context.Context, memgraph MemgraphClient, progress ProgressFunc) (*SurveyExportResponse, error) {
+func (s *Store) SurveyExport(ctx context.Context, galaxy GalaxyQuerier, progress ProgressFunc) (*SurveyExportResponse, error) {
 	if progress == nil {
 		progress = func(int, int, string) {}
 	}
@@ -78,19 +76,19 @@ func (s *Store) SurveyExport(ctx context.Context, memgraph MemgraphClient, progr
 		}, nil
 	}
 
-	// Step 2: Get coordinates and live power states from Memgraph
-	progress(2, 5, fmt.Sprintf("Querying Memgraph for %d map system coordinates and power states", len(maps)))
+	// Step 2: Get coordinates and live power states from galaxy.*
+	progress(2, 5, fmt.Sprintf("Querying galaxy store for %d map system coordinates and power states", len(maps)))
 	systemNames := make([]string, len(maps))
 	for i, m := range maps {
 		systemNames[i] = m.SystemName
 	}
 
-	coords, err := getSystemCoords(ctx, memgraph, systemNames)
+	coords, err := getSystemCoords(ctx, galaxy, systemNames)
 	if err != nil {
 		return nil, fmt.Errorf("get system coords: %w", err)
 	}
 
-	powerStates, err := getPowerStates(ctx, memgraph, systemNames)
+	powerStates, err := getPowerStates(ctx, galaxy, systemNames)
 	if err != nil {
 		return nil, fmt.Errorf("get power states: %w", err)
 	}
@@ -139,7 +137,7 @@ func (s *Store) SurveyExport(ctx context.Context, memgraph MemgraphClient, progr
 	progress(4, 5, fmt.Sprintf("Spatial scanning %d maps for nearby metallic ring systems", len(activeMaps)))
 	var allRows []SurveyRow
 	for _, sm := range activeMaps {
-		rows, err := surveySystemsInRadius(ctx, memgraph, sm)
+		rows, err := surveySystemsInRadius(ctx, galaxy, sm)
 		if err != nil {
 			return nil, fmt.Errorf("survey %s: %w", sm.Name, err)
 		}
@@ -166,72 +164,86 @@ func (s *Store) SurveyExport(ctx context.Context, memgraph MemgraphClient, progr
 	}, nil
 }
 
-// surveySystemsInRadius queries Memgraph for ALL systems within a bounding box,
+// surveySystemsInRadius queries galaxy.* for ALL systems within a bounding box,
 // then filters to exact Euclidean distance. Returns one row per (system, station) pair.
 // Ring data is fetched in a separate batch query for performance.
-func surveySystemsInRadius(ctx context.Context, client MemgraphClient, sm surveyMap) ([]SurveyRow, error) {
-	session := client.NewSession(ctx, neo4j.SessionConfig{AccessMode: neo4j.AccessModeRead})
-	defer session.Close(ctx)
-
+func surveySystemsInRadius(ctx context.Context, galaxy GalaxyQuerier, sm surveyMap) ([]SurveyRow, error) {
 	r := float64(sm.SearchRadius)
 
 	// Main query: systems, stations, factions (no body/ring joins for speed)
 	query := `
-		WITH $cx AS cx, $cy AS cy, $cz AS cz, $radius AS radius,
-		     point({x: $cx - $radius, y: $cy - $radius, z: $cz - $radius}) AS lowerLeft,
-		     point({x: $cx + $radius, y: $cy + $radius, z: $cz + $radius}) AS upperRight
-
-		MATCH (s:System)
-		WHERE point.withinbbox(s.location, lowerLeft, upperRight)
-
-		// Get all stations (optional)
-		OPTIONAL MATCH (s)-[:HAS_STATION]->(st:Station)
-		WHERE st.type <> 'FleetCarrier' AND st.type <> 'Drake-Class Carrier'
-
-		// Get market freshness
-		OPTIONAL MATCH (st)-[:HAS_MARKET]->(m:Market)
-
-		// Get faction presence for active states
-		OPTIONAL MATCH (f:Faction)-[p:PRESENT_IN]->(s)
-
-		WITH s, st, m,
-		     collect(DISTINCT p.active_states) AS all_state_arrays
-
-		RETURN
-			s.name AS system_name,
-			s.location.x AS x, s.location.y AS y, s.location.z AS z,
-			s.powerplay_state AS powerplay_state,
-			s.population AS population,
-			st.name AS station_name,
-			COALESCE(st.landing_pads_large, st.large_pads, 0) AS large_pads,
-			COALESCE(st.landing_pads_medium, st.medium_pads, 0) AS medium_pads,
-			COALESCE(st.landing_pads_small, st.small_pads, 0) AS small_pads,
-			s.last_eddn_update AS last_bgs_update,
-			m.last_event_time AS last_market_update,
-			all_state_arrays
+WITH candidates AS (
+	SELECT c.id64, COALESCE(sys.name, c.name) AS name, c.x::float8 AS x, c.y::float8 AS y, c.z::float8 AS z,
+		COALESCE(sp.powerplay_state, '') AS powerplay_state,
+		COALESCE(sys.population, 0) AS population,
+		NULLIF(GREATEST(
+			COALESCE(sys.last_event_time, '-infinity'::timestamptz),
+			COALESCE(sys.last_faction_update, '-infinity'::timestamptz)
+		), '-infinity'::timestamptz) AS last_bgs_update
+	FROM galaxy.system_catalog c
+	LEFT JOIN galaxy.system sys ON sys.id64 = c.id64
+	LEFT JOIN galaxy.system_power sp ON sp.system_id64 = c.id64
+	WHERE c.x IS NOT NULL
+	  AND cube(ARRAY[c.x::float8, c.y::float8, c.z::float8])
+	      <@ cube(
+	        ARRAY[$1::float8 - $4::float8, $2::float8 - $4::float8, $3::float8 - $4::float8],
+	        ARRAY[$1::float8 + $4::float8, $2::float8 + $4::float8, $3::float8 + $4::float8]
+	      )
+)
+SELECT
+	c.name AS system_name,
+	c.x, c.y, c.z,
+	c.powerplay_state,
+	c.population,
+	st.name AS station_name,
+	COALESCE(st.large_pads, 0) AS large_pads,
+	COALESCE(st.medium_pads, 0) AS medium_pads,
+	COALESCE(st.small_pads, 0) AS small_pads,
+	c.last_bgs_update,
+	m.last_event_time AS last_market_update,
+	COALESCE(states.faction_states, '') AS faction_states
+FROM candidates c
+LEFT JOIN galaxy.station st
+	ON st.system_id64 = c.id64
+	AND COALESCE(st.station_type, '') NOT IN ('FleetCarrier', 'Drake-Class Carrier')
+	AND COALESCE(st.kind, '') <> 'fleet_carrier'
+LEFT JOIN galaxy.market m ON m.market_id = st.market_id
+LEFT JOIN LATERAL (
+	SELECT string_agg(DISTINCT active_state.state_name, ', ' ORDER BY active_state.state_name) AS faction_states
+	FROM galaxy.system_faction sf
+	CROSS JOIN LATERAL unnest(sf.active_states) AS active_state(state_name)
+	WHERE sf.system_id64 = c.id64
+	  AND active_state.state_name <> ''
+) states ON true
 	`
 
-	result, err := session.Run(ctx, query, map[string]any{
-		"cx":     sm.X,
-		"cy":     sm.Y,
-		"cz":     sm.Z,
-		"radius": r,
-	})
+	result, err := galaxy.Query(ctx, query, sm.X, sm.Y, sm.Z, r)
 	if err != nil {
 		return nil, fmt.Errorf("survey query: %w", err)
 	}
+	defer result.Close()
 
 	var rows []SurveyRow
 	seen := make(map[string]bool)        // dedupe system-only rows
-	systemNames := make(map[string]bool)  // collect unique system names for ring query
+	systemNames := make(map[string]bool) // collect unique system names for ring query
 
-	for result.Next(ctx) {
-		rec := result.Record()
-
-		sysName := toString(rec, "system_name")
-		sx := toFloat64(getRecordValue(rec, "x"))
-		sy := toFloat64(getRecordValue(rec, "y"))
-		sz := toFloat64(getRecordValue(rec, "z"))
+	for result.Next() {
+		var sysName, ppState, factionStates string
+		var sx, sy, sz float64
+		var pop int64
+		var stationName *string
+		var largePads, medPads, smallPads int
+		var lastBGS, lastMarket *time.Time
+		if err := result.Scan(
+			&sysName, &sx, &sy, &sz,
+			&ppState, &pop,
+			&stationName,
+			&largePads, &medPads, &smallPads,
+			&lastBGS, &lastMarket,
+			&factionStates,
+		); err != nil {
+			return nil, err
+		}
 
 		// Exact Euclidean distance filter (bounding box is a cube, not sphere)
 		dist := math.Sqrt((sx-sm.X)*(sx-sm.X) + (sy-sm.Y)*(sy-sm.Y) + (sz-sm.Z)*(sz-sm.Z))
@@ -244,27 +256,13 @@ func surveySystemsInRadius(ctx context.Context, client MemgraphClient, sm survey
 			continue
 		}
 
-		stationName := toString(rec, "station_name")
-		largePads := int(toInt64(getRecordValue(rec, "large_pads")))
-		medPads := int(toInt64(getRecordValue(rec, "medium_pads")))
-		smallPads := int(toInt64(getRecordValue(rec, "small_pads")))
-
-		ppState := toString(rec, "powerplay_state")
 		if ppState == "" {
 			ppState = "Unoccupied"
 		}
-		pop := toInt64(getRecordValue(rec, "population"))
-
-		var lastBGS *time.Time
-		if t := toTime(getRecordValue(rec, "last_bgs_update")); !t.IsZero() {
-			lastBGS = &t
+		station := ""
+		if stationName != nil {
+			station = *stationName
 		}
-		var lastMarket *time.Time
-		if t := toTime(getRecordValue(rec, "last_market_update")); !t.IsZero() {
-			lastMarket = &t
-		}
-
-		factionStates := flattenFactionStates(getRecordValue(rec, "all_state_arrays"))
 		hasData := lastBGS != nil
 
 		row := SurveyRow{
@@ -279,7 +277,7 @@ func surveySystemsInRadius(ctx context.Context, client MemgraphClient, sm survey
 			SystemName:      sysName,
 			DistanceLY:      math.Round(dist*10) / 10,
 			HasData:         hasData,
-			StationName:     stationName,
+			StationName:     station,
 			LargestPad:      largestPad(largePads, medPads, smallPads),
 			LastBGSUpdate:   lastBGS,
 			LastMarketUp:    lastMarket,
@@ -290,7 +288,7 @@ func surveySystemsInRadius(ctx context.Context, client MemgraphClient, sm survey
 
 		systemNames[sysName] = true
 
-		if stationName == "" {
+		if station == "" {
 			key := sm.Name + "|" + sysName
 			if !seen[key] {
 				seen[key] = true
@@ -310,7 +308,7 @@ func surveySystemsInRadius(ctx context.Context, client MemgraphClient, sm survey
 		for n := range systemNames {
 			names = append(names, n)
 		}
-		ringData, err := batchGetRingData(ctx, session, names)
+		ringData, err := batchGetRingData(ctx, galaxy, names)
 		if err != nil {
 			return nil, fmt.Errorf("ring query: %w", err)
 		}
@@ -341,22 +339,32 @@ type systemRingData struct {
 
 // batchGetRingData queries planetary ring data for a batch of system names.
 // Returns ring summaries, hotspot info (Platinum/LTD only), and reserve levels.
-func batchGetRingData(ctx context.Context, session neo4j.SessionWithContext, systemNames []string) (map[string]*systemRingData, error) {
+func batchGetRingData(ctx context.Context, galaxy GalaxyQuerier, systemNames []string) (map[string]*systemRingData, error) {
 	query := `
-		UNWIND $names AS sysName
-		MATCH (s:System {name: sysName})-[:HAS_BODY]->(b:Body)
-		WHERE b.type <> 'Star'
-		MATCH (b)-[:HAS_RING]->(ring:Ring)
-		WHERE NOT ring.name CONTAINS 'Belt'
-		RETURN s.name AS system_name, b.name AS body_name,
-		       ring.name AS ring_name, ring.ring_class AS ring_class,
-		       ring.hotspots AS hotspots, ring.reserve_level AS reserve_level
+SELECT
+	COALESCE(sys.name, c.name) AS system_name,
+	b.name AS body_name,
+	r.name AS ring_name,
+	r.ring_class,
+	COALESCE(r.reserve_level, '') AS reserve_level,
+	COALESCE(array_agg(comm.name || ':' || rh.count ORDER BY comm.name) FILTER (WHERE comm.name IS NOT NULL), '{}') AS hotspots
+FROM galaxy.system_catalog c
+LEFT JOIN galaxy.system sys ON sys.id64 = c.id64
+JOIN galaxy.body b ON b.system_id64 = c.id64
+JOIN galaxy.ring r ON r.system_id64 = b.system_id64 AND r.body_id = b.body_id
+LEFT JOIN galaxy.ring_hotspot rh ON rh.system_id64 = r.system_id64 AND rh.ring_name = r.name
+LEFT JOIN galaxy.commodity comm ON comm.commodity_id = rh.commodity_id
+WHERE c.name = ANY($1)
+  AND COALESCE(b.type, '') <> 'Star'
+  AND r.name NOT ILIKE '%Belt%'
+GROUP BY COALESCE(sys.name, c.name), b.name, r.name, r.ring_class, r.reserve_level
 	`
 
-	result, err := session.Run(ctx, query, map[string]any{"names": systemNames})
+	result, err := galaxy.Query(ctx, query, systemNames)
 	if err != nil {
 		return nil, err
 	}
+	defer result.Close()
 
 	type ringInfo struct {
 		bodyName     string
@@ -368,28 +376,15 @@ func batchGetRingData(ctx context.Context, session neo4j.SessionWithContext, sys
 
 	systemRings := make(map[string][]ringInfo)
 
-	for result.Next(ctx) {
-		rec := result.Record()
-		sysName := toString(rec, "system_name")
-		bodyName := toString(rec, "body_name")
-		ringName := toString(rec, "ring_name")
-		ringClass := toString(rec, "ring_class")
-		reserveLevel := toString(rec, "reserve_level")
+	for result.Next() {
+		var sysName, bodyName, ringName, ringClass, reserveLevel string
+		var hotspots []string
+		if err := result.Scan(&sysName, &bodyName, &ringName, &ringClass, &reserveLevel, &hotspots); err != nil {
+			return nil, err
+		}
 
 		if sysName == "" || bodyName == "" || ringClass == "" {
 			continue
-		}
-
-		// Parse hotspots array
-		var hotspots []string
-		if v := getRecordValue(rec, "hotspots"); v != nil {
-			if arr, ok := v.([]any); ok {
-				for _, item := range arr {
-					if s, ok := item.(string); ok {
-						hotspots = append(hotspots, s)
-					}
-				}
-			}
 		}
 
 		systemRings[sysName] = append(systemRings[sysName], ringInfo{
@@ -448,10 +443,10 @@ func batchGetRingData(ctx context.Context, session neo4j.SessionWithContext, sys
 			var relevant []string
 			for _, h := range ri.hotspots {
 				// Format is "Type:Count"
-				if strings.HasPrefix(h, "Platinum:") || strings.HasPrefix(h, "LowTemperatureDiamond:") {
+				if strings.HasPrefix(h, "platinum:") || strings.HasPrefix(h, "lowtemperaturediamond:") {
 					// Make LTD readable
-					display := strings.Replace(h, "LowTemperatureDiamond:", "LTD x", 1)
-					display = strings.Replace(display, "Platinum:", "Platinum x", 1)
+					display := strings.Replace(h, "lowtemperaturediamond:", "LTD x", 1)
+					display = strings.Replace(display, "platinum:", "Platinum x", 1)
 					relevant = append(relevant, display)
 				}
 			}
@@ -472,45 +467,6 @@ func batchGetRingData(ctx context.Context, session neo4j.SessionWithContext, sys
 	}
 
 	return dataMap, nil
-}
-
-// flattenFactionStates extracts unique faction states from nested arrays.
-func flattenFactionStates(v any) string {
-	if v == nil {
-		return ""
-	}
-
-	outerArr, ok := v.([]any)
-	if !ok {
-		return ""
-	}
-
-	unique := make(map[string]bool)
-	for _, inner := range outerArr {
-		if innerArr, ok := inner.([]any); ok {
-			for _, s := range innerArr {
-				if str, ok := s.(string); ok && str != "" {
-					unique[str] = true
-				}
-			}
-		}
-	}
-
-	if len(unique) == 0 {
-		return ""
-	}
-
-	states := make([]string, 0, len(unique))
-	for s := range unique {
-		states = append(states, s)
-	}
-	sort.Strings(states)
-
-	result := states[0]
-	for _, s := range states[1:] {
-		result += ", " + s
-	}
-	return result
 }
 
 // getAllMiningMaps retrieves ALL mining maps from TimescaleDB (no commodity filter).

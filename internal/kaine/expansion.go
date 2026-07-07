@@ -2,12 +2,11 @@ package kaine
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"math"
 	"sort"
 	"time"
-
-	"github.com/neo4j/neo4j-go-driver/v5/neo4j"
 )
 
 // ============================================================================
@@ -17,7 +16,7 @@ import (
 
 // ExpansionTarget represents an unoccupied system with mining potential.
 type ExpansionTarget struct {
-	// System info (from Memgraph)
+	// System info (from galaxy.*)
 	SystemName     string  `json:"system_name"`
 	X              float64 `json:"x"`
 	Y              float64 `json:"y"`
@@ -25,13 +24,13 @@ type ExpansionTarget struct {
 	PowerplayState string  `json:"powerplay_state"` // Should be Unoccupied/null
 
 	// Strategic location
-	NearestAnchor      string  `json:"nearest_anchor"`       // Name of nearest Kaine Fort/Stronghold
-	DistanceToAnchor   float64 `json:"distance_to_anchor"`   // Distance to nearest anchor
-	NearestMap         string  `json:"nearest_map,omitempty"` // Name of nearest existing mining map system
-	DistanceToMap      float64 `json:"distance_to_map"`       // Distance to nearest map
-	LocationScore      int     `json:"location_score"`        // Strategic location points
+	NearestAnchor    string  `json:"nearest_anchor"`        // Name of nearest Kaine Fort/Stronghold
+	DistanceToAnchor float64 `json:"distance_to_anchor"`    // Distance to nearest anchor
+	NearestMap       string  `json:"nearest_map,omitempty"` // Name of nearest existing mining map system
+	DistanceToMap    float64 `json:"distance_to_map"`       // Distance to nearest map
+	LocationScore    int     `json:"location_score"`        // Strategic location points
 
-	// Ring data (from Memgraph)
+	// Ring data (from galaxy.*)
 	Rings []ExpansionRing `json:"rings,omitempty"`
 
 	// Calculated
@@ -60,15 +59,15 @@ type ExpansionTargetsResponse struct {
 
 // FindExpansionTargets finds unoccupied systems near Kaine space with mining potential.
 // This implements Orok's Monthly Process for strategic expansion planning.
-func (s *Store) FindExpansionTargets(ctx context.Context, memgraph MemgraphClient, progress ProgressFunc) (*ExpansionTargetsResponse, error) {
+func (s *Store) FindExpansionTargets(ctx context.Context, galaxy GalaxyQuerier, progress ProgressFunc) (*ExpansionTargetsResponse, error) {
 	if progress == nil {
 		progress = func(int, int, string) {}
 	}
 	const searchRadius = 50.0 // Search up to 50 LY beyond Kaine anchors
 
 	// Step 1: Get Kaine Fortified/Stronghold systems (anchors)
-	progress(1, 4, "Fetching Kaine anchor systems from Memgraph")
-	anchors, err := getKaineAnchors(ctx, memgraph)
+	progress(1, 4, "Fetching Kaine anchor systems from galaxy store")
+	anchors, err := getKaineAnchors(ctx, galaxy)
 	if err != nil {
 		return nil, fmt.Errorf("get kaine anchors: %w", err)
 	}
@@ -89,14 +88,14 @@ func (s *Store) FindExpansionTargets(ctx context.Context, memgraph MemgraphClien
 		return nil, fmt.Errorf("get mining map systems: %w", err)
 	}
 
-	mapCoords, err := getSystemCoords(ctx, memgraph, mapSystems)
+	mapCoords, err := getSystemCoords(ctx, galaxy, mapSystems)
 	if err != nil {
 		return nil, fmt.Errorf("get map coords: %w", err)
 	}
 
 	// Step 3: Find unoccupied systems near anchors with valuable rings
 	progress(3, 4, "Scanning for unoccupied systems with valuable rings within 50 Ly")
-	targets, err := findUnoccupiedMiningTargets(ctx, memgraph, anchors, searchRadius)
+	targets, err := findUnoccupiedMiningTargets(ctx, galaxy, anchors, searchRadius)
 	if err != nil {
 		return nil, fmt.Errorf("find unoccupied targets: %w", err)
 	}
@@ -190,111 +189,118 @@ func (s *Store) GetMiningMapSystems(ctx context.Context) ([]string, error) {
 }
 
 // findUnoccupiedMiningTargets finds unoccupied systems with valuable rings near anchors.
-func findUnoccupiedMiningTargets(ctx context.Context, client MemgraphClient, anchors []anchorCoverage, searchRadius float64) ([]ExpansionTarget, error) {
-	session := client.NewSession(ctx, neo4j.SessionConfig{AccessMode: neo4j.AccessModeRead})
-	defer session.Close(ctx)
-
-	// Build list of anchor coords for the query
-	anchorCoords := make([]map[string]any, len(anchors))
-	for i, a := range anchors {
-		anchorCoords[i] = map[string]any{"x": a.X, "y": a.Y, "z": a.Z, "radius": float64(a.Radius)}
+func findUnoccupiedMiningTargets(ctx context.Context, galaxy GalaxyQuerier, anchors []anchorCoverage, searchRadius float64) ([]ExpansionTarget, error) {
+	if len(anchors) == 0 {
+		return []ExpansionTarget{}, nil
 	}
-
+	ax := make([]float64, len(anchors))
+	ay := make([]float64, len(anchors))
+	az := make([]float64, len(anchors))
+	for i, a := range anchors {
+		ax[i] = a.X
+		ay[i] = a.Y
+		az[i] = a.Z
+	}
 	query := `
-		// Start from anchors and use spatial index to find nearby unoccupied systems
-		UNWIND $anchors AS anchor
-		WITH anchor,
-		     point({x: anchor.x - $searchRadius, y: anchor.y - $searchRadius, z: anchor.z - $searchRadius}) AS lowerLeft,
-		     point({x: anchor.x + $searchRadius, y: anchor.y + $searchRadius, z: anchor.z + $searchRadius}) AS upperRight
-
-		MATCH (s:System)
-		WHERE point.withinbbox(s.location, lowerLeft, upperRight)
-		  AND (s.powerplay_state IS NULL OR s.powerplay_state IN ['Unoccupied', ''])
-		  AND s.controlling_power IS NULL
-
-		// Deduplicate systems found near multiple anchors
-		WITH DISTINCT s
-
-		// Must have at least one valuable ring (Metallic, Metal Rich, or Icy with LTD)
-		MATCH (s)-[:HAS_BODY]->(b:Body)-[:HAS_RING]->(r:Ring)
-		WHERE r.ring_class IN ['Metallic', 'Metal Rich', 'Icy']
-
-		WITH s, collect(DISTINCT {
-			body_name: b.name,
-			ring_name: r.name,
-			ring_class: r.ring_class,
-			reserve_level: r.reserve_level,
-			hotspots: r.hotspots,
-			has_ltd: r.has_ltd
-		}) AS rings
-
-		RETURN
-			s.name AS system_name,
-			s.location.x AS x, s.location.y AS y, s.location.z AS z,
-			s.powerplay_state AS powerplay_state,
-			rings
-
-		LIMIT 200
+WITH anchors AS (
+	SELECT * FROM unnest($1::float8[], $2::float8[], $3::float8[]) AS a(x, y, z)
+),
+candidates AS (
+	SELECT DISTINCT c.id64, COALESCE(sys.name, c.name) AS name, c.x::float8 AS x, c.y::float8 AS y, c.z::float8 AS z,
+		COALESCE(sp.powerplay_state, '') AS powerplay_state
+	FROM anchors a
+	JOIN galaxy.system_catalog c
+	  ON c.x IS NOT NULL
+	 AND cube(ARRAY[c.x::float8, c.y::float8, c.z::float8])
+	     <@ cube(
+	        ARRAY[a.x - $4, a.y - $4, a.z - $4],
+	        ARRAY[a.x + $4, a.y + $4, a.z + $4]
+	     )
+	LEFT JOIN galaxy.system sys ON sys.id64 = c.id64
+	LEFT JOIN galaxy.system_power sp ON sp.system_id64 = c.id64
+	WHERE (sp.system_id64 IS NULL OR (sp.power_name IS NULL AND COALESCE(sp.powerplay_state, '') IN ('', 'Unoccupied')))
+)
+SELECT
+	c.name,
+	c.x, c.y, c.z,
+	c.powerplay_state,
+	jsonb_agg(DISTINCT jsonb_build_object(
+		'body_name', b.name,
+		'ring_name', r.name,
+		'ring_class', r.ring_class,
+		'reserve_level', COALESCE(r.reserve_level, ''),
+		'hotspots', COALESCE(h.hotspots, '[]'::jsonb),
+		'has_ltd', COALESCE(h.has_ltd, false)
+	)) AS rings
+FROM candidates c
+JOIN galaxy.body b ON b.system_id64 = c.id64
+JOIN galaxy.ring r ON r.system_id64 = b.system_id64 AND r.body_id = b.body_id
+LEFT JOIN LATERAL (
+	SELECT
+		jsonb_agg(lower(comm.name) || ':' || rh.count ORDER BY comm.name) AS hotspots,
+		bool_or(comm.name = 'lowtemperaturediamond') AS has_ltd
+	FROM galaxy.ring_hotspot rh
+	JOIN galaxy.commodity comm ON comm.commodity_id = rh.commodity_id
+	WHERE rh.system_id64 = r.system_id64
+	  AND rh.ring_name = r.name
+) h ON true
+WHERE r.ring_class IN ('Metallic', 'Metal Rich', 'Icy')
+GROUP BY c.id64, c.name, c.x, c.y, c.z, c.powerplay_state
+LIMIT 200
 	`
 
-	result, err := session.Run(ctx, query, map[string]any{
-		"anchors":      anchorCoords,
-		"searchRadius": searchRadius,
-	})
+	rows, err := galaxy.Query(ctx, query, ax, ay, az, searchRadius)
 	if err != nil {
 		return nil, fmt.Errorf("query unoccupied targets: %w", err)
 	}
+	defer rows.Close()
 
 	var targets []ExpansionTarget
-	for result.Next(ctx) {
-		record := result.Record()
-
-		powerplayState := toString(record, "powerplay_state")
+	for rows.Next() {
+		var ringsJSON []byte
+		target := ExpansionTarget{}
+		if err := rows.Scan(
+			&target.SystemName,
+			&target.X, &target.Y, &target.Z,
+			&target.PowerplayState,
+			&ringsJSON,
+		); err != nil {
+			return nil, err
+		}
+		powerplayState := target.PowerplayState
 		if powerplayState == "" {
 			powerplayState = "Unoccupied"
 		}
-
-		target := ExpansionTarget{
-			SystemName:     toString(record, "system_name"),
-			X:              toFloat64(getRecordValue(record, "x")),
-			Y:              toFloat64(getRecordValue(record, "y")),
-			Z:              toFloat64(getRecordValue(record, "z")),
-			PowerplayState: powerplayState,
-		}
+		target.PowerplayState = powerplayState
 
 		// Parse rings
-		if ringsVal, ok := getRecordValue(record, "rings").([]any); ok {
-			for _, rv := range ringsVal {
-				if rm, ok := rv.(map[string]any); ok {
-					ring := ExpansionRing{
-						BodyName:     anyToString(rm["body_name"]),
-						RingName:     anyToString(rm["ring_name"]),
-						RingClass:    anyToString(rm["ring_class"]),
-						ReserveLevel: anyToString(rm["reserve_level"]),
-					}
-
-					// Parse hotspots
-					if hs, ok := rm["hotspots"].([]any); ok {
-						for _, h := range hs {
-							if hs, ok := h.(string); ok {
-								ring.Hotspots = append(ring.Hotspots, hs)
-							}
-						}
-					}
-
-					// Check for LTD
-					if hasLTD, ok := rm["has_ltd"].(bool); ok {
-						ring.HasLTD = hasLTD
-					}
-
-					// Skip Icy rings without LTD (no value for our purposes)
-					if ring.RingClass == "Icy" && !ring.HasLTD {
-						continue
-					}
-
-					target.Rings = append(target.Rings, ring)
-				}
+		var rings []struct {
+			BodyName     string   `json:"body_name"`
+			RingName     string   `json:"ring_name"`
+			RingClass    string   `json:"ring_class"`
+			ReserveLevel string   `json:"reserve_level"`
+			Hotspots     []string `json:"hotspots"`
+			HasLTD       bool     `json:"has_ltd"`
+		}
+		if err := json.Unmarshal(ringsJSON, &rings); err != nil {
+			return nil, fmt.Errorf("parse target rings: %w", err)
+		}
+		for _, rm := range rings {
+			ring := ExpansionRing{
+				BodyName:     rm.BodyName,
+				RingName:     rm.RingName,
+				RingClass:    rm.RingClass,
+				ReserveLevel: rm.ReserveLevel,
+				Hotspots:     rm.Hotspots,
+				HasLTD:       rm.HasLTD,
 			}
+
+			// Skip Icy rings without LTD (no value for our purposes)
+			if ring.RingClass == "Icy" && !ring.HasLTD {
+				continue
+			}
+
+			target.Rings = append(target.Rings, ring)
 		}
 
 		// Only include if we have valuable rings
@@ -303,7 +309,7 @@ func findUnoccupiedMiningTargets(ctx context.Context, client MemgraphClient, anc
 		}
 	}
 
-	return targets, result.Err()
+	return targets, rows.Err()
 }
 
 // calculateLocationScore calculates strategic location points based on distance to nearest map.
@@ -350,7 +356,7 @@ func calculateRingScore(ring *ExpansionRing) int {
 		score += 10
 	case "Common":
 		score += 5
-	// Depleted: +0 but don't skip entirely
+		// Depleted: +0 but don't skip entirely
 	}
 
 	// Hotspot bonus
@@ -365,12 +371,4 @@ func calculateRingScore(ring *ExpansionRing) int {
 	}
 
 	return score
-}
-
-// anyToString converts any value to a string.
-func anyToString(v any) string {
-	if s, ok := v.(string); ok {
-		return s
-	}
-	return ""
 }

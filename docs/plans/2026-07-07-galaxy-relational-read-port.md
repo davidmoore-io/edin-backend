@@ -76,11 +76,35 @@ rule.
 - Tests: `GOWORK=off go test ./internal/galaxystore ./internal/httpapi ./cmd/control-api`
 - Tests: `GOWORK=off go test ./...`
 
+## W5.4 Evidence
+
+- Imported the production `kaine.mining_maps` application table into local
+  `edin-timescaledb` for realistic mining-map checks: 153 rows, including 72
+  Plasmium maps and 25 LTD maps by commodity tags. This import touched only the
+  EDIN app database, not `feed.messages` or `galaxy.*`.
+- Rewired Kaine mining-map list/stats/import validation to enrich/validate live
+  system state through `galaxy.*` instead of Memgraph.
+- Rewired mining intelligence HTTP routes and MCP tools to relational reads:
+  Plasmium buyers, LTD buyers, expansion targets, and survey export.
+- Added a guarded relational mining smoke test that executes all four mining
+  workflows against local `edin-timescaledb` + `eddn-timescaledb` when
+  `EDIN_TEST_DSN` and `GALAXY_TEST_DSN` are set.
+- Data-shape correction found during local setup: the tracked EDIN init SQL and
+  CSV importer still used the old `map_url`/`map_url_2`/`power_state` shape,
+  while production and backend code already used `map_1`/`map_2`/`map_3` plus
+  live power-state enrichment. The init/migration/import scripts were aligned
+  to the production shape.
+- Tests: `python3 -m pytest scripts/data-import/test_import_mining_maps.py`
+  in `edin-data`.
+- Tests: `GOWORK=off EDIN_TEST_DSN=postgres://edin_admin:eddn-local-dev@localhost:5432/edin GALAXY_TEST_DSN=postgres://eddn_admin:eddn-local-dev@localhost:5433/eddn_raw go test -count=1 -run TestRelationalMiningSmoke -v ./internal/kaine`
+- Tests: `GOWORK=off go test ./internal/kaine ./internal/galaxystore ./internal/tools ./internal/httpapi ./cmd/control-api`
+- Tests: `GOWORK=off go test ./...`
+
 ## Remaining W5 Order
 
 1. Record graph-era responses for the W5.7 contract harness before each cutover.
 2. Port powerplay APIs/tools onto `galaxystore`. Done for W5.2 current-state surfaces.
 3. Port Kaine system intel and watcher endpoints. Done for W5.3.
-4. Port mining/expansion tools and surface-site radius query.
+4. Port mining/expansion tools and surface-site radius query. Done for W5.4.
 5. Port remaining MCP galaxy tools.
 6. Implement `galaxy_query` with the parser-enforced SQL sandbox.
