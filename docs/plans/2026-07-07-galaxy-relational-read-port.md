@@ -94,6 +94,10 @@ rule.
   while production and backend code already used `map_1`/`map_2`/`map_3` plus
   live power-state enrichment. The init/migration/import scripts were aligned
   to the production shape.
+- Follow-up correction: Plasmium/LTD buyer candidates explicitly exclude
+  construction/colonisation depots (`SpaceConstructionDepot`, `space_depot`, or
+  `colonisationcontribution` service). These locations accept construction
+  requirements but are not Kaine commodity sell sites.
 - Tests: `python3 -m pytest scripts/data-import/test_import_mining_maps.py`
   in `edin-data`.
 - Tests: `GOWORK=off EDIN_TEST_DSN=postgres://edin_admin:eddn-local-dev@localhost:5432/edin GALAXY_TEST_DSN=postgres://eddn_admin:eddn-local-dev@localhost:5433/eddn_raw go test -count=1 -run TestRelationalMiningSmoke -v ./internal/kaine`

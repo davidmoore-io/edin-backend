@@ -489,6 +489,10 @@ WITH boom_systems AS (
 	  AND c.x IS NOT NULL
 	  AND COALESCE(sp.powerplay_state, 'Unoccupied') IN ('', 'Unoccupied', 'Expansion', 'Contested')
 	  AND st.controlling_faction_id IS NOT NULL
+	  -- Construction depots accept colonisation contribution cargo; they are not commodity sell sites.
+	  AND COALESCE(st.station_type, '') <> 'SpaceConstructionDepot'
+	  AND COALESCE(st.kind, '') <> 'space_depot'
+	  AND NOT ('colonisationcontribution' = ANY(COALESCE(st.services, '{}')))
 	GROUP BY sf.system_id64, st.market_id
 )
 SELECT
@@ -520,6 +524,9 @@ LEFT JOIN galaxy.market_commodity mc_plat ON mc_plat.market_id = st.market_id AN
 LEFT JOIN galaxy.commodity c_osm ON c_osm.name = 'osmium'
 LEFT JOIN galaxy.market_commodity mc_osm ON mc_osm.market_id = st.market_id AND mc_osm.commodity_id = c_osm.commodity_id
 WHERE st.controlling_faction_id IS NOT NULL
+  AND COALESCE(st.station_type, '') <> 'SpaceConstructionDepot'
+  AND COALESCE(st.kind, '') <> 'space_depot'
+  AND NOT ('colonisationcontribution' = ANY(COALESCE(st.services, '{}')))
 	`
 
 	rows, err := galaxy.Query(ctx, query)

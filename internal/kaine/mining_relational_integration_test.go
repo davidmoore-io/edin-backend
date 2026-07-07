@@ -3,6 +3,7 @@ package kaine
 import (
 	"context"
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/edin-space/edin-backend/internal/galaxystore"
@@ -32,10 +33,20 @@ func TestRelationalMiningSmoke(t *testing.T) {
 	plasmium, err := store.FindPlasmiumBuyers(ctx, galaxy, nil)
 	require.NoError(t, err)
 	require.NotNil(t, plasmium)
+	for _, miningMap := range plasmium.Maps {
+		for _, buyer := range miningMap.Buyers {
+			require.Falsef(t, isConstructionDepotName(buyer.StationName), "plasmium buyer includes construction depot: %s", buyer.StationName)
+		}
+	}
 
 	ltd, err := store.FindLTDBuyers(ctx, galaxy, nil)
 	require.NoError(t, err)
 	require.NotNil(t, ltd)
+	for _, miningMap := range ltd.Maps {
+		for _, buyer := range miningMap.Buyers {
+			require.Falsef(t, isConstructionDepotName(buyer.StationName), "LTD buyer includes construction depot: %s", buyer.StationName)
+		}
+	}
 
 	targets, err := store.FindExpansionTargets(ctx, galaxy, nil)
 	require.NoError(t, err)
@@ -44,4 +55,8 @@ func TestRelationalMiningSmoke(t *testing.T) {
 	survey, err := store.SurveyExport(ctx, galaxy, nil)
 	require.NoError(t, err)
 	require.NotNil(t, survey)
+}
+
+func isConstructionDepotName(name string) bool {
+	return strings.HasPrefix(name, "Orbital Construction Site:")
 }

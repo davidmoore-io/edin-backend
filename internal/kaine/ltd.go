@@ -381,6 +381,10 @@ LEFT JOIN galaxy.market_commodity mc_ltd ON mc_ltd.market_id = st.market_id AND 
 WHERE 'Expansion' = ANY(sf.active_states)
   AND c.x IS NOT NULL
   AND COALESCE(sp.powerplay_state, 'Unoccupied') IN ('', 'Unoccupied', 'Expansion', 'Contested')
+  -- Construction depots accept colonisation contribution cargo; they are not commodity sell sites.
+  AND COALESCE(st.station_type, '') <> 'SpaceConstructionDepot'
+  AND COALESCE(st.kind, '') <> 'space_depot'
+  AND NOT ('colonisationcontribution' = ANY(COALESCE(st.services, '{}')))
 	`
 
 	rows, err := galaxy.Query(ctx, query)
