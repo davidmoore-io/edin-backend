@@ -8,7 +8,6 @@ import (
 	"github.com/edin-space/edin-backend/internal/edsm"
 	"github.com/edin-space/edin-backend/internal/galaxystore"
 	"github.com/edin-space/edin-backend/internal/kaine"
-	"github.com/edin-space/edin-backend/internal/memgraph"
 	"github.com/edin-space/edin-backend/internal/ops"
 	"github.com/edin-space/edin-backend/internal/spansh"
 	"github.com/edin-space/edin-backend/internal/store"
@@ -90,7 +89,6 @@ type Executor struct {
 	edsm          *edsm.Client
 	cacheStore    *store.CacheStore
 	galaxyStore   *galaxystore.Store
-	memgraph      *memgraph.Client
 	kaineStore    *kaine.Store
 	commanderRepo store.CommanderRepository
 	historyClient HistoryQuerier
@@ -121,12 +119,6 @@ func (e *Executor) WithBroadcaster(broadcaster UpdateBroadcaster) *Executor {
 // WithGalaxyStore sets the relational galaxy read store.
 func (e *Executor) WithGalaxyStore(store *galaxystore.Store) *Executor {
 	e.galaxyStore = store
-	return e
-}
-
-// WithMemgraph sets the Memgraph client for real-time galaxy data.
-func (e *Executor) WithMemgraph(client *memgraph.Client) *Executor {
-	e.memgraph = client
 	return e
 }
 

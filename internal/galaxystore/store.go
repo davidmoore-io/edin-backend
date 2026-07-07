@@ -18,6 +18,10 @@ type querier interface {
 	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
 }
 
+type txStarter interface {
+	BeginTx(ctx context.Context, txOptions pgx.TxOptions) (pgx.Tx, error)
+}
+
 // Store executes read-only queries against the galaxy relational state schema.
 type Store struct {
 	db querier
@@ -45,4 +49,14 @@ func (s *Store) Query(ctx context.Context, sql string, args ...any) (pgx.Rows, e
 // own their result types but read from galaxy.*.
 func (s *Store) QueryRow(ctx context.Context, sql string, args ...any) pgx.Row {
 	return s.db.QueryRow(ctx, sql, args...)
+}
+
+// BeginReadOnly starts a transaction for ad-hoc read tools that must set
+// transaction-local safety limits before executing caller SQL.
+func (s *Store) BeginReadOnly(ctx context.Context) (pgx.Tx, error) {
+	starter, ok := s.db.(txStarter)
+	if !ok {
+		return nil, errors.New("galaxy store does not support transactions")
+	}
+	return starter.BeginTx(ctx, pgx.TxOptions{AccessMode: pgx.ReadOnly})
 }

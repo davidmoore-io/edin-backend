@@ -43,32 +43,35 @@ Response format example:
 - **Chelomey Orbital** ([Cubeo](system://Cubeo)) — Coriolis, 35 ls from star
   Sell: 280,000 cr · Demand: 45,000 · 12 ly away"`,
 
-	ToolGalaxyQuery: `galaxy_query — Ad-hoc Cypher queries against Memgraph.
+	ToolGalaxyQuery: `galaxy_query — Ad-hoc read-only SQL queries against the relational galaxy database.
 
-Read-only only (MATCH/RETURN/WITH/WHERE/ORDER BY/LIMIT). LIMIT auto-appended if missing.
+Use only when a dedicated galaxy tool does not fit the question. Dedicated tools are safer and have better response shapes for common tasks.
 
-IMPORTANT: Before writing Cypher, call galaxy_schema to get the current node labels,
-property names, edge types, and indexes. The schema evolves — don't assume property names.
+Sandbox rules:
+- Exactly one PostgreSQL SELECT/WITH statement is accepted.
+- DDL, DML, COPY, CALL, DO, SET/RESET, transaction control, EXPLAIN/ANALYZE, LOCK, LISTEN/NOTIFY, PREPARE/EXECUTE, row-locking SELECTs, and data-modifying CTEs are rejected by AST validation.
+- Side-effect/delay functions including pg_sleep, pg_notify, advisory locks, nextval, and setval are rejected.
+- The tool executes inside its own read-only transaction with local statement_timeout/work_mem and caps results at 100 rows.
 
-Graph schema — node types and their traversal paths:
-  System  → HAS_BODY  → Body  → HAS_RING → Ring        (ring_class: Metallic/MetalRich/Rocky/Icy; reserve_level; has_ltd/has_tritium/has_painite)
-  System  → HAS_STATION → Station → HAS_MARKET → Market
-  Faction → PRESENT_IN → System   (rel props: influence, state, happiness)
-  Power   → CONTROLS  → System
-  Also: SystemSignal, Settlement, FleetCarrier, Shipyard, Outfitting, CodexEntry, Commodity
+Before writing SQL, call galaxy_schema for current table/column/index inventory.
 
-Key System props: name, slug, controlling_power, powerplay_state, reinforcement, undermining, location (spatial point), allegiance, last_eddn_update
-Key Faction props: name, allegiance, government, is_pmf (true = Player Minor Faction, indexed), pmf_source
-Key Ring props: ring_class, reserve_level, hotspot_types, has_ltd, has_tritium, has_painite
+Core relational paths:
+- galaxy.system_catalog c: identity/name/coordinates (id64, name, x, y, z)
+- galaxy.system s: current system facts keyed by id64
+- galaxy.system_power sp: current powerplay state keyed by system_id64
+- galaxy.station st + galaxy.market m + galaxy.market_commodity mc + galaxy.commodity cty: current market snapshots
+- galaxy.faction f + galaxy.system_faction sf: faction presence and active/pending states
+- galaxy.body b + galaxy.ring r + galaxy.ring_hotspot rh + galaxy.body_signal bs: body/ring/signal exploration facts
+- galaxy.surface_site ss: body-scoped surface sites such as Ancient/Biological/Geological/VisitorBeacon/CrashSite reports
+- galaxy.fleet_carrier fc: current carrier location facts
 
-NEVER claim data is missing without querying. Ring types, station lists, and market data all exist — traverse the graph.
-CRITICAL: Use point.distance() for spatial queries (indexed, 1000× faster than sqrt on x/y/z).
-Powerplay: filter on s.controlling_power (property), not via relationships.
-Staleness: s.last_eddn_update or s.last_event_time (TIMESTAMP).
+Spatial pattern:
+- Resolve the reference row from galaxy.system_catalog, use x/y/z bounding predicates first, then exact sqrt distance.
+- Prefer dedicated tools for common radius queries: galaxy_surface_sites, galaxy_market, galaxy_nearby_powerplay.
 
 Parameters:
-- query (string, required): Cypher query
-- parameters (object): $var substitution values`,
+- query (string, required): PostgreSQL SELECT/WITH query
+- parameters (object): optional positional values keyed as "1", "2", ... for SQL placeholders $1, $2, ...`,
 
 	ToolGalaxyFaction: `galaxy_faction — Minor faction data from the galaxy database.
 

@@ -20,13 +20,13 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gorilla/websocket"
 	"github.com/edin-space/edin-backend/internal/anthropic"
 	"github.com/edin-space/edin-backend/internal/assistant"
 	"github.com/edin-space/edin-backend/internal/config"
 	"github.com/edin-space/edin-backend/internal/memgraph"
 	"github.com/edin-space/edin-backend/internal/observability"
 	"github.com/edin-space/edin-backend/internal/tools"
+	"github.com/gorilla/websocket"
 )
 
 // TestIntegrationChatWebSocket performs a full integration test of the chat WebSocket.
@@ -57,9 +57,6 @@ func TestIntegrationChatWebSocket(t *testing.T) {
 
 	// Create tool executor with available backends
 	toolExec := tools.NewExecutor(nil, nil, nil, nil)
-	if memgraphClient != nil {
-		toolExec = toolExec.WithMemgraph(memgraphClient)
-	}
 
 	// Create assistant runner
 	runner := assistant.NewRunner(

@@ -179,9 +179,6 @@ func main() {
 
 	toolExecutor := tools.NewExecutor(opsManager, spanshClient, edsmClient, cacheStore)
 	toolExecutor.WithBroadcaster(wsHub)
-	if memgraphClient != nil {
-		toolExecutor.WithMemgraph(memgraphClient)
-	}
 	// Wire up history client for historical powerplay queries (uses EDDN raw database)
 	if cacheStore != nil {
 		toolExecutor.WithHistoryClient(cacheStore)

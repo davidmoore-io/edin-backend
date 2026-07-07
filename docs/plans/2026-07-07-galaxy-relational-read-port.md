@@ -127,6 +127,30 @@ rule.
 - Tests: `GOWORK=off go test ./internal/galaxystore ./internal/tools ./internal/httpapi ./cmd/control-api`
 - Tests: `GOWORK=off go test ./...`
 
+## W5.6 Evidence
+
+- Re-issued `galaxy_query` from Cypher/Memgraph to parser-validated PostgreSQL
+  SQL against `galaxy.*`.
+- Added and pinned `github.com/pganalyze/pg_query_go/v6 v6.2.2` for AST-based
+  validation. The validator rejects multi-statement input, non-SELECT top-level
+  statements, DDL, DML, COPY, CALL, DO, SET/RESET/SHOW, transaction control,
+  EXPLAIN/ANALYZE, LOCK, LISTEN/NOTIFY, PREPARE/EXECUTE, row-locking SELECTs,
+  data-modifying CTEs, and known side-effect/delay functions.
+- The tool executes validated SQL inside a tool-created read-only transaction,
+  sets local `statement_timeout=2s`, `work_mem=16MB`, and
+  `default_transaction_read_only=on`, uses an application context timeout, and
+  wraps every query with a deterministic `LIMIT 100` cap.
+- Parameters use PostgreSQL-native `$1`, `$2`, ... placeholders with the MCP
+  `parameters` object keyed as `"1"`, `"2"`, ... for deterministic binding.
+- Removed Memgraph wiring from `internal/tools.Executor`; the tools package no
+  longer imports or receives a Memgraph client. Server-level legacy Memgraph
+  routes remain outside W5.6 and are still tracked for W8 retirement/porting.
+- Updated `galaxy_query` MCP definition and `tool_guidance.go` from graph/Cypher
+  guidance to relational SQL guidance.
+- Tests: `GOWORK=off GALAXY_TEST_DSN=postgres://eddn_admin:eddn-local-dev@localhost:5433/eddn_raw go test -count=1 -run TestGalaxyRelationalToolsSmoke -v ./internal/tools`
+- Tests: `GOWORK=off go test ./internal/galaxystore ./internal/tools ./internal/httpapi ./cmd/control-api`
+- Tests: `GOWORK=off go test ./...`
+
 ## Remaining W5 Order
 
 1. Record graph-era responses for the W5.7 contract harness before each cutover.
@@ -134,4 +158,4 @@ rule.
 3. Port Kaine system intel and watcher endpoints. Done for W5.3.
 4. Port mining/expansion tools. Done for W5.4.
 5. Port remaining MCP galaxy tools and surface-site radius query. Done for W5.5.
-6. Implement `galaxy_query` with the parser-enforced SQL sandbox.
+6. Implement `galaxy_query` with the parser-enforced SQL sandbox. Done for W5.6.

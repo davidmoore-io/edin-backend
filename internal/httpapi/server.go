@@ -101,10 +101,6 @@ func Run(ctx context.Context, cfg *config.Config, opsManager *ops.Manager, llmSt
 	if server.galaxyStore != nil {
 		server.toolExec = server.toolExec.WithGalaxyStore(server.galaxyStore)
 	}
-	// Wire up Memgraph client for galaxy database tools
-	if server.memgraph != nil {
-		server.toolExec = server.toolExec.WithMemgraph(server.memgraph)
-	}
 	// Wire up Kaine store for mining maps database access
 	if server.kaineStore != nil {
 		server.toolExec = server.toolExec.WithKaineStore(server.kaineStore)

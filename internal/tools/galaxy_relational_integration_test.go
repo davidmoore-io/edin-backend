@@ -62,6 +62,14 @@ LIMIT 1`)
 	schema, err := exec.galaxySchema(ctx, nil)
 	require.NoError(t, err)
 	require.Equal(t, "postgres", schema.(map[string]any)["source"])
+
+	query, err := exec.galaxyQuery(ctx, map[string]any{
+		"query":      "SELECT name FROM galaxy.system_catalog WHERE name = $1",
+		"parameters": map[string]any{"1": systemName},
+	})
+	require.NoError(t, err)
+	require.Equal(t, "postgres", query.(map[string]any)["source"])
+	require.Equal(t, 1, query.(map[string]any)["row_count"])
 }
 
 func requireSampleString(t *testing.T, ctx context.Context, store *galaxystore.Store, sql string) string {
