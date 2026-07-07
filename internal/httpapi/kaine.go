@@ -946,12 +946,12 @@ func (s *Server) handleKaineSystemSearch(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	if s.memgraph == nil {
-		s.writeError(w, http.StatusServiceUnavailable, "memgraph not configured")
+	if s.galaxyStore == nil {
+		s.writeError(w, http.StatusServiceUnavailable, "galaxy data unavailable")
 		return
 	}
 
-	systems, err := s.memgraph.SearchSystems(r.Context(), query, 10)
+	systems, err := s.galaxyStore.SearchSystems(r.Context(), query, 10)
 	if err != nil {
 		s.logger.Warn(fmt.Sprintf("system search failed: %v", err))
 		s.writeError(w, http.StatusInternalServerError, "search failed")
@@ -981,8 +981,8 @@ func (s *Server) handleKaineSearch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if s.memgraph == nil {
-		s.writeError(w, http.StatusServiceUnavailable, "memgraph not configured")
+	if s.galaxyStore == nil {
+		s.writeError(w, http.StatusServiceUnavailable, "galaxy data unavailable")
 		return
 	}
 
@@ -1002,7 +1002,7 @@ func (s *Server) handleKaineSearch(w http.ResponseWriter, r *http.Request) {
 
 	// Search systems
 	if searchType == "all" || searchType == "system" {
-		systems, err := s.memgraph.SearchSystems(r.Context(), query, 5)
+		systems, err := s.galaxyStore.SearchSystems(r.Context(), query, 5)
 		if err != nil {
 			s.logger.Warn(fmt.Sprintf("system search failed: %v", err))
 		} else {
@@ -1029,7 +1029,7 @@ func (s *Server) handleKaineSearch(w http.ResponseWriter, r *http.Request) {
 
 	// Search stations
 	if searchType == "all" || searchType == "station" {
-		stations, err := s.memgraph.SearchStations(r.Context(), query, 5)
+		stations, err := s.galaxyStore.SearchStations(r.Context(), query, 5)
 		if err != nil {
 			s.logger.Warn(fmt.Sprintf("station search failed: %v", err))
 		} else {
@@ -1077,8 +1077,8 @@ func (s *Server) handleKaineSystemDetails(w http.ResponseWriter, r *http.Request
 		decodedName = systemName
 	}
 
-	if s.memgraph == nil {
-		s.writeError(w, http.StatusServiceUnavailable, "memgraph not configured")
+	if s.galaxyStore == nil {
+		s.writeError(w, http.StatusServiceUnavailable, "galaxy data unavailable")
 		return
 	}
 
@@ -1086,7 +1086,7 @@ func (s *Server) handleKaineSystemDetails(w http.ResponseWriter, r *http.Request
 	fullData := r.URL.Query().Get("full") == "true"
 
 	if fullData {
-		systemFull, err := s.memgraph.GetSystemFull(r.Context(), decodedName)
+		systemFull, err := s.galaxyStore.GetSystemFull(r.Context(), decodedName)
 		if err != nil {
 			s.logger.Warn(fmt.Sprintf("system full lookup failed: %v", err))
 			s.writeError(w, http.StatusInternalServerError, "lookup failed")
@@ -1100,19 +1100,19 @@ func (s *Server) handleKaineSystemDetails(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	system, err := s.memgraph.GetSystem(r.Context(), decodedName)
+	systemFull, err := s.galaxyStore.GetSystemFull(r.Context(), decodedName)
 	if err != nil {
 		s.logger.Warn(fmt.Sprintf("system lookup failed: %v", err))
 		s.writeError(w, http.StatusInternalServerError, "lookup failed")
 		return
 	}
 
-	if system == nil {
+	if systemFull == nil || systemFull.System == nil {
 		s.writeError(w, http.StatusNotFound, "system not found")
 		return
 	}
 
-	s.writeJSON(w, http.StatusOK, system)
+	s.writeJSON(w, http.StatusOK, systemFull.System)
 }
 
 // handleKaineStationMarket handles GET /api/kaine/market/station?system=<name>&station=<name>
@@ -1131,12 +1131,12 @@ func (s *Server) handleKaineStationMarket(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	if s.memgraph == nil {
-		s.writeError(w, http.StatusServiceUnavailable, "memgraph not configured")
+	if s.galaxyStore == nil {
+		s.writeError(w, http.StatusServiceUnavailable, "galaxy data unavailable")
 		return
 	}
 
-	market, err := s.memgraph.GetStationMarket(r.Context(), systemName, stationName)
+	market, err := s.galaxyStore.GetStationMarket(r.Context(), systemName, stationName)
 	if err != nil {
 		s.logger.Warn(fmt.Sprintf("station market lookup failed: %v", err))
 		s.writeError(w, http.StatusInternalServerError, "lookup failed")
@@ -1170,12 +1170,12 @@ func (s *Server) handleKaineCarrierMarket(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	if s.memgraph == nil {
-		s.writeError(w, http.StatusServiceUnavailable, "memgraph not configured")
+	if s.galaxyStore == nil {
+		s.writeError(w, http.StatusServiceUnavailable, "galaxy data unavailable")
 		return
 	}
 
-	market, err := s.memgraph.GetFleetCarrierMarket(r.Context(), carrierID)
+	market, err := s.galaxyStore.GetFleetCarrierMarket(r.Context(), carrierID)
 	if err != nil {
 		s.logger.Warn(fmt.Sprintf("carrier market lookup failed: %v", err))
 		s.writeError(w, http.StatusInternalServerError, "lookup failed")

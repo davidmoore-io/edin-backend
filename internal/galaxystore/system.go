@@ -185,7 +185,7 @@ LEFT JOIN galaxy.system_power sp ON sp.system_id64 = s.id64
 // GetSystemFull fetches the core relational system-detail snapshot by exact
 // system name, case-insensitive.
 func (s *Store) GetSystemFull(ctx context.Context, systemName string) (*SystemFull, error) {
-	return s.getSystemFull(ctx, systemLookupSelect+`WHERE lower(COALESCE(s.name, c.name)) = lower($1) LIMIT 1`, systemName)
+	return s.getSystemFull(ctx, systemLookupSelect+`WHERE lower(c.name) = lower($1) LIMIT 1`, systemName)
 }
 
 // GetSystemFullBySlug fetches the core relational system-detail snapshot by
@@ -271,8 +271,20 @@ func (s *Store) GetSystemWatchSnapshot(ctx context.Context, slug string) (*Syste
 }
 
 func (s *Store) querySystemRow(ctx context.Context, query string, arg string) (*systemRow, error) {
+	row, err := scanSystemRow(s.db.QueryRow(ctx, query, arg))
+	if err != nil {
+		return nil, fmt.Errorf("system lookup: %w", err)
+	}
+	return row, nil
+}
+
+type scanner interface {
+	Scan(dest ...any) error
+}
+
+func scanSystemRow(rowScanner scanner) (*systemRow, error) {
 	var row systemRow
-	err := s.db.QueryRow(ctx, query, arg).Scan(
+	err := rowScanner.Scan(
 		&row.id64,
 		&row.name,
 		&row.x,
@@ -298,7 +310,7 @@ func (s *Store) querySystemRow(ctx context.Context, query string, arg string) (*
 		&row.lastEDDNUpdate,
 	)
 	if err != nil {
-		return nil, fmt.Errorf("system lookup: %w", err)
+		return nil, err
 	}
 	return &row, nil
 }
@@ -424,6 +436,8 @@ SELECT
 	st.market_id,
 	st.name,
 	st.station_type,
+	st.system_id64,
+	$2::text AS system_name,
 	st.dist_from_star_ls::float8,
 	CASE
 		WHEN st.large_pads > 0 THEN 'L'
@@ -444,7 +458,7 @@ LEFT JOIN galaxy.market m ON m.market_id = st.market_id
 LEFT JOIN galaxy.shipyard sy ON sy.market_id = st.market_id
 LEFT JOIN galaxy.outfitting o ON o.market_id = st.market_id
 WHERE st.system_id64 = $1
-ORDER BY st.dist_from_star_ls NULLS LAST, st.name`, systemID64)
+ORDER BY st.dist_from_star_ls NULLS LAST, st.name`, systemID64, systemName)
 	if err != nil {
 		return nil, fmt.Errorf("system stations: %w", err)
 	}
@@ -452,40 +466,50 @@ ORDER BY st.dist_from_star_ls NULLS LAST, st.name`, systemID64)
 
 	var out []StationData
 	for rows.Next() {
-		var st StationData
-		var distance *float64
-		var stationType *string
-		var controllingFaction *string
+		st, err := scanStationData(rows)
+		if err != nil {
+			return nil, err
+		}
 		st.SystemID64 = systemID64
 		st.SystemName = systemName
-		if err := rows.Scan(
-			&st.ID64,
-			&st.Name,
-			&stationType,
-			&distance,
-			&st.MaxPad,
-			&st.IsPlanetary,
-			&st.Services,
-			&controllingFaction,
-			&st.LastEDDNUpdate,
-			&st.HasMarket,
-			&st.HasShipyard,
-			&st.HasOutfitting,
-		); err != nil {
-			return nil, fmt.Errorf("system stations scan: %w", err)
-		}
-		if stationType != nil {
-			st.Type = *stationType
-		}
-		if distance != nil {
-			st.DistanceLS = *distance
-		}
-		if controllingFaction != nil {
-			st.ControllingFaction = *controllingFaction
-		}
 		out = append(out, st)
 	}
 	return out, rows.Err()
+}
+
+func scanStationData(rowScanner scanner) (StationData, error) {
+	var st StationData
+	var distance *float64
+	var stationType *string
+	var controllingFaction *string
+	if err := rowScanner.Scan(
+		&st.ID64,
+		&st.Name,
+		&stationType,
+		&st.SystemID64,
+		&st.SystemName,
+		&distance,
+		&st.MaxPad,
+		&st.IsPlanetary,
+		&st.Services,
+		&controllingFaction,
+		&st.LastEDDNUpdate,
+		&st.HasMarket,
+		&st.HasShipyard,
+		&st.HasOutfitting,
+	); err != nil {
+		return StationData{}, fmt.Errorf("station scan: %w", err)
+	}
+	if stationType != nil {
+		st.Type = *stationType
+	}
+	if distance != nil {
+		st.DistanceLS = *distance
+	}
+	if controllingFaction != nil {
+		st.ControllingFaction = *controllingFaction
+	}
+	return st, nil
 }
 
 func (s *Store) getFleetCarriers(ctx context.Context, systemID64 int64, systemName string) ([]FleetCarrierData, error) {

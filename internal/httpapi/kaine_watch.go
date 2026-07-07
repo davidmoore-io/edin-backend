@@ -23,17 +23,17 @@ import (
 	"strings"
 
 	"github.com/edin-space/edin-backend/internal/galaxy"
-	"github.com/edin-space/edin-backend/internal/memgraph"
+	"github.com/edin-space/edin-backend/internal/galaxystore"
 )
 
 // handleSystemWatchSnapshot returns a SystemWatchSnapshot for the given slug.
-// Returns 404 if the slug isn't in Memgraph, 503 if Memgraph is unavailable.
+// Returns 404 if the slug isn't in galaxy data, 503 if galaxy data is unavailable.
 func (s *Server) handleSystemWatchSnapshot(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		s.writeError(w, http.StatusMethodNotAllowed, "only GET allowed")
 		return
 	}
-	if s.memgraph == nil {
+	if s.galaxyStore == nil {
 		s.writeError(w, http.StatusServiceUnavailable, "galaxy data unavailable")
 		return
 	}
@@ -53,15 +53,15 @@ func (s *Server) handleSystemWatchSnapshot(w http.ResponseWriter, r *http.Reques
 	// Defensive: a slug must not contain whitespace by construction (see
 	// galaxy.Slugify). If the caller sent a name-with-spaces by mistake,
 	// reject early so the error is unambiguous rather than "system not
-	// found in graph".
+	// found in galaxy data".
 	if slug != galaxy.Slugify(slug) {
 		s.writeError(w, http.StatusBadRequest, "slug must not contain whitespace; see galaxy.Slugify")
 		return
 	}
 
-	snap, err := s.memgraph.GetSystemWatchSnapshot(r.Context(), slug)
+	snap, err := s.galaxyStore.GetSystemWatchSnapshot(r.Context(), slug)
 	if err != nil {
-		if errors.Is(err, memgraph.ErrSystemNotFound) {
+		if errors.Is(err, galaxystore.ErrSystemNotFound) {
 			s.writeError(w, http.StatusNotFound, "no system with that slug in galaxy data")
 			return
 		}

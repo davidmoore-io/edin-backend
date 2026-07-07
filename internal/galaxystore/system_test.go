@@ -178,4 +178,51 @@ INSERT INTO galaxy.fleet_carrier (
 	counts, err := store.GetPowerStateCountsForSystems(ctx, []string{"W5 Test System"})
 	require.NoError(t, err)
 	require.Equal(t, 1, counts["W5 Test Power"].States["Stronghold"])
+
+	searchSystems, err := store.SearchSystems(ctx, "W5 Test", 5)
+	require.NoError(t, err)
+	require.NotEmpty(t, searchSystems)
+	require.Equal(t, "W5 Test System", searchSystems[0].Name)
+
+	searchStations, err := store.SearchStations(ctx, "W5 Port", 5)
+	require.NoError(t, err)
+	require.NotEmpty(t, searchStations)
+	require.Equal(t, "W5 Port", searchStations[0].Name)
+	require.Equal(t, "W5 Test System", searchStations[0].SystemName)
+
+	_, err = tx.Exec(ctx, `
+INSERT INTO galaxy.commodity (commodity_id, name, category)
+OVERRIDING SYSTEM VALUE
+VALUES (32760, 'w5commodity', 'Metals')`)
+	require.NoError(t, err)
+
+	_, err = tx.Exec(ctx, `
+INSERT INTO galaxy.market_commodity (
+	market_id, commodity_id, last_event_time, buy_price, sell_price, demand, stock
+) VALUES (922337203685400002, 32760, $1, 100, 200, 300, 400)`, eventTime)
+	require.NoError(t, err)
+
+	market, err := store.GetStationMarket(ctx, "W5 Test System", "W5 Port")
+	require.NoError(t, err)
+	require.NotNil(t, market)
+	require.Equal(t, int64(922337203685400002), market.MarketID)
+	require.Equal(t, "W5 Port", market.StationName)
+	require.Equal(t, "W5 Test System", market.SystemName)
+	require.Len(t, market.Commodities, 1)
+	require.Equal(t, "w5commodity", market.Commodities[0].Name)
+	require.Equal(t, int64(200), market.Commodities[0].SellPrice)
+	require.Len(t, market.FactionStates, 1)
+	require.Equal(t, "W5 Test Faction", market.FactionStates[0].FactionName)
+
+	_, err = tx.Exec(ctx, `
+UPDATE galaxy.fleet_carrier
+SET market_id = 922337203685400002
+WHERE carrier_id = 'W5T-001'`)
+	require.NoError(t, err)
+
+	carrierMarket, err := store.GetFleetCarrierMarket(ctx, "W5T-001")
+	require.NoError(t, err)
+	require.NotNil(t, carrierMarket)
+	require.Equal(t, int64(922337203685400002), carrierMarket.MarketID)
+	require.Len(t, carrierMarket.Commodities, 1)
 }

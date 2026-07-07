@@ -7,7 +7,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/edin-space/edin-backend/internal/memgraph"
+	"github.com/edin-space/edin-backend/internal/galaxystore"
 	"github.com/edin-space/edin-backend/internal/store"
 )
 
@@ -16,25 +16,25 @@ type SystemIntelResponse struct {
 	SystemName string `json:"system_name"`
 	Hours      int    `json:"hours"` // 0 = all time
 
-	// Current state from Memgraph
+	// Current state from galaxy relational store
 	CurrentState *SystemIntelCurrentState `json:"current_state,omitempty"`
 
 	// Historical data from TimescaleDB EDDN feed
-	EventStats       *store.EventStats         `json:"event_stats,omitempty"`
-	TrafficTimeline  []store.TrafficBucket     `json:"traffic_timeline,omitempty"`
-	CarrierActivity  []store.CarrierEvent      `json:"carrier_activity,omitempty"`
-	Activity         []store.ActivityBucket    `json:"activity,omitempty"`
-	MarketHistory    []store.MarketUpdate      `json:"market_history,omitempty"`
-	CommodityHistory *store.CommodityHistory   `json:"commodity_history,omitempty"`
-	RecentEvents     *store.EventsPage         `json:"recent_events,omitempty"`
-	SoftwareStats    []store.SoftwareStats     `json:"software_stats,omitempty"`
-	CarriersInSystem []FleetCarrierIntelData   `json:"carriers_in_system,omitempty"`
+	EventStats       *store.EventStats       `json:"event_stats,omitempty"`
+	TrafficTimeline  []store.TrafficBucket   `json:"traffic_timeline,omitempty"`
+	CarrierActivity  []store.CarrierEvent    `json:"carrier_activity,omitempty"`
+	Activity         []store.ActivityBucket  `json:"activity,omitempty"`
+	MarketHistory    []store.MarketUpdate    `json:"market_history,omitempty"`
+	CommodityHistory *store.CommodityHistory `json:"commodity_history,omitempty"`
+	RecentEvents     *store.EventsPage       `json:"recent_events,omitempty"`
+	SoftwareStats    []store.SoftwareStats   `json:"software_stats,omitempty"`
+	CarriersInSystem []FleetCarrierIntelData `json:"carriers_in_system,omitempty"`
 
 	// Deprecated: use EventStats instead
 	TrafficStats *store.EventStats `json:"traffic_stats,omitempty"`
 }
 
-// SystemIntelCurrentState represents the current system state from Memgraph.
+// SystemIntelCurrentState represents the current relational system state.
 type SystemIntelCurrentState struct {
 	Name                    string   `json:"name"`
 	ControllingPower        string   `json:"controlling_power,omitempty"`
@@ -62,8 +62,8 @@ type SystemIntelCurrentState struct {
 	CarrierCount int `json:"carrier_count,omitempty"`
 
 	// Detailed data
-	Factions []memgraph.FactionPresence `json:"factions,omitempty"`
-	Stations []StationIntelData         `json:"stations,omitempty"`
+	Factions []galaxystore.FactionPresence `json:"factions,omitempty"`
+	Stations []StationIntelData            `json:"stations,omitempty"`
 }
 
 // StationIntelData represents a station for inline display within faction data.
@@ -81,7 +81,7 @@ type FleetCarrierIntelData struct {
 }
 
 // handleSystemIntel handles GET /api/kaine/systems/intel/{systemName}
-// Returns combined system intelligence data from Memgraph and TimescaleDB.
+// Returns combined system intelligence data from galaxy relational state and TimescaleDB.
 //
 // Query params:
 //   - hours: time range in hours (default 24, 0 = all time)
@@ -154,12 +154,12 @@ func (s *Server) handleSystemIntel(w http.ResponseWriter, r *http.Request) {
 		Hours:      hours,
 	}
 
-	// Get current state from Memgraph
+	// Get current state from galaxy relational state.
 	if includeAll || includeMap["overview"] || includeMap["current"] {
-		if s.memgraph != nil {
-			systemFull, err := s.memgraph.GetSystemFull(r.Context(), decodedName)
+		if s.galaxyStore != nil {
+			systemFull, err := s.galaxyStore.GetSystemFull(r.Context(), decodedName)
 			if err != nil {
-				s.logger.Warn(fmt.Sprintf("memgraph system lookup failed: %v", err))
+				s.logger.Warn(fmt.Sprintf("galaxy system lookup failed: %v", err))
 			} else if systemFull != nil && systemFull.System != nil {
 				sys := systemFull.System
 				response.CurrentState = &SystemIntelCurrentState{
@@ -178,7 +178,6 @@ func (s *Server) handleSystemIntel(w http.ResponseWriter, r *http.Request) {
 					ControllingFaction:      sys.ControllingFaction,
 					ControllingFactionState: sys.ControllingFactionState,
 					StationCount:            len(systemFull.Stations),
-					BodyCount:               len(systemFull.Bodies),
 					FactionCount:            len(systemFull.Factions),
 					CarrierCount:            len(systemFull.FleetCarriers),
 				}
