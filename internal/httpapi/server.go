@@ -21,6 +21,7 @@ import (
 	"github.com/edin-space/edin-backend/internal/config"
 	"github.com/edin-space/edin-backend/internal/copilot"
 	"github.com/edin-space/edin-backend/internal/dayz"
+	"github.com/edin-space/edin-backend/internal/galaxystore"
 	"github.com/edin-space/edin-backend/internal/kaine"
 	"github.com/edin-space/edin-backend/internal/llm"
 	"github.com/edin-space/edin-backend/internal/memgraph"
@@ -37,7 +38,7 @@ import (
 )
 
 // Run launches the HTTP API server with the provided dependencies.
-func Run(ctx context.Context, cfg *config.Config, opsManager *ops.Manager, llmStore llm.SessionBackend, llmClient *anthropic.Client, toolExec *tools.Executor, runner *assistant.Runner, spanshClient *spansh.Client, cacheStore *store.CacheStore, wsHub *ws.Hub, memgraphClient *memgraph.Client, dayzService *dayz.Service, kaineStore *kaine.Store, eddnIntelStore *store.SystemIntelStore, commanderRepo store.CommanderRepository) error {
+func Run(ctx context.Context, cfg *config.Config, opsManager *ops.Manager, llmStore llm.SessionBackend, llmClient *anthropic.Client, toolExec *tools.Executor, runner *assistant.Runner, spanshClient *spansh.Client, cacheStore *store.CacheStore, wsHub *ws.Hub, memgraphClient *memgraph.Client, dayzService *dayz.Service, kaineStore *kaine.Store, eddnIntelStore *store.SystemIntelStore, galaxyStore *galaxystore.Store, commanderRepo store.CommanderRepository) error {
 	if cfg == nil {
 		return fmt.Errorf("config is nil")
 	}
@@ -81,6 +82,7 @@ func Run(ctx context.Context, cfg *config.Config, opsManager *ops.Manager, llmSt
 		cacheStore:           cacheStore,
 		wsHub:                wsHub,
 		memgraph:             memgraphClient,
+		galaxyStore:          galaxyStore,
 		dayz:                 dayzService,
 		kaineStore:           kaineStore,
 		eddnIntelStore:       eddnIntelStore,
@@ -94,6 +96,10 @@ func Run(ctx context.Context, cfg *config.Config, opsManager *ops.Manager, llmSt
 
 	if server.toolExec == nil {
 		server.toolExec = tools.NewExecutor(opsManager, nil, nil, nil)
+	}
+	// Wire up relational galaxy store for current galaxy data.
+	if server.galaxyStore != nil {
+		server.toolExec = server.toolExec.WithGalaxyStore(server.galaxyStore)
 	}
 	// Wire up Memgraph client for galaxy database tools
 	if server.memgraph != nil {
@@ -289,7 +295,7 @@ func Run(ctx context.Context, cfg *config.Config, opsManager *ops.Manager, llmSt
 	}
 
 	// Start background cache refresh for powerplay data (queries Memgraph every 5 min)
-	if server.memgraph != nil {
+	if server.galaxyStore != nil || server.memgraph != nil {
 		go server.startPowerplayRefresh(ctx)
 	}
 
@@ -329,15 +335,16 @@ type Server struct {
 	metrics         *observability.Metrics
 	rateLimiter     *rateLimiter
 	toolExec        *tools.Executor
-	llmRunner       *assistant.Runner // Discord ops runner (has access to system management tools)
-	kaineRunner     *assistant.Runner // Kaine chat runner (Elite Dangerous tools only, no ops)
-	copilotRunner   *assistant.Runner // Copilot chat runner (commander-authenticated, includes commander tools)
+	llmRunner       *assistant.Runner        // Discord ops runner (has access to system management tools)
+	kaineRunner     *assistant.Runner        // Kaine chat runner (Elite Dangerous tools only, no ops)
+	copilotRunner   *assistant.Runner        // Copilot chat runner (commander-authenticated, includes commander tools)
 	promptAssembler *copilot.PromptAssembler // Assembles per-persona×mode system prompts for copilot
 	storeCfg        config.ConversationStoreConfig
 	spansh          *spansh.Client
 	cacheStore      *store.CacheStore
 	wsHub           *ws.Hub
 	memgraph        *memgraph.Client
+	galaxyStore     *galaxystore.Store
 	dayz            *dayz.Service
 	kaineStore      *kaine.Store
 	jwtValidator    TokenValidator
@@ -1044,82 +1051,22 @@ func (s *Server) handleHIPThunderdome(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Try Memgraph first (real-time graph database)
-	if s.memgraph != nil {
-		systems, err := s.memgraph.GetCGSystems(r.Context(), cgSystemNames())
+	// Try relational galaxy state first (system of record for current powerplay data).
+	if s.galaxyStore != nil {
+		systems, err := s.galaxyStore.GetCGSystems(r.Context(), cgSystemNames())
 		if err != nil {
-			s.logger.Warn(fmt.Sprintf("Memgraph query failed, falling back to TimescaleDB: %v", err))
+			s.logger.Warn(fmt.Sprintf("relational galaxy query failed, falling back to TimescaleDB: %v", err))
 		} else if len(systems) > 0 {
-			// Convert Memgraph data to frontend format
 			data := make([]map[string]any, 0, len(systems))
 			var latestUpdate time.Time
 
 			for _, sys := range systems {
-				system := map[string]any{
-					"system_name":               sys.SystemName,
-					"power_state":               sys.PowerplayState,
-					"reinforcement":             sys.Reinforcement,
-					"undermining":               sys.Undermining,
-					"allegiance":                sys.Allegiance,
-					"government":                sys.Government,
-					"population":                sys.Population,
-					"controlling_faction":       sys.ControllingFaction,
-					"controlling_faction_state": sys.ControllingFactionState,
-					"source":                    "ssg-eddn",
-				}
-
-				// Powerplay fields
-				if sys.ControllingPower != "" {
-					system["controlling_power"] = sys.ControllingPower
-				}
-				if len(sys.Powers) > 0 {
-					system["powers"] = sys.Powers
-				}
-				if sys.ControlProgress != nil {
-					system["control_progress"] = *sys.ControlProgress
-				}
-
-				// Expansion/Contested special handling
-				state := strings.ToLower(sys.PowerplayState)
-				system["is_expansion"] = state == "expansion"
-				system["is_contested"] = state == "contested"
-
-				// Conflict progress for expansion/contested systems
-				if len(sys.PowerplayConflictProgress) > 0 {
-					system["conflict_progress"] = sys.PowerplayConflictProgress
-				}
-
-				// Timestamps
+				system := powerplaySystemMap(sys)
 				if !sys.LastEDDNUpdate.IsZero() {
-					system["updated_at"] = sys.LastEDDNUpdate.Format(time.RFC3339)
-					system["last_eddn_update"] = sys.LastEDDNUpdate.Format(time.RFC3339)
 					if sys.LastEDDNUpdate.After(latestUpdate) {
 						latestUpdate = sys.LastEDDNUpdate
 					}
 				}
-
-				// Additional fields for CSV export
-				system["x"] = sys.X
-				system["y"] = sys.Y
-				system["z"] = sys.Z
-				system["security"] = sys.Security
-				system["economy"] = sys.Economy
-				system["has_large_pad"] = sys.HasLargePad
-				system["nearest_station"] = sys.NearestStation
-				system["nearest_station_ls"] = sys.NearestStationLs
-				system["station_count"] = sys.StationCount
-
-				// Calculated fields
-				system["net_merits"] = sys.Reinforcement - sys.Undermining
-				total := float64(sys.Reinforcement + sys.Undermining)
-				if total > 0 {
-					system["merit_ratio"] = float64(sys.Reinforcement) / total
-				} else {
-					system["merit_ratio"] = 0.5
-				}
-				// Distance from Sol (sqrt(x² + y² + z²))
-				system["distance_from_sol"] = math.Sqrt(sys.X*sys.X + sys.Y*sys.Y + sys.Z*sys.Z)
-
 				data = append(data, system)
 			}
 
@@ -1130,7 +1077,7 @@ func (s *Server) handleHIPThunderdome(w http.ResponseWriter, r *http.Request) {
 				"systems":         data,
 				"count":           len(data),
 				"last_refresh":    latestUpdate.Format(time.RFC3339),
-				"source":          "ssg-eddn-memgraph",
+				"source":          "ssg-eddn-postgres",
 				"tick_number":     tickInfo.Number,
 				"tick_start":      tickInfo.Start.Format(time.RFC3339),
 				"tick_end":        tickInfo.End.Format(time.RFC3339),
@@ -1215,10 +1162,47 @@ func (s *Server) startPowerplayRefresh(ctx context.Context) {
 	}
 }
 
-// refreshPowerplayCache queries Memgraph and updates the in-memory cache.
+// refreshPowerplayCache queries current relational galaxy state and updates the
+// in-memory powerplay API cache.
 func (s *Server) refreshPowerplayCache(ctx context.Context) {
 	start := time.Now()
-	systems, err := s.memgraph.GetAllPowerplaySystems(ctx)
+	var systems []galaxystore.CGSystemData
+	var err error
+	if s.galaxyStore != nil {
+		systems, err = s.galaxyStore.GetAllPowerplaySystems(ctx)
+	} else if s.memgraph != nil {
+		legacySystems, legacyErr := s.memgraph.GetAllPowerplaySystems(ctx)
+		err = legacyErr
+		for _, sys := range legacySystems {
+			systems = append(systems, galaxystore.CGSystemData{
+				SystemName:                sys.SystemName,
+				ControllingPower:          sys.ControllingPower,
+				Powers:                    sys.Powers,
+				PowerplayState:            sys.PowerplayState,
+				Reinforcement:             sys.Reinforcement,
+				Undermining:               sys.Undermining,
+				ControlProgress:           sys.ControlProgress,
+				PowerplayConflictProgress: sys.PowerplayConflictProgress,
+				Allegiance:                sys.Allegiance,
+				Government:                sys.Government,
+				Population:                sys.Population,
+				ControllingFaction:        sys.ControllingFaction,
+				ControllingFactionState:   sys.ControllingFactionState,
+				LastEDDNUpdate:            sys.LastEDDNUpdate,
+				X:                         sys.X,
+				Y:                         sys.Y,
+				Z:                         sys.Z,
+				Security:                  sys.Security,
+				Economy:                   sys.Economy,
+				HasLargePad:               sys.HasLargePad,
+				NearestStation:            sys.NearestStation,
+				NearestStationLs:          sys.NearestStationLs,
+				StationCount:              sys.StationCount,
+			})
+		}
+	} else {
+		err = fmt.Errorf("no galaxy current-state store configured")
+	}
 	if err != nil {
 		s.logger.Error("powerplay background refresh failed", err)
 		return // keep serving stale cache
@@ -1226,62 +1210,7 @@ func (s *Server) refreshPowerplayCache(ctx context.Context) {
 
 	data := make([]map[string]any, 0, len(systems))
 	for _, sys := range systems {
-		system := map[string]any{
-			"system_name":               sys.SystemName,
-			"power_state":               sys.PowerplayState,
-			"reinforcement":             sys.Reinforcement,
-			"undermining":               sys.Undermining,
-			"allegiance":                sys.Allegiance,
-			"government":                sys.Government,
-			"population":                sys.Population,
-			"controlling_faction":       sys.ControllingFaction,
-			"controlling_faction_state": sys.ControllingFactionState,
-			"source":                    "ssg-eddn",
-		}
-
-		if sys.ControllingPower != "" {
-			system["controlling_power"] = sys.ControllingPower
-		}
-		if len(sys.Powers) > 0 {
-			system["powers"] = sys.Powers
-		}
-		if sys.ControlProgress != nil {
-			system["control_progress"] = *sys.ControlProgress
-		}
-
-		state := strings.ToLower(sys.PowerplayState)
-		system["is_expansion"] = state == "expansion"
-		system["is_contested"] = state == "contested"
-
-		if len(sys.PowerplayConflictProgress) > 0 {
-			system["conflict_progress"] = sys.PowerplayConflictProgress
-		}
-
-		if !sys.LastEDDNUpdate.IsZero() {
-			system["updated_at"] = sys.LastEDDNUpdate.Format(time.RFC3339)
-			system["last_eddn_update"] = sys.LastEDDNUpdate.Format(time.RFC3339)
-		}
-
-		system["x"] = sys.X
-		system["y"] = sys.Y
-		system["z"] = sys.Z
-		system["security"] = sys.Security
-		system["economy"] = sys.Economy
-		system["has_large_pad"] = sys.HasLargePad
-		system["nearest_station"] = sys.NearestStation
-		system["nearest_station_ls"] = sys.NearestStationLs
-		system["station_count"] = sys.StationCount
-
-		system["net_merits"] = sys.Reinforcement - sys.Undermining
-		total := float64(sys.Reinforcement + sys.Undermining)
-		if total > 0 {
-			system["merit_ratio"] = float64(sys.Reinforcement) / total
-		} else {
-			system["merit_ratio"] = 0.5
-		}
-		system["distance_from_sol"] = math.Sqrt(sys.X*sys.X + sys.Y*sys.Y + sys.Z*sys.Z)
-
-		data = append(data, system)
+		data = append(data, powerplaySystemMap(sys))
 	}
 
 	s.powerplayCacheMu.Lock()
@@ -1290,6 +1219,58 @@ func (s *Server) refreshPowerplayCache(ctx context.Context) {
 	s.powerplayCacheMu.Unlock()
 
 	s.logger.Info(fmt.Sprintf("powerplay cache refreshed: %d systems in %s", len(data), time.Since(start).Round(time.Millisecond)))
+}
+
+func powerplaySystemMap(sys galaxystore.CGSystemData) map[string]any {
+	system := map[string]any{
+		"system_name":               sys.SystemName,
+		"power_state":               sys.PowerplayState,
+		"reinforcement":             sys.Reinforcement,
+		"undermining":               sys.Undermining,
+		"allegiance":                sys.Allegiance,
+		"government":                sys.Government,
+		"population":                sys.Population,
+		"controlling_faction":       sys.ControllingFaction,
+		"controlling_faction_state": sys.ControllingFactionState,
+		"source":                    "ssg-eddn",
+		"x":                         sys.X,
+		"y":                         sys.Y,
+		"z":                         sys.Z,
+		"security":                  sys.Security,
+		"economy":                   sys.Economy,
+		"has_large_pad":             sys.HasLargePad,
+		"nearest_station":           sys.NearestStation,
+		"nearest_station_ls":        sys.NearestStationLs,
+		"station_count":             sys.StationCount,
+		"net_merits":                sys.Reinforcement - sys.Undermining,
+		"distance_from_sol":         math.Sqrt(sys.X*sys.X + sys.Y*sys.Y + sys.Z*sys.Z),
+	}
+	if sys.ControllingPower != "" {
+		system["controlling_power"] = sys.ControllingPower
+	}
+	if len(sys.Powers) > 0 {
+		system["powers"] = sys.Powers
+	}
+	if sys.ControlProgress != nil {
+		system["control_progress"] = *sys.ControlProgress
+	}
+	state := strings.ToLower(sys.PowerplayState)
+	system["is_expansion"] = state == "expansion"
+	system["is_contested"] = state == "contested"
+	if len(sys.PowerplayConflictProgress) > 0 {
+		system["conflict_progress"] = sys.PowerplayConflictProgress
+	}
+	if !sys.LastEDDNUpdate.IsZero() {
+		system["updated_at"] = sys.LastEDDNUpdate.Format(time.RFC3339)
+		system["last_eddn_update"] = sys.LastEDDNUpdate.Format(time.RFC3339)
+	}
+	total := float64(sys.Reinforcement + sys.Undermining)
+	if total > 0 {
+		system["merit_ratio"] = float64(sys.Reinforcement) / total
+	} else {
+		system["merit_ratio"] = 0.5
+	}
+	return system
 }
 
 // handlePowerplay returns powerplay data from the background-refreshed cache.
@@ -1321,7 +1302,7 @@ func (s *Server) handlePowerplay(w http.ResponseWriter, r *http.Request) {
 	s.writeJSON(w, http.StatusOK, map[string]any{
 		"systems":         data,
 		"count":           len(data),
-		"source":          "ssg-eddn-memgraph",
+		"source":          "ssg-eddn-postgres",
 		"cache_age":       time.Since(cacheTime).Round(time.Second).String(),
 		"tick_number":     tickInfo.Number,
 		"tick_start":      tickInfo.Start.Format(time.RFC3339),
@@ -1397,11 +1378,11 @@ func (s *Server) handlePowerStandings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Fetch state counts from Memgraph (live data for CG systems)
-	if s.memgraph != nil {
-		stateCounts, err := s.memgraph.GetPowerStateCountsForSystems(r.Context(), cgSystems)
+	// Fetch live state counts from relational galaxy state for CG systems.
+	if s.galaxyStore != nil {
+		stateCounts, err := s.galaxyStore.GetPowerStateCountsForSystems(r.Context(), cgSystems)
 		if err != nil {
-			s.logger.Warn(fmt.Sprintf("Memgraph state counts query failed: %v", err))
+			s.logger.Warn(fmt.Sprintf("relational state counts query failed: %v", err))
 		} else if stateCounts != nil {
 			// Apply state counts to each power's summary
 			for powerName, stats := range result.Summary {

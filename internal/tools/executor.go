@@ -6,6 +6,7 @@ import (
 
 	"github.com/edin-space/edin-backend/internal/authz"
 	"github.com/edin-space/edin-backend/internal/edsm"
+	"github.com/edin-space/edin-backend/internal/galaxystore"
 	"github.com/edin-space/edin-backend/internal/kaine"
 	"github.com/edin-space/edin-backend/internal/memgraph"
 	"github.com/edin-space/edin-backend/internal/ops"
@@ -87,6 +88,7 @@ type Executor struct {
 	spansh        *spansh.Client
 	edsm          *edsm.Client
 	cacheStore    *store.CacheStore
+	galaxyStore   *galaxystore.Store
 	memgraph      *memgraph.Client
 	kaineStore    *kaine.Store
 	commanderRepo store.CommanderRepository
@@ -112,6 +114,12 @@ func NewExecutor(opsManager *ops.Manager, spanshClient *spansh.Client, edsmClien
 // WithBroadcaster sets a broadcaster for real-time WebSocket updates.
 func (e *Executor) WithBroadcaster(broadcaster UpdateBroadcaster) *Executor {
 	e.broadcaster = broadcaster
+	return e
+}
+
+// WithGalaxyStore sets the relational galaxy read store.
+func (e *Executor) WithGalaxyStore(store *galaxystore.Store) *Executor {
+	e.galaxyStore = store
 	return e
 }
 

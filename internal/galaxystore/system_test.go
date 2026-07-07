@@ -103,10 +103,15 @@ INSERT INTO galaxy.system (
 	require.NoError(t, err)
 
 	_, err = tx.Exec(ctx, `
+INSERT INTO galaxy.power (name, allegiance)
+VALUES ('W5 Test Power', 'Independent')`)
+	require.NoError(t, err)
+
+	_, err = tx.Exec(ctx, `
 INSERT INTO galaxy.system_power (
 	system_id64, reinforcement, undermining, last_event_time, control_progress,
 	power_name, powerplay_state, powers_present
-) VALUES ($1, 7, 9, $2, 42.5, 'Nakato Kaine', 'Stronghold', ARRAY['Nakato Kaine'])`, int64(922337203685400001), eventTime)
+) VALUES ($1, 7, 9, $2, 42.5, 'W5 Test Power', 'Stronghold', ARRAY['W5 Test Power'])`, int64(922337203685400001), eventTime)
 	require.NoError(t, err)
 
 	_, err = tx.Exec(ctx, `
@@ -137,7 +142,7 @@ INSERT INTO galaxy.fleet_carrier (
 	require.NoError(t, err)
 	require.NotNil(t, full)
 	require.Equal(t, "W5 Test System", full.System.Name)
-	require.Equal(t, "Nakato Kaine", full.System.ControllingPower)
+	require.Equal(t, "W5 Test Power", full.System.ControllingPower)
 	require.Equal(t, "Boom", full.System.ControllingFactionState)
 	require.Len(t, full.Factions, 1)
 	require.Len(t, full.Stations, 1)
@@ -152,4 +157,25 @@ INSERT INTO galaxy.fleet_carrier (
 	require.Equal(t, "W5TestSystem", watch.Slug)
 	require.Equal(t, "Boom", watch.ControllingWatchFaction)
 	require.Len(t, watch.Factions, 1)
+
+	cgSystems, err := store.GetCGSystems(ctx, []string{"W5 Test System"})
+	require.NoError(t, err)
+	require.Len(t, cgSystems, 1)
+	require.Equal(t, "W5 Test Power", cgSystems[0].ControllingPower)
+	require.Equal(t, "W5 Port", cgSystems[0].NearestStation)
+	require.True(t, cgSystems[0].HasLargePad)
+
+	power, err := store.GetPower(ctx, "w5 test power")
+	require.NoError(t, err)
+	require.Equal(t, "W5 Test Power", power.Name)
+	require.Equal(t, 1, power.ControlledSystemCount)
+
+	powerSystems, err := store.GetPowerSystems(ctx, "W5 Test Power", 10)
+	require.NoError(t, err)
+	require.Len(t, powerSystems, 1)
+	require.Equal(t, "W5 Test System", powerSystems[0].Name)
+
+	counts, err := store.GetPowerStateCountsForSystems(ctx, []string{"W5 Test System"})
+	require.NoError(t, err)
+	require.Equal(t, 1, counts["W5 Test Power"].States["Stronghold"])
 }

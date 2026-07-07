@@ -12,14 +12,15 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/redis/go-redis/v9"
 	"github.com/edin-space/edin-backend/internal/anthropic"
 	"github.com/edin-space/edin-backend/internal/assistant"
 	"github.com/edin-space/edin-backend/internal/config"
 	"github.com/edin-space/edin-backend/internal/dayz"
 	"github.com/edin-space/edin-backend/internal/edsm"
+	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/redis/go-redis/v9"
 	// "github.com/edin-space/edin-backend/internal/gameservers" // disabled: old SSG game-server collector (see tasks/todo.md for full removal)
+	"github.com/edin-space/edin-backend/internal/galaxystore"
 	"github.com/edin-space/edin-backend/internal/httpapi"
 	"github.com/edin-space/edin-backend/internal/kaine"
 	"github.com/edin-space/edin-backend/internal/llm"
@@ -92,6 +93,7 @@ func main() {
 
 	// Initialize EDDN raw feed database client (for historical powerplay data and system intel)
 	var eddnIntelStore *store.SystemIntelStore
+	var galaxyStore *galaxystore.Store
 	if cfg.EDIN.EDDNRaw.Enabled {
 		eddnLogger := observability.NewLogger("eddn-raw")
 		eddnClient, err := store.New(ctx, store.Config{
@@ -113,9 +115,11 @@ func main() {
 				cacheStore.SetEDDNClient(eddnClient)
 			}
 			eddnIntelStore = store.NewSystemIntelStore(eddnClient.Pool())
+			galaxyStore = galaxystore.New(eddnClient.Pool())
 			defer eddnClient.Close()
 			logger.Info("EDDN raw feed database connected")
 			logger.Info("System intel store initialized")
+			logger.Info("Galaxy relational read store initialized")
 		}
 	}
 
@@ -229,7 +233,7 @@ func main() {
 		}
 	}()
 
-	if err := httpapi.Run(ctx, cfg, opsManager, llmStore, anthropicClient, toolExecutor, assistantRunner, spanshClient, cacheStore, wsHub, memgraphClient, dayzService, kaineStore, eddnIntelStore, commanderRepo); err != nil && !errors.Is(err, context.Canceled) {
+	if err := httpapi.Run(ctx, cfg, opsManager, llmStore, anthropicClient, toolExecutor, assistantRunner, spanshClient, cacheStore, wsHub, memgraphClient, dayzService, kaineStore, eddnIntelStore, galaxyStore, commanderRepo); err != nil && !errors.Is(err, context.Canceled) {
 		logger.Error("http api server", err)
 		cancel()
 	}

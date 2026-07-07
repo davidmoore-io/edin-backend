@@ -7,10 +7,10 @@ import (
 	"strings"
 )
 
-// galaxyPower queries powerplay power data from Memgraph.
+// galaxyPower queries powerplay power data from the relational galaxy store.
 func (e *Executor) galaxyPower(ctx context.Context, args map[string]any) (any, error) {
-	if e.memgraph == nil {
-		return nil, errors.New("memgraph not available")
+	if e.galaxyStore == nil {
+		return nil, errors.New("galaxy relational store not available")
 	}
 
 	powerName := strings.TrimSpace(getString(args, "power_name"))
@@ -24,7 +24,7 @@ func (e *Executor) galaxyPower(ctx context.Context, args map[string]any) (any, e
 	includeSystems := getBool(args, "include_systems", false)
 	limit := getInt(args, "limit", 50)
 
-	power, err := e.memgraph.GetPower(ctx, powerName)
+	power, err := e.galaxyStore.GetPower(ctx, powerName)
 	if err != nil {
 		return nil, err
 	}
@@ -38,11 +38,11 @@ func (e *Executor) galaxyPower(ctx context.Context, args map[string]any) (any, e
 	response := map[string]any{
 		"found":  true,
 		"power":  power,
-		"source": "memgraph",
+		"source": "postgres",
 	}
 
 	if includeSystems {
-		systems, err := e.memgraph.GetPowerSystems(ctx, powerName, limit)
+		systems, err := e.galaxyStore.GetPowerSystems(ctx, powerName, limit)
 		if err == nil {
 			response["systems"] = systems
 			response["system_count"] = len(systems)
