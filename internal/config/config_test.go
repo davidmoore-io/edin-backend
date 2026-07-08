@@ -33,6 +33,17 @@ func TestConfig_CommanderAuth_DefaultsApplied(t *testing.T) {
 	}
 }
 
+func TestEDINConfigLoadsGalaxyReaderDSN(t *testing.T) {
+	const dsn = "postgres://galaxy_reader:secret@eddn-timescaledb:5432/eddn_raw?sslmode=disable"
+	t.Setenv("GALAXY_READER_DSN", dsn)
+
+	cfg := loadEDINConfig()
+
+	if cfg.GalaxyReaderDSN != dsn {
+		t.Fatalf("GalaxyReaderDSN = %q, want %q", cfg.GalaxyReaderDSN, dsn)
+	}
+}
+
 // TestConfig_CommanderAuth_DefaultScopeIsAuthCAPI explicitly verifies the FrontierScope
 // default is "auth capi" and not "openid" or any other value.
 func TestConfig_CommanderAuth_DefaultScopeIsAuthCAPI(t *testing.T) {

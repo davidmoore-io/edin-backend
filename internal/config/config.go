@@ -104,9 +104,9 @@ type CopilotConfig struct {
 // ElevenLabsConfig holds ElevenLabs TTS API settings.
 // Voice is optional — the backend starts and functions without it.
 type ElevenLabsConfig struct {
-	APIKey               string
+	APIKey                 string
 	PersonalityTemplateDir string
-	Voices               voice.PersonaVoices
+	Voices                 voice.PersonaVoices
 }
 
 // KaineAuthConfig holds Kaine portal JWT authentication settings.
@@ -153,7 +153,8 @@ type EDINConfig struct {
 	Memgraph MemgraphConfig
 
 	// EDDNRaw configuration (for raw EDDN feed queries - historical data)
-	EDDNRaw EDDNRawConfig
+	EDDNRaw         EDDNRawConfig
+	GalaxyReaderDSN string
 }
 
 // EDDNRawConfig holds configuration for the raw EDDN feed database.
@@ -700,7 +701,7 @@ func loadCopilotConfig() CopilotConfig {
 		eventsMax = 100
 	}
 	return CopilotConfig{
-		WSAuthTimeout:       getEnvDuration("COPILOT_WS_AUTH_TIMEOUT", 5*time.Second),
+		WSAuthTimeout: getEnvDuration("COPILOT_WS_AUTH_TIMEOUT", 5*time.Second),
 		// 15 min: handleCopilotMessage runs synchronously in the read loop, so the
 		// read deadline is not extended (via pong) while a turn is in flight. It must
 		// therefore exceed the worst-case turn duration, or the socket is closed the
@@ -730,9 +731,9 @@ func loadElevenLabsConfig() (ElevenLabsConfig, error) {
 		return ElevenLabsConfig{}, err
 	}
 	return ElevenLabsConfig{
-		APIKey:               apiKey,
+		APIKey:                 apiKey,
 		PersonalityTemplateDir: getenvDefault("PERSONALITY_TEMPLATE_DIR", "../edin-personality/system-prompts"),
-		Voices:               voice.LoadPersonaVoices(),
+		Voices:                 voice.LoadPersonaVoices(),
 	}, nil
 }
 
@@ -766,6 +767,7 @@ func loadEDINConfig() EDINConfig {
 			Schema:   getenvDefault("EDDN_RAW_DB_SCHEMA", "feed"),
 			PoolSize: getenvInt("EDDN_RAW_DB_POOL_SIZE", 3),
 		},
+		GalaxyReaderDSN: os.Getenv("GALAXY_READER_DSN"),
 	}
 }
 

@@ -123,6 +123,20 @@ func main() {
 		}
 	}
 
+	if cfg.EDIN.GalaxyReaderDSN != "" {
+		galaxyPool, err := pgxpool.New(ctx, cfg.EDIN.GalaxyReaderDSN)
+		if err != nil {
+			log.Fatalf("initialise galaxy reader database: %v", err)
+		} else if err := galaxyPool.Ping(ctx); err != nil {
+			galaxyPool.Close()
+			log.Fatalf("ping galaxy reader database: %v", err)
+		} else {
+			galaxyStore = galaxystore.New(galaxyPool)
+			defer galaxyPool.Close()
+			logger.Info("Galaxy relational read store initialized via GALAXY_READER_DSN")
+		}
+	}
+
 	// Initialize Memgraph client for real-time galaxy data
 	var memgraphClient *memgraph.Client
 	if cfg.EDIN.Memgraph.Enabled {
