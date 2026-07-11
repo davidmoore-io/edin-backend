@@ -1,0 +1,4 @@
+---
+# Dark build target; control-api deployment waits for Phase N7.
+vpn_interface_address: "10.8.0.7"
+galaxy_exporter_enabled: false
