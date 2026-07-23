@@ -1,5 +1,5 @@
 ---
 - name: Restart control API
   ansible.builtin.command:
-    cmd: "docker compose -f {{ control_api_compose_file }} up -d --build --force-recreate"
+    cmd: "docker compose -f {{ control_api_compose_file }} up -d --build control-api docker-inspect"
   become: true

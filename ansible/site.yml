@@ -1,12 +1,57 @@
 ---
-# EDIN Backend — Control API, Discord bot, galaxy exporter, Redis
+# EDIN Backend — Control API and Redis
 
 - name: EDIN backend deployment
   hosts: edin
   become: true
+  gather_facts: false
 
   vars_files:
     - group_vars/creds.yml
+
+  pre_tasks:
+    - name: Require one explicitly selected server generation
+      ansible.builtin.assert:
+        that:
+          - ansible_play_hosts_all | length == 1
+          - server_generation is defined
+          - server_generation in ['old', 'new']
+        fail_msg: >-
+          Refusing an unbounded backend deployment. Use --limit with exactly
+          one inventory host and define server_generation in host_vars.
+      tags: [always]
+
+    - name: Protect frozen old production from routine deployment
+      ansible.builtin.assert:
+        that:
+          - server_generation != 'old' or (allow_frozen_old_production | default(false) | bool)
+        fail_msg: >-
+          db.edin.space is frozen old production. Set
+          allow_frozen_old_production=true only for an explicitly authorised
+          freeze exception.
+      tags: [always]
+
+    - name: Require explicit backend activation during maintenance mode
+      ansible.builtin.assert:
+        that:
+          - >-
+            (backend_deployment_enabled | default(false) | bool) or
+            (
+              (ansible_run_tags | difference(['always'])) == ['db_roles']
+            ) or
+            (
+              (ansible_run_tags | difference(['always'])) == ['jwt_keygen']
+            )
+        fail_msg: >-
+          Backend deployment is disabled while the public platform is in
+          maintenance mode. Supply backend_deployment_enabled=true only after
+          the activation gate is approved. The only pre-activation exceptions
+          are single-purpose --tags db_roles and --tags jwt_keygen runs.
+      tags: [always]
+
+    - name: Gather facts after target and activation checks
+      ansible.builtin.setup:
+      tags: [always]
 
   roles:
     - role: redis
@@ -19,5 +64,3 @@
       tags: [access_list, control_api]
     - role: control_api
       tags: [control_api]
-    - role: galaxy_exporter
-      tags: [galaxy_exporter]

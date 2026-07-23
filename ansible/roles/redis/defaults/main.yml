@@ -1,5 +1,5 @@
 ---
-redis_image: redis:7-alpine
+redis_image: redis:7.4.9-alpine@sha256:6ab0b6e7381779332f97b8ca76193e45b0756f38d4c0dcda72dbb3c32061ab99
 redis_compose_path: /srv/redis/docker-compose.yml
 redis_data_dir: /srv/redis/data
 redis_port: 6379

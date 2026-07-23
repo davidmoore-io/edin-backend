@@ -1,4 +1,5 @@
 ---
-# Dark build target; control-api deployment waits for Phase N7.
+# Public maintenance target. The backend stays dark until its activation gate.
+server_generation: new
+backend_deployment_enabled: false
 vpn_interface_address: "10.8.0.7"
-galaxy_exporter_enabled: false

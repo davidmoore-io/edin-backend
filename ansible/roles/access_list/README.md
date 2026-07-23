@@ -43,7 +43,8 @@ window to wait through.
 ## Tailing the denial log
 
 ```bash
-ssh -p 2222 debian@51.178.89.95 'sudo tail -f /var/log/edin/login-attempts.log'
+ssh -p 22 -i ~/.ssh/id_ed25519 -o IdentitiesOnly=yes debian@162.19.62.216 \
+  'sudo tail -f /var/log/edin/login-attempts.log'
 ```
 
 JSON lines. `reason` field discriminates:
@@ -66,7 +67,8 @@ JSON lines. `reason` field discriminates:
 ## Tailing the admin-actions audit
 
 ```bash
-ssh -p 2222 debian@51.178.89.95 'sudo tail -f /var/log/edin/admin-actions.log'
+ssh -p 22 -i ~/.ssh/id_ed25519 -o IdentitiesOnly=yes debian@162.19.62.216 \
+  'sudo tail -f /var/log/edin/admin-actions.log'
 ```
 
 Every approve / deny / grant / revoke / link / unlink / revoke_sessions
@@ -92,7 +94,8 @@ still denied; admin should retry Grant).
 Pipe to `jq` for analysis:
 
 ```bash
-ssh -p 2222 debian@51.178.89.95 'sudo cat /var/log/edin/admin-actions.log' \
+ssh -p 22 -i ~/.ssh/id_ed25519 -o IdentitiesOnly=yes debian@162.19.62.216 \
+  'sudo cat /var/log/edin/admin-actions.log' \
   | jq 'select(.action == "commander.grant") | {fid: .subject_fid, group: .details.group}'
 ```
 

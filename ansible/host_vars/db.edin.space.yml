@@ -1,0 +1,5 @@
+---
+# Frozen rollback/data source. Routine backend plays are mechanically blocked.
+server_generation: old
+backend_deployment_enabled: false
+vpn_interface_address: "10.8.0.6"

@@ -37,7 +37,7 @@
 
 - name: Start Redis
   ansible.builtin.command:
-    cmd: docker compose -f {{ redis_compose_path }} up -d
+    cmd: docker compose -f {{ redis_compose_path }} up -d redis
   register: redis_up
   changed_when: "'Started' in redis_up.stderr or 'Created' in redis_up.stderr"
   tags: [redis]

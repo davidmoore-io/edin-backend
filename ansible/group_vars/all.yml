@@ -26,38 +26,25 @@ discord_bot_env_file: /srv/discord-bot/discord-bot.env
 discord_bot_compose_file: /srv/discord-bot/docker-compose.yml
 discord_app_id: "1438245266817028169"
 
-# Galaxy Exporter
-# Set to true to run the galaxy-exporter on its timer. Currently false because
-# each run holds a 30-min snapshot read transaction over all 4.25M Systems and
-# the binary times out before completing, which (a) never produces output and
-# (b) pins Memgraph delta GC for the duration of every run, inflating
-# unreleased_delta_objects. Re-enable once the exporter is fixed to commit
-# per-batch (closing the read tx between SKIP/LIMIT pages) or its timeout is
-# raised to comfortably exceed full-galaxy runtime.
-galaxy_exporter_enabled: false
-galaxy_exporter_output_dir: /srv/galaxy
-galaxy_exporter_binary_path: /usr/local/bin/galaxy-exporter
-galaxy_exporter_timer_interval: 15min
-galaxy_exporter_batch_size: 50000
-galaxy_exporter_history_cycles: 12
+# Static galaxy assets served by the API. Relational API reads come directly
+# from PostgreSQL; no graph exporter is deployed.
+galaxy_data_dir: /srv/galaxy
 
-# Database connections (Docker network hostnames — no VPN needed)
-memgraph_host: memgraph
-memgraph_port: 7687
+# Database connections (same-host Docker network names)
 edin_db_host: edin-timescaledb
 edin_db_port: 5432
 eddn_db_host: eddn-timescaledb
 eddn_db_port: 5432
 
-# VPN address (galaxy exporter runs on host, needs VPN-bound ports)
-vpn_interface_address: "10.8.0.6"
+# Default new-generation VPN address. Host vars remain authoritative.
+vpn_interface_address: "10.8.0.7"
 
 # Docker networks
 edin_app_network: edin-app-net
 edin_data_network: edin-data-net
 
 # Redis
-redis_image: redis:7-alpine
+redis_image: redis:7.4.9-alpine@sha256:6ab0b6e7381779332f97b8ca76193e45b0756f38d4c0dcda72dbb3c32061ab99
 redis_port: 6379
 
 # Global middleware rate limit. Per-FID limiters on ingest/heartbeat are the

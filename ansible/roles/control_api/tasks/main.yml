@@ -108,10 +108,10 @@
 
 # Build and start.
 # SAFETY: these commands only affect containers defined in control_api_compose_file
-# (/srv/control-api/docker-compose.yml). All other services — memgraph, Redis,
+# (/srv/control-api/docker-compose.yml). All other services — Redis,
 # TimescaleDB, Authentik — are in separate compose files on separate networks and
-# are never touched. No `down` and no `-v` flag appear anywhere in this playbook;
-# volumes are only destroyed by `docker compose down -v` which we never run here.
+# are never touched. This playbook contains no project teardown or
+# volume-removal operation.
 #
 # We always --no-cache the build step so Go source changes are never silently
 # skipped by Docker's layer cache. The build and up steps are intentionally
@@ -126,7 +126,7 @@
 
 - name: Start control API
   ansible.builtin.command:
-    cmd: "docker compose -f {{ control_api_compose_file }} up -d --remove-orphans"
+    cmd: "docker compose -f {{ control_api_compose_file }} up -d control-api docker-inspect"
   register: api_up
   changed_when: "'Started' in api_up.stderr or 'Recreated' in api_up.stderr or 'Created' in api_up.stderr"
   tags: [control_api, deploy]
@@ -147,10 +147,12 @@
 # Requires timescaledb_admin_host to be reachable and vault_timescaledb_superuser_password set.
 - name: Include DB role provisioning tasks
   ansible.builtin.import_tasks: db_roles.yml
-  tags: [db_roles]
+  when: "'db_roles' in ansible_run_tags"
+  tags: [never, db_roles]
 
 # Commander JWT keypair provisioning — run explicitly with --tags jwt_keygen (first-time only).
 # Tasks inside are tagged [never, jwt_keygen] so normal deploys skip them entirely.
 - name: Include commander JWT keygen tasks
   ansible.builtin.import_tasks: keygen.yml
+  when: "'jwt_keygen' in ansible_run_tags"
   tags: [never, jwt_keygen]
