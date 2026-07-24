@@ -11,7 +11,7 @@ build:
 	go build ./...
 
 build-api:
-	CGO_ENABLED=0 go build -o bin/control-api ./cmd/control-api
+	CGO_ENABLED=1 go build -o bin/control-api ./cmd/control-api
 
 # ---- edin-bot targets ----
 build-edin-bot:

@@ -12,7 +12,7 @@ RUN go mod tidy
 
 ARG TARGETOS=linux
 ARG TARGETARCH=amd64
-RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -o /out/control-api ./cmd/control-api
+RUN CGO_ENABLED=1 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -o /out/control-api ./cmd/control-api
 
 FROM debian:bookworm-slim AS runtime
 
