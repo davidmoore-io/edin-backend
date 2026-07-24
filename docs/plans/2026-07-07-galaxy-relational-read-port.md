@@ -3,6 +3,12 @@
 Authoritative delivery plan: `edin-data/docs/plans/galaxy-relational-delivery-plan.md`.
 This note is the backend-local execution record for Wave 5.
 
+Residual Memgraph-bound HTTP/runtime closure is now W5.8 and is specified by
+`docs/plans/2026-07-25-memgraph-api-retirement-plan.md`. W5.1-W5.6 evidence
+below remains valid; it must not be read as claiming that the legacy map,
+powerplay modal sub-actions, survey route, diagnostics, or exporter were
+already ported.
+
 ## Scope
 
 Port read consumers from Memgraph to the `galaxy.*` relational schema without changing
