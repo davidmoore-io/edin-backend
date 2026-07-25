@@ -2,7 +2,7 @@
 
 Date: 2026-07-25
 
-Status: **APPROVED FOR LOCAL EXECUTION 2026-07-25 - STOP BEFORE MR8**
+Status: **MR0-MR7 COMPLETE LOCALLY 2026-07-25 - STOP BEFORE MR8**
 
 Owners:
 
@@ -345,8 +345,11 @@ Keep route/auth/query parameters/response unchanged. Replace direct Neo4j
 sessions with one `galaxystore` method that accepts:
 
 - mining-map system names;
-- optional start system;
-- result limit.
+- optional start system.
+
+The method returns the complete candidate set because the HTTP response must
+report `total_candidates` before applying its requested limit. The unchanged
+handler applies the 50-default/500-maximum limit after stale-first ordering.
 
 The method performs:
 
@@ -592,9 +595,10 @@ Gate:
 - duplicate anchor overlap produces one candidate (deduplicated by name);
 - start-system 400 (unknown and DB-error), empty-anchor 200, and
   `mining_maps_used` discrepancy paths proven;
-- representative production-shaped p95 at most 2 seconds for limit 50 and at
-  most 5 seconds for limit 500, with `EXPLAIN` evidence showing
-  `idx_catalog_loc` driving the lateral probes.
+- representative production-shaped p95 at most 2 seconds for the complete
+  candidate projection, with `EXPLAIN` evidence showing `idx_catalog_loc`
+  driving the lateral probes. This single gate dominates both limit 50 and
+  limit 500 because the projection is deliberately identical for both.
 
 ### MR5 - Retire static galaxy exporter
 

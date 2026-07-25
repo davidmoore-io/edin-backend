@@ -1,0 +1,75 @@
+=== RUN   TestSurveyProjectionPerformanceIntegration
+    survey_performance_integration_test.go:48: anchors_requested=135 runs=20 p95=236.432734ms
+    survey_performance_integration_test.go:62: SURVEY EXPLAIN
+        Incremental Sort  (cost=10947.09..11110.25 rows=18 width=107) (actual time=231.099..241.273 rows=2245 loops=1)
+          Sort Key: sc.name, ((COALESCE(st.dist_from_star_ls, '0'::real))::double precision), st.name
+          Presorted Key: sc.name
+          Full-sort Groups: 70  Sort Method: quicksort  Average Memory: 29kB  Peak Memory: 29kB
+          Buffers: shared hit=250294
+          CTE anchors
+            ->  Hash Join  (cost=1002.81..9235.35 rows=1 width=48) (actual time=0.234..0.879 rows=89 loops=1)
+                  Hash Cond: (c.name = (unnest('{Kebes,"HIP 73012","LTT 4337","Ross 467","Kitchang Mu","HIP 78251","HIP 60989","Wolf 496","HIP 74989","HIP 69299","HIP 61907","60 Herculis","HIP 80242",Sapiety,Nadur,"Col 285 Sector SU-E c12-9","HIP 83163","HIP 71629","HR 5307","Lu Pel","HIP 73269","Lalande 29437",Toluku,"HIP 62118","COL 285 SECTOR NF-J b24-1",Daesitiates,"3 Corvi",Secoyans,"HIP 83863","Musca Dark Region DB-X c1-9","HR 6012",Mbo,"HIP 65126",Prom,"HR 6067","Scorpii Sector DL-Y D125",Ambishas,"Sigma Serpentis","HIP 63032","HIP 67125","Col 285 Sector RU-E c11-23","Col 359 Sector HF-L b10-1","Musca Dark Region GX-S b4-1",Awa,"HIP 65385","HIP 76982","HIP 66754","30 Serpentis","Wregoe DJ-X c28-19","Col 285 Sector VE-G c11-13",Silinja,"Col 285 Sector WU-E c12-18","Ross 480","Col 285 Sector MT-G c11-10","HIP 72986",Bhagui,"Musca Dark Region BQ-Y d104",Tionisla,"HIP 80273","Praea Euq QF-A b4","HIP 64290","HIP 5307","San Xiang","Col 285 Sector LT-G c11-11","HIP 74550","HR 6800","Col 285 Sector WP-E c12-17","HIP 80109","Praea Euq EA-A d149","Col 359 Sector JA-L b10-6","Col 285 Sector RU-E c12-6",Caucini,"Hydrae Sector JC-V c2-13","CE Bootis","HIP 68194","Col 285 Sector RQ-H b25","LHS 3097","Musca Dark Region ZK-X c1-20",Mariarna,"HIP 59357","Col 285 Sector ZK-O d6-104","HR 5252","Col 285 Sector JE-L b23-2","53 Virginis","LTT 4599",Sukuruaco,"HIP 79346",Yakaldukpe,"Musca Dark Region BG-X c1-14","HR 6202","HIP 77019","Coalsack Sector DL-Y d99","HIP 74229","HIP 67755","Hydrae Sector JC-V c2-7",Una,"HR 6297","HIP 80266","Col 285 Sector JP-J b24-0","Scorpii Sector YE-A d118","Wregoe AO-X c28-16","Coalsack Sector DR-V b2-4","HIP 61332","HIP 65701","HIP 80608","Col 285 Sector AL-O d6-116","Alrai Sector AQ-Y D64","G 205-35","Col 285 Sector ZV-M d7-84","HIP 58649","Wregoe JT-Z d13-92","Col 285 Sector WA-D c13-12","HIP 67203","Gliese 9407",Tianve,"Gliese 9539","Musca Dark Region CG-X c1-5","Wregoe MO-Z d13-77","HIP 81716",Sanuma,"HIP 63499","Col 285 Sector WP-O d6-105","Col 285 Sector UE-G c11-27","HIP 70025","HIP 72353",Chamas,Zoquagsang,"HIP 80245","Col 285 Sector KY-M b22-0","HR 6248","HIP 63990","Wregoe DI-T b58-2","HIP 80250","Xi-2 Lupi",Tiris}'::text[])))
+                  Buffers: shared hit=18891
+                  ->  Gather  (cost=1000.43..9217.05 rows=4241 width=50) (actual time=0.202..0.537 rows=4214 loops=1)
+                        Workers Planned: 1
+                        Workers Launched: 1
+                        Buffers: shared hit=18891
+                        ->  Nested Loop  (cost=0.43..7792.95 rows=2495 width=50) (actual time=0.021..9.903 rows=2107 loops=2)
+                              Buffers: shared hit=18891
+                              ->  Parallel Seq Scan on system_power sp_1  (cost=0.00..2399.01 rows=2501 width=18) (actual time=0.006..4.277 rows=2107 loops=2)
+                                    Filter: (powerplay_state = ANY ('{Fortified,Stronghold}'::text[]))
+                                    Rows Removed by Filter: 22798
+                                    Buffers: shared hit=2034
+                              ->  Index Scan using pk_system_catalog on system_catalog c  (cost=0.43..2.16 rows=1 width=40) (actual time=0.002..0.002 rows=1 loops=4214)
+                                    Index Cond: (id64 = sp_1.system_id64)
+                                    Filter: ((x IS NOT NULL) AND (y IS NOT NULL) AND (z IS NOT NULL))
+                                    Buffers: shared hit=16857
+                  ->  Hash  (cost=0.69..0.69 rows=135 width=32) (actual time=0.021..0.022 rows=135 loops=1)
+                        Buckets: 1024  Batches: 1  Memory Usage: 15kB
+                        ->  ProjectSet  (cost=0.00..0.69 rows=135 width=32) (actual time=0.002..0.007 rows=135 loops=1)
+                              ->  Result  (cost=0.00..0.01 rows=1 width=0) (actual time=0.000..0.000 rows=1 loops=1)
+          InitPlan 2 (returns $3)
+            ->  Aggregate  (cost=0.02..0.03 rows=1 width=8) (actual time=0.009..0.010 rows=1 loops=1)
+                  ->  CTE Scan on anchors  (cost=0.00..0.02 rows=1 width=0) (actual time=0.001..0.004 rows=89 loops=1)
+          ->  Nested Loop  (cost=1702.14..1874.06 rows=18 width=107) (actual time=230.961..240.495 rows=2245 loops=1)
+                Buffers: shared hit=250294
+                ->  Unique  (cost=1701.72..1701.90 rows=35 width=48) (actual time=230.906..231.741 rows=4994 loops=1)
+                      Buffers: shared hit=229330
+                      ->  Sort  (cost=1701.72..1701.81 rows=35 width=48) (actual time=230.906..231.159 rows=8241 loops=1)
+                            Sort Key: sc.name, sc.id64
+                            Sort Method: quicksort  Memory: 975kB
+                            Buffers: shared hit=229330
+                            ->  Nested Loop Left Join  (cost=1.14..1700.83 rows=35 width=48) (actual time=0.312..225.842 rows=8241 loops=1)
+                                  Buffers: shared hit=229330
+                                  ->  Nested Loop  (cost=0.85..1689.82 rows=35 width=56) (actual time=0.307..216.126 rows=8241 loops=1)
+                                        Buffers: shared hit=204667
+                                        ->  Nested Loop  (cost=0.42..1480.92 rows=439 width=40) (actual time=0.301..196.272 rows=11625 loops=1)
+                                              Buffers: shared hit=158169
+                                              ->  CTE Scan on anchors a  (cost=0.00..0.02 rows=1 width=20) (actual time=0.235..0.871 rows=89 loops=1)
+                                                    Buffers: shared hit=18891
+                                              ->  Index Scan using idx_catalog_loc on system_catalog sc  (cost=0.42..1476.51 rows=439 width=40) (actual time=0.059..2.186 rows=131 loops=89)
+                                                    Index Cond: (cube((ARRAY[x, y, z])::double precision[]) <@ cube_enlarge(cube(ARRAY[(a.x)::double precision, (a.y)::double precision, (a.z)::double precision]), a.radius, 3))
+                                                    Filter: ((y IS NOT NULL) AND (z IS NOT NULL) AND (sqrt(((power(((x)::double precision - (a.x)::double precision), '2'::double precision) + power(((y)::double precision - (a.y)::double precision), '2'::double precision)) + power(((z)::double precision - (a.z)::double precision), '2'::double precision))) <= a.radius))
+                                                    Rows Removed by Filter: 116
+                                                    Buffers: shared hit=139278
+                                        ->  Index Scan using pk_system on system sys  (cost=0.43..0.48 rows=1 width=24) (actual time=0.002..0.002 rows=1 loops=11625)
+                                              Index Cond: (id64 = sc.id64)
+                                              Filter: (population > 0)
+                                              Rows Removed by Filter: 0
+                                              Buffers: shared hit=46498
+                                  ->  Index Scan using pk_system_power on system_power sp  (cost=0.29..0.31 rows=1 width=16) (actual time=0.001..0.001 rows=1 loops=8241)
+                                        Index Cond: (system_id64 = sc.id64)
+                                        Buffers: shared hit=24663
+                ->  Index Scan using idx_station_system on station st  (cost=0.42..4.90 rows=1 width=43) (actual time=0.001..0.002 rows=0 loops=4994)
+                      Index Cond: (system_id64 = sc.id64)
+                      Filter: ((large_pads > 0) AND (kind = 'station'::text) AND (station_type = ANY ('{Coriolis,Orbis,Ocellus,Dodec,Asteroidbase}'::text[])))
+                      Rows Removed by Filter: 1
+                      Buffers: shared hit=20964
+        Settings: work_mem = '128MB', max_parallel_workers = '10', max_parallel_workers_per_gather = '6', effective_cache_size = '16GB', effective_io_concurrency = '256', random_page_cost = '1.1', jit = 'off'
+        Planning:
+          Buffers: shared hit=46
+        Planning Time: 0.755 ms
+        Execution Time: 241.479 ms
+--- PASS: TestSurveyProjectionPerformanceIntegration (5.13s)
+PASS
+ok  	github.com/edin-space/edin-backend/internal/galaxystore	5.128s

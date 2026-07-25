@@ -34,44 +34,7 @@ type SurveyProjection struct {
 	Start       *Coords
 }
 
-// GetSurveyProjection resolves all anchors and candidates set-wise in one
-// repeatable-read, read-only transaction.
-func (s *Store) GetSurveyProjection(ctx context.Context, mapSystems []string, startSystem string) (*SurveyProjection, error) {
-	tx, err := s.BeginRepeatableReadOnly(ctx)
-	if err != nil {
-		return nil, err
-	}
-	defer tx.Rollback(ctx) //nolint:errcheck
-
-	q := newWithQuerier(tx)
-	out, err := q.querySurveyCandidates(ctx, mapSystems)
-	if err != nil {
-		return nil, err
-	}
-	if startSystem != "" && out.AnchorsUsed > 0 {
-		var start Coords
-		err := tx.QueryRow(ctx, `
-SELECT x::float8, y::float8, z::float8
-FROM galaxy.system_catalog
-WHERE name = $1
-  AND x IS NOT NULL AND y IS NOT NULL AND z IS NOT NULL
-LIMIT 1`, startSystem).Scan(&start.X, &start.Y, &start.Z)
-		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, ErrSystemNotFound
-		}
-		if err != nil {
-			return nil, fmt.Errorf("%w: %v", ErrSurveyStartLookup, err)
-		}
-		out.Start = &start
-	}
-	if err := tx.Commit(ctx); err != nil {
-		return nil, fmt.Errorf("survey snapshot commit: %w", err)
-	}
-	return out, nil
-}
-
-func (s *Store) querySurveyCandidates(ctx context.Context, mapSystems []string) (*SurveyProjection, error) {
-	rows, err := s.db.Query(ctx, `
+const surveyCandidatesSQL = `
 WITH requested(name) AS (
 	SELECT unnest($1::text[])
 ),
@@ -125,7 +88,46 @@ SELECT (SELECT count(*) FROM anchors) AS anchor_count,
        id64, name, x::float8, y::float8, z::float8, last_update,
        station_name, station_type, distance_ls
 FROM eligible
-ORDER BY name, distance_ls, station_name`, mapSystems)
+ORDER BY name, distance_ls, station_name`
+
+// GetSurveyProjection resolves all anchors and candidates set-wise in one
+// repeatable-read, read-only transaction.
+func (s *Store) GetSurveyProjection(ctx context.Context, mapSystems []string, startSystem string) (*SurveyProjection, error) {
+	tx, err := s.BeginRepeatableReadOnly(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck
+
+	q := newWithQuerier(tx)
+	out, err := q.querySurveyCandidates(ctx, mapSystems)
+	if err != nil {
+		return nil, err
+	}
+	if startSystem != "" && out.AnchorsUsed > 0 {
+		var start Coords
+		err := tx.QueryRow(ctx, `
+SELECT x::float8, y::float8, z::float8
+FROM galaxy.system_catalog
+WHERE name = $1
+  AND x IS NOT NULL AND y IS NOT NULL AND z IS NOT NULL
+LIMIT 1`, startSystem).Scan(&start.X, &start.Y, &start.Z)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, ErrSystemNotFound
+		}
+		if err != nil {
+			return nil, fmt.Errorf("%w: %v", ErrSurveyStartLookup, err)
+		}
+		out.Start = &start
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, fmt.Errorf("survey snapshot commit: %w", err)
+	}
+	return out, nil
+}
+
+func (s *Store) querySurveyCandidates(ctx context.Context, mapSystems []string) (*SurveyProjection, error) {
+	rows, err := s.db.Query(ctx, surveyCandidatesSQL, mapSystems)
 	if err != nil {
 		return nil, fmt.Errorf("survey candidates: %w", err)
 	}
