@@ -1,0 +1,37 @@
+{
+  "system_name": "MR0 Contract",
+  "factions": [
+    {
+      "faction_name": "Alpha Faction",
+      "system_name": "MR0 Contract",
+      "influence": 0.75,
+      "state": "Boom",
+      "active_states": ["Boom"],
+      "pending_states": ["Expansion"],
+      "happiness": "Happy",
+      "last_event_time": "2026-07-25T00:00:00Z"
+    }
+  ],
+  "stations": [
+    {
+      "id64": 0,
+      "name": "Contract Stub",
+      "type": "MegaShip",
+      "system_name": "MR0 Contract",
+      "last_eddn_update": "2026-07-24T23:00:00Z"
+    },
+    {
+      "id64": 700001,
+      "name": "Contract Orbital",
+      "type": "Coriolis",
+      "system_name": "MR0 Contract",
+      "distance_ls": 42,
+      "max_pad": "L",
+      "services": ["Market", "Shipyard"],
+      "controlling_faction": "Alpha Faction",
+      "has_market": true,
+      "has_shipyard": true,
+      "last_eddn_update": "2026-07-25T00:00:00Z"
+    }
+  ]
+}

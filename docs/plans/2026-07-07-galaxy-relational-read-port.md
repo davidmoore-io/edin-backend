@@ -150,7 +150,8 @@ rule.
   `parameters` object keyed as `"1"`, `"2"`, ... for deterministic binding.
 - Removed Memgraph wiring from `internal/tools.Executor`; the tools package no
   longer imports or receives a Memgraph client. Server-level legacy Memgraph
-  routes remain outside W5.6 and are still tracked for W8 retirement/porting.
+  routes remain outside W5.6 and are governed by
+  `2026-07-25-memgraph-api-retirement-plan.md` before N7.
 - Updated `galaxy_query` MCP definition and `tool_guidance.go` from graph/Cypher
   guidance to relational SQL guidance.
 - Tests: `GOWORK=off GALAXY_TEST_DSN=postgres://eddn_admin:eddn-local-dev@localhost:5433/eddn_raw go test -count=1 -run TestGalaxyRelationalToolsSmoke -v ./internal/tools`

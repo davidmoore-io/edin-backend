@@ -1,0 +1,27 @@
+MR1 parameterised escaped-wildcard index proof
+Captured against isolated local TimescaleDB 2.25.2-pg16, 2026-07-25.
+
+PREPARE mr_search(text,int) AS
+SELECT c.id64,c.name
+FROM galaxy.system_catalog c
+WHERE lower(c.name) LIKE lower($1) || '%' ESCAPE '\'
+ORDER BY length(c.name),c.name
+LIMIT $2;
+
+EXPLAIN (ANALYZE, BUFFERS, SETTINGS)
+EXECUTE mr_search('\%MR0',10);
+
+Limit
+  -> Sort
+       Sort Key: (length(name)), name
+       -> Bitmap Heap Scan on system_catalog c
+            Filter: (lower(name) ~~ '\%mr0%'::text)
+            -> Bitmap Index Scan on idx_catalog_name_prefix
+                 Index Cond: ((lower(name) ~>=~ '%mr0'::text)
+                              AND (lower(name) ~<~ '%mr1'::text))
+
+Planning Time: 1.020 ms
+Execution Time: 0.050 ms
+
+Result: the escaped leading percent is a literal prefix and drives
+idx_catalog_name_prefix. No sequential scan is present.

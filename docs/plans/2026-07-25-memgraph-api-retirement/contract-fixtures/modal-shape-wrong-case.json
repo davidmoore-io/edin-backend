@@ -1,0 +1,11 @@
+{
+  "requested_system_name": "mr0 contract",
+  "expected_factions": {
+    "system_name": "mr0 contract",
+    "factions": []
+  },
+  "expected_stations": {
+    "system_name": "mr0 contract",
+    "stations": []
+  }
+}

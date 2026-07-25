@@ -1,0 +1,34 @@
+MR0 production Memgraph inventory
+Captured: 2026-07-25
+
+Surviving routes to port:
+- GET /api/edin/systems/{name}/factions
+- GET /api/edin/systems/{name}/stations
+- GET /api/internal/survey-route
+- POST /admin/diagnose (memgraph check becomes galaxy-reader)
+
+Runtime paths to remove:
+- cmd/control-api Memgraph construction and close
+- internal/httpapi.Server.memgraph and httpapi.Run parameter
+- powerplay refresh Memgraph fallback
+- MEMGRAPH_* config and deployment environment
+- bot diagnose request name
+
+Routes to retire by owner decision (no internal or external consumers):
+- GET /api/galaxy/view
+- GET /api/galaxy/system/{systemId64}
+- GET /api/galaxy/system/name/{systemName}
+- GET /api/galaxy/search
+- GET /api/galaxy/stats
+
+Command to retire:
+- cmd/galaxy-exporter
+
+Accepted residual outside edin-backend:
+- edin-data/cmd/eddn-listener env-gated dormant Memgraph write branch
+
+Production importer gate:
+rg -n 's\.memgraph|memgraphClient|internal/memgraph|neo4j' \
+  internal/httpapi cmd/control-api cmd/galaxy-exporter
+
+Every hit was accounted for by section 2.1 of the approved plan at cd2a3b8.

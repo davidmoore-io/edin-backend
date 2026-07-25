@@ -1,0 +1,31 @@
+{
+  "with_start": {
+    "total_candidates": 2,
+    "returned": 2,
+    "mining_maps_used": 2,
+    "start_system": "MR0 Start",
+    "total_route_distance_ly": 12.3,
+    "systems": [
+      {
+        "system": "MR0 Candidate",
+        "x": 1,
+        "y": 2,
+        "z": 3,
+        "last_update": "2026-07-25T00:00:00Z",
+        "staleness_hours": 1,
+        "stations": [
+          {"name": "MR0 Orbital", "type": "Coriolis", "distance_ls": 10}
+        ],
+        "order": 1,
+        "distance_from_previous_ly": 12.3
+      }
+    ]
+  },
+  "without_start_empty": {
+    "total_candidates": 0,
+    "returned": 0,
+    "mining_maps_used": 0,
+    "total_route_distance_ly": 0,
+    "systems": []
+  }
+}

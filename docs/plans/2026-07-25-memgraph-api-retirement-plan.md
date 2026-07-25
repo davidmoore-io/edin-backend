@@ -462,11 +462,11 @@ Deliver:
 - `modal-field-map.md` per 4.1;
 - captured JSON fixtures. **Provenance is pinned**: fixtures come in two
   classes, and every parity gate names which class it compares against:
-  - **shape fixtures**, captured from the legacy handlers running against the
-    local Memgraph development stack (which is retained until MR9 precisely
-    so these can be regenerated): key sets, omission behaviour, wrapper
-    shapes, ordering rules, status codes. Values in shape fixtures are not
-    compared;
+  - **shape fixtures**, derived from the checked-in legacy handlers and their
+    concrete response DTOs, then enforced by canonical-JSON handler tests:
+    key sets, omission behaviour, wrapper shapes, ordering rules, status
+    codes. Values in shape fixtures are not compared; a local Memgraph dataset
+    is not treated as an independent value oracle;
   - **value fixtures**, captured from the relational implementation against a
     seeded relational test database whose expected values are known
     independently (hand-computed from the seed data, not derived by running
