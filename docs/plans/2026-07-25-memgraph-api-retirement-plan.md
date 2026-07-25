@@ -2,7 +2,7 @@
 
 Date: 2026-07-25
 
-Status: **DRAFT FOR ADVERSARIAL REVIEW - NO EXECUTION AUTHORISED**
+Status: **APPROVED FOR LOCAL EXECUTION 2026-07-25 - STOP BEFORE MR8**
 
 Owners:
 
@@ -21,6 +21,31 @@ production Memgraph-bound API path. It closes the surfaces previously accepted
 as broken in W7 and makes their closure a prerequisite for the new server's N7
 dark application verification.
 
+## Amendment record
+
+**2026-07-25 amendment (post adversarial review).** The review returned
+BLOCKED. Two changes follow:
+
+1. **Descope (David's decision):** the galaxy visualiser surfaces — the five
+   `/api/galaxy/*` routes and `cmd/galaxy-exporter` — are **retired, not
+   ported**. The visualiser is behind ComingSoon (`edin-frontend/src/App.jsx`
+   routes `/galaxy` and `/galaxy/*` to `ComingSoon`); `/api/galaxy/view` has
+   no caller anywhere; `stats`, `search`, and `system/*` are called only by
+   the unrouted visualiser page. Porting them was the source of every
+   production-scale blocker (unbounded viewport count, full-galaxy aggregates
+   under the 15-second role timeout, a browser-infeasible multi-gigabyte
+   export). Retirement removes the two largest importers of
+   `internal/memgraph` and still achieves the plan's goal. The work needed to
+   relaunch the visualiser is recorded in section 8 so it is not lost.
+   **Owner decision (David, 2026-07-25): the five routes have no external
+   consumers.** This is established fact by decision authority; later
+   reviewers do not reopen it.
+2. **Review findings folded in:** fixture provenance (MR0), the exact-match
+   name resolver and station row-population pins (4.1), survey semantics pins
+   (4.5), diagnostics allowlist invariant and deploy-ordering (4.6, MR8), the
+   MR6/MR9 gate scope corrections, the Kaine system prompt correction, the
+   MR-D3 wording correction, and a new MR9 gate.
+
 ## 0. Verified Baseline
 
 As of 2026-07-25:
@@ -32,6 +57,8 @@ As of 2026-07-25:
 - the powerplay current-state list is relational, but its modal's `factions`
   and `stations` calls still return 503 when Memgraph is disabled.
 - all five handlers in `internal/httpapi/galaxy.go` still call Memgraph.
+  None has a live consumer: the frontend galaxy page is unrouted
+  (ComingSoon) and `/api/galaxy/view` has no caller at all.
 - `internal/httpapi/survey_route.go` still creates Neo4j sessions directly.
 - `control-api` still carries optional Memgraph construction, a powerplay
   fallback, and a Memgraph diagnostic even though new production deliberately
@@ -44,18 +71,20 @@ As of 2026-07-25:
 Move every remaining live HTTP read from Memgraph to PostgreSQL `galaxy.*`,
 preserving its route, authentication, status-code behaviour, JSON field names,
 null/empty-array behaviour, ordering, limits, cache headers, and user-visible
-semantics.
+semantics — and delete the Memgraph-bound surfaces that have no consumers
+rather than porting them.
 
 The final state is:
 
 1. `control-api` does not construct, receive, probe, or fall back to a
    Memgraph client.
-2. Every current-galaxy HTTP read uses `internal/galaxystore` through the
-   `galaxy_reader` connection.
+2. Every surviving current-galaxy HTTP read uses `internal/galaxystore`
+   through the `galaxy_reader` connection.
 3. Every MCP current-galaxy tool remains on `internal/galaxystore`; historical
-   tools keep their separate read-only raw-feed connection.
-4. The galaxy static-data exporter reads `galaxy.*`, so enabling it cannot
-   resurrect Memgraph.
+   tools keep their separate raw-feed connection.
+4. The galaxy static-data exporter and the five `/api/galaxy/*` routes are
+   deleted. Re-introducing a static export or map API for the visualiser is a
+   new design task (section 8), not a latent Memgraph path.
 5. production configuration, diagnostics, sidecar allowlists, and deployment
    templates contain no active Memgraph dependency.
 6. the new host can pass N7 with `MEMGRAPH_ENABLED` absent, not merely false.
@@ -67,17 +96,18 @@ The final state is:
 | Surface | Current Memgraph dependency | Required disposition |
 |---|---|---|
 | `GET /api/edin/systems/{name}/factions` | `GetFactionsInSystem` | port to `galaxy.system_faction` + `galaxy.faction` |
-| `GET /api/edin/systems/{name}/stations` | `GetStationsInSystem` | port to `galaxy.station` + related current-state tables |
-| `GET /api/galaxy/view` | `GetSystemsInBounds` | port to the `system_catalog` cube index and current system/power joins |
-| `GET /api/galaxy/system/{systemId64}` | `GetSystemDetail` | port complete system/body/ring/station projection |
-| `GET /api/galaxy/system/name/{systemName}` | `GetSystemDetailByName` | same projection after exact case-sensitive name resolution |
-| `GET /api/galaxy/search` | `SearchSystemsByPrefix` | port to `idx_catalog_name_prefix` and current-state joins |
-| `GET /api/galaxy/stats` | `GetGalaxyViewStats` | port aggregate counts to `galaxy.*` |
+| `GET /api/edin/systems/{name}/stations` | `GetStationsInSystem` | port to `galaxy.station` + `galaxy.station_stub` per 4.1 |
+| `GET /api/galaxy/view` | `GetSystemsInBounds` | retire: delete route, handler, and tests (4.2) |
+| `GET /api/galaxy/system/{systemId64}` | `GetSystemDetail` | retire: delete route, handler, and tests (4.2) |
+| `GET /api/galaxy/system/name/{systemName}` | `GetSystemDetailByName` | retire: delete route, handler, and tests (4.2) |
+| `GET /api/galaxy/search` | `SearchSystemsByPrefix` | retire: delete route, handler, and tests (4.2) |
+| `GET /api/galaxy/stats` | `GetGalaxyViewStats` | retire: delete route, handler, and tests (4.2) |
 | `GET /api/internal/survey-route` | direct Neo4j sessions | port anchor/candidate lookups to relational spatial SQL |
 | `POST /admin/diagnose` check `memgraph` | Memgraph process and Cypher probe | replace with `galaxy-reader` relational probe |
 | powerplay cache refresh | relational first, Memgraph fallback | delete fallback; retain stale cache on relational failure |
-| `cmd/galaxy-exporter` | `GetAllSystemsMinimal` | port static export source to ordered relational streaming |
-| `cmd/control-api` and `httpapi.Server` | constructs and carries Memgraph client | remove wiring after all handlers are relational |
+| `cmd/galaxy-exporter` | `GetAllSystemsMinimal` | retire: delete the command and its build target (4.7) |
+| `cmd/control-api` and `httpapi.Server` | constructs and carries Memgraph client | remove wiring after all handlers are relational or deleted |
+| `internal/config/prompts/kaine_system_prompt.md` | describes `galaxy_query` as Cypher/Memgraph (lines 21-22, 62) | correct to PostgreSQL SQL in MR6 |
 | production Ansible/config | dormant Memgraph switches and labels | remove active configuration and deployment paths |
 
 ### 2.2 Explicitly out of scope
@@ -86,12 +116,33 @@ These are not Memgraph migrations and MUST NOT be folded into this work:
 
 - `/api/edin/systems/{name}/history` and `expansion-history`; these are
   time-series reads from `feed.powerplay_hourly` through the raw EDDN pool.
-- Kaine objectives, chat, users, groups, prompts, and mining-map ownership;
-  these belong to the EDIN application database.
+- Kaine objectives, chat, users, groups, prompts (other than the factual
+  correction named in 2.1), and mining-map ownership; these belong to the
+  EDIN application database.
 - commander ingest, commander history, Frontier auth, and Copilot sessions.
 - Spansh, EDSM, static guide search, operations tools, DayZ, and external APIs.
 - any schema or writer-semantic change.
 - deletion of old Memgraph volumes or frozen-old-server data.
+
+### 2.2a Named accepted residuals
+
+These Memgraph references survive this plan deliberately. They are listed so
+the completion grep has an authoritative exclusion list and so nobody
+rediscovers them as gaps:
+
+- **`edin-data/cmd/eddn-listener`** retains an env-gated Memgraph write path
+  (`MEMGRAPH_HOST` construction at `main.go:328,366-416`) and `edin-data`
+  keeps the Neo4j driver for it. The deployed listener template does not set
+  the variable. Removing this path touches the live listener and is excluded
+  by the writer-change boundary above; it is tracked as a follow-up in the
+  delivery plan, not here. Goal 5 is therefore scoped to `edin-backend`,
+  `atlas`, and deployment templates — not the listener binary's dormant
+  branch.
+- **Atlas firewall deny rules** for 7687/7444 (`firewall_blocked_ports`) are
+  defence-in-depth and are retained. Only retired *allow* entries are removed
+  in MR9, and only where the frozen-old-server contract permits.
+- **Frozen old-server inventory** (`atlas/ansible/host_vars/db.edin.space.yml`)
+  is untouched.
 
 ### 2.3 MCP disposition
 
@@ -100,13 +151,15 @@ already removed Memgraph from `internal/tools`.
 
 | MCP family | Authoritative source after this plan |
 |---|---|
-| current galaxy, system, station, carrier, body, signal, market, faction, power, expansion, mining, surface-site, stats, schema | `galaxy.*` through `galaxystore` |
+| current galaxy: system, station, carrier, body, signal, market, faction, power, expansion, surface-site, stats, schema, `system_profile` | `galaxy.*` through `galaxystore` |
+| mining tools (`galaxy_plasmium_buyers`, `galaxy_ltd_buyers`, `galaxy_expansion_targets`) | dual source: mining maps from the EDIN application database (kaine store) + galaxy state through `galaxystore` |
 | `galaxy_query` | parser-restricted SQL under `galaxy_reader` |
 | `galaxy_history`, `galaxy_powerplay_cycle` | raw EDDN history connection |
 | commander tools | commander repository |
 | guides | checked-in reference material |
 | Spansh/route tools | external clients |
 | operations tools | operations manager |
+| `describe_tool` and other meta-tools | static tool definitions in `internal/tools` |
 
 No MCP tool may receive a Memgraph client or import `internal/memgraph`.
 
@@ -115,36 +168,48 @@ No MCP tool may receive a Memgraph client or import `internal/memgraph`.
 ### MR-D1: One current-state store
 
 `internal/galaxystore` owns all production reads from `galaxy.*`. HTTP handlers,
-MCP tools, background refreshes, and exporters must not embed parallel SQL
+MCP tools, and background refreshes must not embed parallel SQL
 implementations when the same projection is shared.
 
-### MR-D2: Existing wire contracts stay stable
+### MR-D2: Existing wire contracts stay stable — with two enumerated exceptions
 
-The frontend does not change to accommodate this migration. Existing routes,
-query parameters, defaults, caps, HTTP status classes, JSON names, omitted
-fields, array ordering, and cache headers remain stable.
+The frontend does not change to accommodate this migration. For the surviving
+routes (modal sub-actions, survey), existing query parameters, defaults, caps,
+HTTP status classes, JSON names, omitted fields, array ordering, and cache
+headers remain stable.
 
-Where the graph implementation returned nondeterministic collection order, the
-relational implementation pins deterministic domain order and records it in
-tests:
+Enumerated exceptions, approved 2026-07-25:
 
-- factions: influence descending, faction name ascending;
-- stations: distance from arrival ascending with nulls last, then name;
-- bodies: body id ascending;
-- rings: ring name ascending;
-- hotspot names: commodity name ascending;
-- search: population descending, then name, then id64;
-- viewport rows: id64 ascending before `LIMIT`.
+1. The five `/api/galaxy/*` routes are deleted (they have no consumers); a
+   request to them returns the router's standard 404.
+2. Where the graph implementation returned nondeterministic collection order,
+   the relational implementation pins deterministic domain order and records
+   it in tests:
+   - factions: influence descending, faction name ascending;
+   - stations: distance from arrival ascending (null distance coerced to `0`,
+     which therefore sorts first — matching the legacy handler), then name.
 
-All successful empty collections encode as `[]`, never `null`.
+Empty-collection encoding is pinned **per surface from the MR0 fixtures**, not
+by a blanket rule: the modal sub-actions emit `[]` (legacy behaviour); survey
+emission matches its legacy fixtures exactly. Do not generalise an
+"always `[]`" or "always `null`" rule to any surface.
+
+Zero timestamps: legacy `time.Time` fields tagged `omitempty` are **never
+omitted** by `encoding/json` — missing graph timestamps shipped as
+`"0001-01-01T00:00:00Z"`. Ported DTOs must reproduce this: map relational NULL
+to the zero `time.Time` and emit it. Do not switch to `*time.Time` or
+`omitzero`.
 
 ### MR-D3: Read roles remain separated
 
 `GALAXY_READER_DSN` is the only connection used for `galaxy.*`. It must connect
 as `galaxy_reader`, with no `feed.*` privilege.
 
-Raw history retains its own read-only raw-feed connection. This plan must not
-grant `feed` to `galaxy_reader` to make history endpoints convenient.
+Raw history retains its own **separate** raw-feed connection. That connection
+currently authenticates as `eddn_admin`; moving it to a dedicated reader role
+is desirable but is tracked separately and is not part of this plan. This plan
+must not grant `feed` to `galaxy_reader` to make history endpoints convenient,
+and MR8 evidence must not claim the history connection is read-only.
 
 ### MR-D4: No fallback to Memgraph
 
@@ -154,23 +219,30 @@ that cache exists; it never silently switches databases.
 
 ### MR-D5: Query plans are gates
 
-Every new query is run against the new production-shaped database with
-`EXPLAIN (ANALYZE, BUFFERS, WAL, SETTINGS)` after `ANALYZE`.
+Every new query is run against the production-shaped database (defined in
+MR-D6) with `EXPLAIN (ANALYZE, BUFFERS, WAL, SETTINGS)` after `ANALYZE`.
 
 API transactions also retain the reader safety floor:
 
-- role `statement_timeout`: 15 seconds;
-- `galaxy_query`: 2 seconds;
-- read-only transaction where multiple statements form one projection;
-- no sequential scan of `galaxy.system_catalog` for bounded spatial or prefix
-  lookups;
-- no per-row body, ring, hotspot, station, or faction query.
+- role `statement_timeout`: 15 seconds. Note this is a per-**statement**
+  limit and a session-overridable role *default*; it is treated as a floor by
+  convention. No code in this plan may raise it.
+- `galaxy_query`: 2 seconds (existing `SET LOCAL`).
+- read-only transaction where multiple statements form one projection.
+- no sequential scan of `galaxy.system_catalog` for bounded spatial lookups.
+- no per-row station or faction query; collections are fetched set-wise.
 
 ### MR-D6: No live deployment until the complete set is ready
 
 MR0-MR7 build and test locally. MR8 is one dark `control-api` deployment with
-all route ports, MCP verification, diagnostics changes, and Memgraph wiring
-removal together. There is no mixed production mode.
+all route ports and retirements, MCP verification, diagnostics changes, and
+Memgraph wiring removal together. There is no mixed production mode.
+
+**Production-shaped database, defined:** the new host's `eddn_raw` database
+accessed **read-only as `galaxy_reader`** over the existing operator SSH path.
+Running `EXPLAIN` and read-only measurement there is not a deployment and is
+permitted from MR1 onward. Where a query can be exercised meaningfully at
+local scale first, do that first; the production-shaped run is the gate.
 
 ### MR-D7: Historical Memgraph code is not production code
 
@@ -191,22 +263,44 @@ GetFactionsInSystem(ctx context.Context, systemName string) ([]FactionPresence, 
 GetStationsInSystem(ctx context.Context, systemName string) ([]StationData, error)
 ```
 
-Both resolve `system_catalog.id64` by the exact system name supplied, matching
-the graph pattern `{name: $name}`.
+**Name resolution is exact and case-sensitive**, matching the graph pattern
+`{name: $name}`. The existing `galaxystore` resolver
+(`internal/galaxystore/system.go` `GetSystemFullByName`) resolves via
+`lower(c.name) = lower($1)` and **must not be reused** — implement a new
+exact-match resolver on `system_catalog.name = $1`. Wrong-case lookups return
+the empty result, and MR0 captures a wrong-case fixture proving it.
 Unknown systems return an empty slice to preserve the current sub-action
-contract. They reuse the existing private relational projections; do not call
-`GetSystemFull` and load unrelated slices.
+contract. Do not call `GetSystemFull` and load unrelated slices.
 
-The `stations` handler retains its exact current post-query filter:
-case-insensitive `Fleetcarrier` is removed. Do not add another filter in this
-port. (`/api/galaxy/system/*` separately excludes both `Fleetcarrier` and
-`Drake-Class Carrier`, matching its own legacy query.)
+**Station row population is pinned**, because `galaxy.station` and the legacy
+graph do not contain the same row set:
+
+- exclude construction depots: `WHERE kind = 'station'` (`galaxy.station`
+  also holds `space_depot`/`planetary_depot` rows the graph never surfaced);
+- include FSS station stubs: legacy FSS-discovered stubs were graph `Station`
+  nodes and appeared in this response with `market_id` `0`, an empty
+  `landing_pads` object, no services, null distance, and FSS-vocabulary
+  types. Relationally they live only in `galaxy.station_stub`. UNION them in,
+  deduplicated by station name with the full `galaxy.station` row winning;
+- carriers: the handler retains its exact current post-query filter —
+  case-insensitive `Fleetcarrier` is removed. Do not add another filter.
+  (Carriers do not enter `galaxy.station` relationally, so the filter is
+  expected to be a no-op; keep it anyway for contract fidelity and record
+  that expectation in the MR1 tests.)
 
 The handler maps relational rows into a dedicated wire DTO matching the MR0
 legacy fixture. In particular, the current graph sub-action sets
 `system_name` but leaves `system_id64` omitted; directly encoding the broader
 `galaxystore.StationData` would add a field and is forbidden. Faction rows
-likewise echo the requested `system_name`.
+likewise echo the requested `system_name`. Zero-timestamp emission follows
+MR-D2.
+
+Before coding, add
+`docs/plans/2026-07-25-memgraph-api-retirement/modal-field-map.md`
+enumerating every field of the legacy modal faction and station wire shapes,
+its exact relational expression (including the stub-row expressions), null
+rule, and JSON omission rule. An unmapped field is a hard stop, not
+permission to emit zero.
 
 The HTTP handler keeps the existing wrappers:
 
@@ -218,92 +312,32 @@ The HTTP handler keeps the existing wrappers:
 {"system_name":"Wolf 1060","stations":[]}
 ```
 
-### 4.2 Galaxy viewport
+### 4.2 Galaxy visualiser routes — RETIRED (amended 2026-07-25)
 
-Move graph-era viewport request/response types out of `internal/memgraph` into
-`internal/galaxystore` or an HTTP contract package. The SQL source is:
+The former sections 4.2 (viewport), 4.3 (system detail), and 4.4
+(search/stats) directed ports of the five `/api/galaxy/*` handlers. They are
+**withdrawn**. Instead:
 
-- coordinates and identity: `galaxy.system_catalog`;
-- population/allegiance: `galaxy.system`;
-- controlling power/state: `galaxy.system_power`.
+- delete the five route registrations and handlers
+  (`internal/httpapi/galaxy.go` in its entirety) and their tests;
+- delete the graph-era viewport/detail/search/stats request/response types
+  with them; move nothing into `galaxystore`;
+- the frontend does not change: the galaxy page is already unrouted
+  (ComingSoon) and its `services/api.js` becomes dead code awaiting the
+  visualiser relaunch (section 8);
+- requests to the deleted paths receive the router's standard 404. No stub
+  handler, no redirect, no alias.
 
-The bounding predicate must use `idx_catalog_loc`:
+Rationale: no consumers exist — internally verified (unrouted ComingSoon
+page; `view` called by nothing) and externally **confirmed by David as an
+owner decision on 2026-07-25**; porting them carried the plan's only
+production-scale risks (unbounded viewport count, full-galaxy aggregates
+against the 15-second reader timeout); and deleting them removes the largest
+`internal/memgraph` importer.
 
-```sql
-cube(ARRAY[c.x, c.y, c.z]) <@
-cube(ARRAY[$1, $2, $3], ARRAY[$4, $5, $6])
-```
+### 4.3 Galaxy system detail — withdrawn, see 4.2
 
-and require all three coordinates non-null. Optional `power`, `allegiance`,
-and `state` filters are parameterized. Run one count query and one deterministic
-limited data query inside one read-only repeatable-read transaction so
-`total_count`, `systems`, and `truncated` describe one snapshot.
-
-Existing guards remain:
-
-- all six bounds required;
-- minimum must not exceed maximum;
-- maximum 10,000 ly per dimension;
-- default limit 50,000;
-- hard cap 100,000.
-
-### 4.3 Galaxy system detail
-
-Both ID and name routes call one `galaxystore.GetGalaxySystemDetail` projection.
-Name resolution is exact and case-sensitive, matching the existing graph
-query. Unknown identity returns the existing 404.
-
-The response remains:
-
-```json
-{"system":{},"bodies":[],"stations":[]}
-```
-
-Source map:
-
-| Output | Source |
-|---|---|
-| system identity/coordinates | `system_catalog` |
-| population/allegiance/government/economies/security/faction/timestamps | `system`, controlling `faction`, controlling `system_faction` |
-| power/state | `system_power` |
-| bodies | `body`, including typed extraction from `physical` |
-| rings | `ring` |
-| hotspot arrays/flags | `ring_hotspot` + `commodity` |
-| stations | `station` + controlling `faction` |
-
-Before coding, add
-`docs/plans/2026-07-25-memgraph-api-retirement/system-detail-field-map.md`.
-It must enumerate every field in the legacy `SystemInfo`, `BodyInfo`,
-`RingInfo`, and `StationInfo` types, its exact relational expression, unit
-conversion if any, null rule, and JSON omission rule. An unmapped field is a
-hard stop, not permission to emit zero.
-
-Body, ring, hotspot, and station collections are each fetched set-wise. The
-implementation may use multiple bounded queries in one transaction; it may not
-issue a query per body or ring.
-
-### 4.4 Search and stats
-
-Search uses `lower(c.name) LIKE lower($1) || '%'`, the
-`idx_catalog_name_prefix` contract, and the existing limit rules (default 10,
-accepted range 1-50). It enriches current values through left joins and returns
-the existing `{systems,count}` wrapper.
-
-Stats use:
-
-- `count(*)` from `system_catalog`;
-- `sum(population)` from `system`;
-- `count(*)` from `power`;
-- `count(*)` from `station`, excluding the two carrier station types.
-
-Because exact full counts are not request-path work, implement a process-local
-snapshot refreshed at startup and no more than once every six hours. The
-existing response `Cache-Control: public, max-age=60` remains unchanged; that
-header controls client caching, not the internal aggregate cadence. Refresh
-uses one read-only transaction, runs asynchronously after startup, and is
-single-flight. Refresh errors retain the previous snapshot and expose an error
-metric; a request before the first successful snapshot returns the existing
-500 status class.
+### 4.4 Search and stats — withdrawn, see 4.2
 
 ### 4.5 Survey route
 
@@ -323,18 +357,33 @@ The method performs:
    one large-pad station of type `Coriolis`, `Orbis`, `Ocellus`, `Dodec`, or
    `Asteroidbase`;
 4. use the `system_catalog` cube index for each radius via a lateral/values
-   anchor relation and apply exact Euclidean distance after the cube
-   prefilter;
-5. deduplicate candidates by id64;
-6. aggregate and order qualifying stations by distance then name;
-7. derive `last_update` exactly as the existing relational system projection:
+   anchor relation — the pinned construct is
+   `cube(ARRAY[c.x,c.y,c.z]) <@ cube_enlarge(cube(ARRAY[a.x,a.y,a.z]::float8[]), a.radius, 3)`
+   inside a `CROSS JOIN LATERAL` — and apply exact Euclidean distance after
+   the cube prefilter;
+5. deduplicate candidates **by system name**, matching the legacy handler's
+   seen-map (`survey_route.go` keys its dedup on name, not id64);
+6. aggregate and order qualifying stations by distance then name, with null
+   `distance_ls` coerced to `0` (which sorts first — legacy behaviour);
+7. derive `last_update` as
    `GREATEST(system.last_event_time, system.last_faction_update,
    system_power.last_event_time)`, ignoring nulls through the existing
-   `-infinity`/`NULLIF` expression;
+   `-infinity`/`NULLIF` expression. **Declared deviation:** legacy read the
+   single graph property `last_eddn_update`; the relational expression is a
+   deliberate semantic remap, so staleness ordering (and therefore stale-first
+   candidate selection) may differ from a legacy capture. MR4 parity is
+   defined against the relational expression, not against legacy output
+   values;
 8. preserve the current stale-first selection and Go nearest-neighbour route.
 
-An unknown explicit `start` remains HTTP 400. Missing mining-map anchors remain
-a successful empty response.
+Behavioural pins carried over from the legacy handler:
+
+- an unknown explicit `start` remains HTTP 400 — and so does a database
+  *error* during the start lookup (legacy returns 400 for both);
+- missing mining-map anchors remain a successful empty response;
+- `mining_maps_used` remains `len(mapSystems)` on the no-anchor early return
+  and `len(anchors)` in the full response — preserve the discrepancy, do not
+  "fix" it.
 
 The SQL must be one set-based candidate query, not one query per mining-map
 anchor.
@@ -345,52 +394,62 @@ Replace the request check name `memgraph` with `galaxy-reader`.
 
 `galaxy-reader`:
 
-- inspects container `eddn-timescaledb`;
+- inspects container `eddn-timescaledb` (verified: `galaxy.*` lives in the
+  `eddn_raw` database inside that container; the container is already present
+  in the sidecar allowlist, so no sidecar *addition* is needed);
 - runs a bounded query through the `GALAXY_READER_DSN` pool;
 - asserts `current_user = 'galaxy_reader'`;
 - asserts one-row access to `galaxy.system_catalog`;
 - reports latency through the unchanged `probeResult` shape.
 
-Update together:
+Expected dev-mode behaviour: with `EDDN_RAW_DB_ENABLED=true` and no
+`GALAXY_READER_DSN`, the galaxystore runs on the `eddn_admin` pool and this
+probe **fails its `current_user` assertion by design**. That is correct
+fail-loud behaviour, not a defect; record it in the probe's test.
 
-- `internal/httpapi/admin_diagnose.go`;
+Update together in MR6:
+
+- `internal/httpapi/admin_diagnose.go` (including its allowlist comment);
 - `internal/httpapi/diagnose_probes.go`;
-- `internal/httpapi/kaine.go` dependency wiring;
-- `internal/edinbot/controlclient/client.go`;
-- `cmd/docker-inspect-sidecar` allowlist and its `ALLOWLIST.md`;
-- focused tests.
+- `internal/httpapi/kaine.go` dependency wiring (a galaxystore-backed probe
+  replaces `memgraphProber`/`nilMemgraphProber`);
+- `internal/edinbot/controlclient/client.go` (hardcoded checks list);
+- `cmd/docker-inspect-sidecar/main.go` allowlist: **remove** the `memgraph`
+  entry (this is the only sidecar change, and it happens here, once — MR9
+  merely verifies it);
+- `cmd/docker-inspect-sidecar/ALLOWLIST.md`: rewrite. The documented
+  "lock-step" cross-check does not exist — both tests hardcode independent
+  copies of the list. Restate the invariant as: *the set of `container`
+  values in `allowedDiagnoseChecks` is a subset of the sidecar's
+  `allowedContainers()`*, and assert that mechanically in the tests (compare
+  container values, not check names — after this change the check-name set
+  and container-name set are intentionally unequal);
+- focused tests, including the two hardcoded want-lists
+  (`cmd/docker-inspect-sidecar/main_test.go`,
+  `internal/httpapi/admin_diagnose_test.go`).
 
 Requests containing the retired check name `memgraph` return the existing
 unknown-check 400. Do not keep an alias that suggests Memgraph is healthy.
+Note that check validation is atomic (any unknown name 400s the whole
+request), so bot and control-api must ship together — see MR8.
 
-### 4.7 Static galaxy exporter
+### 4.7 Static galaxy exporter — RETIRED (amended 2026-07-25)
 
-Keep the binary formats and filenames byte-compatible:
+The former section directed a port of `cmd/galaxy-exporter` to relational
+streaming. It is **withdrawn**. Instead:
 
-- `positions.bin` / `positions.bin.gz`;
-- `metadata.json`;
-- history artifacts already sourced from PostgreSQL;
-- `manifest.json`.
+- delete `cmd/galaxy-exporter` and its Makefile build target;
+- delete the empty Ansible role skeleton
+  `edin-backend/ansible/roles/galaxy_exporter/` (already gutted; nothing
+  deploys it);
+- do not touch `/galaxy-data/*` serving in Caddy or any artifact already on
+  disk; the visualiser relaunch (section 8) owns that surface's future.
 
-Replace Memgraph flags with `--galaxy-dsn`. Stream systems using a server-side
-cursor/read-only transaction ordered by `system_catalog.id64`; join current
-system/power values. Do not use OFFSET pagination and do not load the full
-galaxy into process memory.
-
-The binary layout stores all positions before all IDs, so the exporter writes
-two root-owned temporary spool files (`positions.part`, `ids.part`) while it
-streams the cursor, then writes the final header and concatenates the two parts
-through the optional gzip writer. It deletes the parts only after the final
-artifact is fsynced and atomically renamed. Metadata index arrays may remain in
-memory because they contain only systems carrying the corresponding
-power/allegiance/state value; the measured 1-million-row projection must still
-include their memory cost and hard-stop if full-run RSS projects above 8 GiB.
-
-Add a bounded golden test that compares the relational exporter against a
-checked-in legacy-format golden fixture, byte-for-byte except the documented
-generation timestamp fields. The test must not require Memgraph after MR9.
-Production enabling remains a separate decision; this task only makes the
-dormant path safe.
+Rationale: the exporter is dormant, undeployed, and its faithful port at
+relational scale (126M+ catalog rows vs the legacy ~633k-system graph) would
+produce a browser-infeasible multi-gigabyte artifact. The export pipeline
+must be **redesigned around a pinned membership predicate**, which is
+visualiser product work, not Memgraph retirement work.
 
 ## 5. Execution Waterfall
 
@@ -400,17 +459,41 @@ Deliver:
 
 - this plan approved;
 - route inventory above checked against production Go references;
-- field map for system detail;
-- captured JSON fixtures for:
-  - known powerplay system modal factions/stations;
+- `modal-field-map.md` per 4.1;
+- captured JSON fixtures. **Provenance is pinned**: fixtures come in two
+  classes, and every parity gate names which class it compares against:
+  - **shape fixtures**, captured from the legacy handlers running against the
+    local Memgraph development stack (which is retained until MR9 precisely
+    so these can be regenerated): key sets, omission behaviour, wrapper
+    shapes, ordering rules, status codes. Values in shape fixtures are not
+    compared;
+  - **value fixtures**, captured from the relational implementation against a
+    seeded relational test database whose expected values are known
+    independently (hand-computed from the seed data, not derived by running
+    the implementation);
+- fixture set:
+  - known powerplay system modal factions/stations (including a system with a
+    station stub and a system whose `galaxy.station` row set includes a
+    depot, proving inclusion/exclusion per 4.1);
   - system with no faction/station rows;
-  - system detail with star, planet, rings, hotspots, and station;
-  - 404 detail;
-  - viewport with each optional filter;
-  - search;
-  - stats;
-  - survey route with and without explicit start;
-- current OpenAPI fragments and frontend types copied to evidence.
+  - **wrong-case system name** for both sub-actions (must return the empty
+    contract);
+  - survey route with and without explicit start, including a
+    duplicate-anchor overlap case;
+- current OpenAPI fragments and frontend types copied to evidence;
+- cross-document corrections landed so no live document contradicts this
+  plan:
+  - `edin-backend/docs/plans/2026-07-07-galaxy-relational-read-port.md`
+    W5.6 evidence note: replace "still tracked for W8 retirement/porting"
+    with a pointer to this plan;
+  - `edin-data/docs/plans/galaxy-relational-delivery-plan.md`: strike the
+    residual "W8 … exporter retire-or-port" wording and annotate section 8.1
+    (compose removal) as superseded — the only Memgraph compose is on the
+    frozen old server;
+  - note for MR6: the local deployed-data launcher that sets
+    `MEMGRAPH_ENABLED=false` is
+    `edin-frontend/scripts/dev-deployed-data.sh:121` — a different repo;
+    it is an enumerated MR6 deliverable so it is not lost to the gate grep.
 
 Gate:
 
@@ -426,24 +509,39 @@ Every production hit must map to a row in section 2.1. Unknown hits stop MR1.
 Implement typed request/response contracts and methods for:
 
 - factions;
-- stations;
-- viewport;
-- detail by ID/name;
-- prefix search;
-- stats;
+- stations (including stub UNION and depot exclusion per 4.1);
 - survey candidates;
-- ordered exporter streaming;
 - galaxy-reader diagnostic probe.
+
+Also in MR1 — fix the live LIKE-wildcard defect in
+`internal/galaxystore/search.go:50` (reachable through MCP search today, so
+it does not wait for the visualiser register): escape `\`, `%`, and `_` in
+the user-supplied prefix before building the pattern
+(e.g. `strings.NewReplacer("\\", "\\\\", "%", "\\%", "_", "\\_")`), and make
+the escape character explicit in the SQL:
+`lower(c.name) LIKE lower($1) || '%' ESCAPE '\'`. This preserves
+literal-prefix semantics and changes no wire contract — it makes the query
+mean what its callers already assume.
 
 Required tests:
 
 - exported-function unit tests;
 - empty/not-found/error paths;
-- deterministic ordering;
-- nullable body `physical` fields;
-- empty vs non-empty hotspot arrays;
-- carrier exclusion;
+- deterministic ordering, including null-distance-sorts-first;
+- wildcard-escaping tests for search: inputs containing `%`, `_`, and `\`
+  match literally, and `EXPLAIN` evidence (parameterised form, checked into
+  the evidence tree) that an escaped leading-`%` input still drives
+  `idx_catalog_name_prefix` rather than a sequential scan;
+- wrong-case name returns empty;
+- stub inclusion and depot exclusion;
+- carrier-filter no-op expectation recorded;
+- zero-timestamp emission;
 - query cancellation and timeout propagation.
+
+Note MR-D5: the repeatable-read read-only transaction pattern is new code —
+`galaxystore` today exposes only default-isolation `BeginReadOnly`; add the
+explicit `pgx.TxOptions{IsoLevel: RepeatableRead, AccessMode: ReadOnly}`
+variant where a projection spans multiple statements.
 
 Gate:
 
@@ -458,25 +556,27 @@ Memgraph nil checks and imports. Preserve history branches unchanged.
 
 Gate:
 
-- handler contract tests compare status and canonical JSON to MR0 fixtures;
+- handler contract tests compare status and canonical JSON shape to MR0
+  shape fixtures, and values to MR0 value fixtures against the seeded test
+  database;
+- wrong-case fixture passes;
 - local deployed-data modal makes all four requests without 503;
 - history remains raw-backed and is not accidentally redirected.
 
-### MR3 - Port galaxy map APIs
+### MR3 - Retire galaxy map APIs
 
-Replace all five handlers in `internal/httpapi/galaxy.go`. The file must not
-import `internal/memgraph`. Keep parse and validation behaviour.
+Delete the five `/api/galaxy/*` route registrations, all handlers in
+`internal/httpapi/galaxy.go`, the file itself, its tests, and the graph-era
+request/response types they used.
 
 Gate:
 
-- existing handler tests are converted to relational fakes/integration
-  fixtures, not deleted;
-- frontend API service requires no change;
-- `EXPLAIN` evidence for bbox, detail-by-name, search, and stats is checked in;
-- p95 budget on the new production-shaped database:
-  - search/detail/stats warm: at most 500 ms;
-  - viewport at default representative bounds: at most 2 seconds;
-  - all remain below the 15-second role timeout.
+- `GOWORK=off go build ./...` and `go test ./...` pass;
+- the five paths return 404 in a local smoke;
+- no frontend change (the galaxy page remains unrouted; its API service is
+  dead code and is left in place for section 8);
+- `internal/httpapi` no longer imports `internal/memgraph` except via
+  `server.go` wiring that MR6 removes.
 
 ### MR4 - Port survey route
 
@@ -486,24 +586,29 @@ and response assembly in `survey_route.go`.
 Gate:
 
 - no per-anchor SQL;
-- exact candidate/station fixture parity;
-- duplicate anchor overlap produces one candidate;
-- start-system 400 and empty-anchor 200 paths proven;
+- shape parity against MR0 shape fixtures; value parity against the seeded
+  relational value fixtures (the `last_update` remap in 4.5 makes value
+  comparison against legacy captures invalid by design);
+- duplicate anchor overlap produces one candidate (deduplicated by name);
+- start-system 400 (unknown and DB-error), empty-anchor 200, and
+  `mining_maps_used` discrepancy paths proven;
 - representative production-shaped p95 at most 2 seconds for limit 50 and at
-  most 5 seconds for limit 500.
+  most 5 seconds for limit 500, with `EXPLAIN` evidence showing
+  `idx_catalog_loc` driving the lateral probes.
 
-### MR5 - Port exporter
+### MR5 - Retire static galaxy exporter
 
-Replace its source adapter and CLI flags. Preserve file contracts and atomic
-temporary-file rename behaviour.
+Delete `cmd/galaxy-exporter`, its Makefile build target, and the empty
+`ansible/roles/galaxy_exporter/` skeleton. Do not touch `/galaxy-data/*`
+serving or artifacts on disk.
 
 Gate:
 
-- bounded golden output comparison;
-- cancellation leaves no published partial artifact;
-- `galaxy_reader` can run it;
-- `feed.messages` remains inaccessible;
-- 1-million-row measured projection recorded before any full export.
+- `GOWORK=off go build ./...` and `go test ./...` pass;
+- `rg -n 'galaxy-exporter|GetAllSystemsMinimal' cmd internal Makefile
+  ansible` returns only historical/docs hits;
+- root-repo docs that referenced exporter deploy targets are corrected
+  (`edin-space/CLAUDE.md` `make deploy-backend-exporter`).
 
 ### MR6 - Remove fallback and runtime wiring
 
@@ -513,35 +618,87 @@ In one commit:
 - remove Memgraph client initialization/close from `cmd/control-api`;
 - remove Memgraph parameter from `httpapi.Run`;
 - remove `Server.memgraph`;
-- replace diagnostic check and bot request list;
-- remove active Memgraph config structs/env parsing;
-- remove `MEMGRAPH_ENABLED` from production and local deployed-data templates;
-- correct comments and OpenAPI text that still claim current data comes from
-  Memgraph.
+- replace diagnostic check per 4.6 (including the sidecar allowlist edit and
+  ALLOWLIST.md rewrite) and the bot request list;
+- remove active Memgraph config structs/env parsing
+  (`internal/config/config.go` MemgraphConfig and `MEMGRAPH_ENABLED`
+  parsing);
+- remove `MEMGRAPH_ENABLED` from the production template
+  (`ansible/roles/control_api/templates/control-api.env.j2`) and the local
+  deployed-data launcher
+  (`edin-frontend/scripts/dev-deployed-data.sh`);
+- correct `internal/config/prompts/kaine_system_prompt.md` lines 21-22 and
+  62: `galaxy_query` is PostgreSQL SQL, not Cypher; remove Cypher-specific
+  guidance;
+- correct comments that still claim current data comes from Memgraph,
+  including `internal/tools/scopes.go:30`, `internal/authz/authz.go:24`, and
+  OpenAPI text;
+- dispose of the build-tagged Memgraph integration tests in the same commit —
+  both reference the `Server.memgraph` field this MR deletes, and their build
+  tags hide them from the ordinary `go test ./...` gate:
+  - `internal/httpapi/kaine_integration_test.go` (tag `integration`):
+    **delete**. It already fails to compile against the current Anthropic SDK
+    and `memgraph.Client` (documented in its sibling's header) and targets
+    the frozen old server at 10.8.0.3;
+  - `internal/httpapi/kaine_search_integration_test.go` (tag
+    `integration_search`): **rewrite against seeded relational PostgreSQL**.
+    It guards a live Kaine search surface; the rewrite must not use
+    `testutil.StartTestMemgraph` (that harness is deleted in MR9). The
+    rewritten test connects via `GALAXY_TEST_DSN` (the same variable the MR7
+    harness uses) and **fails, not skips, when it is unset** — a tagged run
+    must never pass by skipping.
 
-Gate:
+Gate — repo-wide, not path-scoped (the previous gate could not see
+`internal/config` or the repo root):
 
 ```bash
-rg -n 's\.memgraph|memgraphClient|EDIN\.Memgraph|MEMGRAPH_' \
-  cmd internal/httpapi internal/tools ansible scripts
+rg -n 's\.memgraph|memgraphClient|EDIN\.Memgraph|MEMGRAPH_|Cypher' \
+  --glob '!docs/**' --glob '!deprecated/**' \
+  --glob '!internal/memgraph/**' --glob '!internal/testutil/**' \
+  --glob '!docker-compose.local.yml' --glob '!docker/memgraph/**' \
+  --glob '!.env.dev' .
 ```
 
-Result must be empty outside explicitly historical/test-only paths.
+run from the `edin-backend` root, plus the same pattern over
+`edin-frontend/scripts/dev-deployed-data.sh`. Result must be empty. The
+excluded globs are exactly the MR9 removal list plus retained historical
+docs; nothing else may be excluded.
+
+Tagged compile/test gates (build tags escape the ordinary gate):
+
+```bash
+GOWORK=off go test -tags=integration -run '^$' -count=1 ./internal/httpapi
+GOWORK=off go test -tags=integration_search -count=1 ./internal/httpapi
+```
+
+The first proves the `integration` tag no longer drags in deleted Memgraph
+symbols; the second runs the rewritten relational search tests.
 
 ### MR7 - MCP and full-backend regression
 
 Run:
 
 ```bash
-GOWORK=off go test -count=1 ./internal/galaxystore ./internal/tools ./internal/httpapi ./cmd/control-api ./cmd/galaxy-exporter
+GOWORK=off go test -count=1 ./internal/galaxystore ./internal/tools ./internal/httpapi ./cmd/control-api
 GOWORK=off go test -count=1 ./...
 ```
 
-Run the real-Postgres MCP smoke with `GALAXY_TEST_DSN` as `galaxy_reader`.
+Run the real-Postgres MCP smoke. The harness requires **three** connections,
+named explicitly because no single DSN can construct every tool:
+
+- `GALAXY_TEST_DSN` as `galaxy_reader` (galaxystore-backed tools and
+  `galaxy_query`);
+- an EDIN application database test DSN (kaine store — required by the three
+  mining tools, whose mining maps live there);
+- the raw EDDN history DSN (the two history tools).
+
 The evidence manifest must classify every `ToolName` from
-`internal/tools/executor.go` by its authoritative source and record one
-successful invocation for every current-galaxy tool, plus one invocation of
-each raw-history tool proving the separate history client still works.
+`internal/tools/executor.go` by its authoritative source per the 2.3 table
+(including `describe_tool`, `system_profile`, and the dual-source mining
+tools) and record one successful invocation for **each individual
+current-galaxy tool** — all of them, not representative families — plus one
+invocation of each raw-history tool proving the separate history client
+still works.
 
 Hard assertions:
 
@@ -562,21 +719,29 @@ Preconditions:
 - deployment uses the existing volume-safe Ansible path;
 - no Memgraph container is introduced.
 
-Deploy `control-api`, frontend, MCP, and bot dark per N7. Test against the new
-host via scoped local routing/staging hostname.
+Deploy `control-api`, frontend, MCP, and bot dark per N7. **control-api and
+the bot deploy in the same step**: diagnose check validation is atomic, so a
+version skew between them degrades the entire diagnose report (not just one
+check) until both are restarted. That degradation window is expected and
+bounded to this step.
+
+Test against the new host via scoped local routing/staging hostname.
 
 Ordered checks:
 
 1. `/health`;
 2. `galaxy-reader` diagnose;
-3. MCP reader-hardening assertions;
-4. all current-galaxy MCP families;
+3. MCP reader-hardening assertions, plus a one-row
+   `has_table_privilege('galaxy_reader', t, 'SELECT')` sweep over
+   `galaxy.*` proving no ungranted table (default privileges are keyed to
+   `eddn_admin` only; a table created by another role would silently break a
+   projection);
+4. all current-galaxy MCP tools per the MR7 manifest;
 5. powerplay list and modal history/factions/stations;
 6. Kaine system/detail/watch/market/mining surfaces;
-7. five `/api/galaxy/*` routes;
+7. the five retired `/api/galaxy/*` paths return 404;
 8. survey route;
-9. exporter bounded smoke;
-10. powerplay cache refresh over two refresh intervals.
+9. powerplay cache refresh over two refresh intervals.
 
 Any 5xx, contract mismatch, timeout, role mismatch, or Memgraph connection
 attempt stops N7. Roll back the application containers only; do not touch
@@ -584,21 +749,49 @@ database volumes, listener, or writer.
 
 ### MR9 - Remove legacy development/deployment artifacts
 
-Only after MR8 passes:
+Only after MR8 passes. Enumerated deliverables (the previous list named
+artifacts that have since drifted; this list is verified against the tree as
+of 2026-07-25):
 
 - remove `internal/memgraph` after moving any still-required pure contract
   fixtures to their owning package;
-- remove Neo4j driver dependency if no remaining build target imports it;
-- remove local Memgraph Compose/Make targets and stale `.env.dev` entries;
-- retire the old `galaxy_exporter` Memgraph role/config;
-- remove Memgraph from docker-inspect sidecar allowlists;
-- remove legacy Memgraph firewall entries from active inventory only where the
-  frozen-old-server contract permits;
-- update backend, Atlas, data, and root architecture/readme truth.
+- remove `internal/testutil/memgraph.go`, `memgraph_fixtures.go`,
+  `memgraph_test.go` (the testcontainers harness — it imports the Neo4j
+  driver and gates its removal) and the stale `test-integration` comment in
+  the backend `Makefile`;
+- remove the Neo4j driver from `go.mod`/`go.sum` (after the two removals
+  above, no build target imports it);
+- remove the local Memgraph development stack: `docker-compose.local.yml`
+  Memgraph service, `docker/memgraph/` (`init.cypher`, `render-init.sh`,
+  `README.md`), and the stale `.env.dev` Memgraph entries. (The
+  `make memgraph-local*` targets referenced by the compose header no longer
+  exist; nothing to remove there);
+- verify the sidecar allowlist carries no `memgraph` entry (removed in MR6);
+- remove legacy Memgraph firewall **allow** entries from active inventory
+  only where the frozen-old-server contract permits; the 7687/7444 **deny**
+  entries in `firewall_blocked_ports` are defence-in-depth and stay;
+- update backend, Atlas, data, and root architecture/readme truth, including
+  the `eddn-init-schema.sql` Memgraph-rebuild comments in `edin-data` if
+  touched in the same pass.
 
 Historical evidence and superseded plans are retained and clearly labelled
 historical. Volume deletion remains separately authorised and is not part of
 MR9.
+
+Gate (new — the previous draft shipped MR9 untested):
+
+```bash
+GOWORK=off go build ./...
+GOWORK=off go test -count=1 ./...
+GOWORK=off go test -tags=integration -run '^$' -count=1 ./internal/httpapi
+GOWORK=off go test -tags=integration_search -count=1 ./internal/httpapi
+rg -n 'memgraph|Memgraph|MEMGRAPH|neo4j|bolt://' --glob '!docs/**' --glob '!deprecated/**' .
+```
+
+The grep must return nothing outside labelled historical documents. The MR9
+build is the binary production will next run: deploy it dark through the
+same volume-safe path and re-run MR8 ordered checks 1, 2, 5, and 8 before
+any public cutover. MR9 is not complete on a green local build alone.
 
 ## 6. Required Evidence Tree
 
@@ -607,7 +800,7 @@ Store compact evidence under:
 ```text
 edin-backend/docs/plans/2026-07-25-memgraph-api-retirement/
   00-inventory.txt
-  system-detail-field-map.md
+  modal-field-map.md
   contract-fixtures/
   explain/
   mcp-source-manifest.md
@@ -623,13 +816,44 @@ data, or bulky query output.
 
 This plan is complete only when all are true:
 
-- every section-2.1 API returns its contract from relational PostgreSQL;
+- every surviving section-2.1 API returns its contract from relational
+  PostgreSQL; every retired route returns 404 and its code is deleted;
 - the MCP source manifest accounts for every tool and all MCP gates pass;
 - `control-api` cannot initialize or fall back to Memgraph;
 - diagnostics no longer request or report Memgraph;
-- the exporter cannot connect to Memgraph;
+- `cmd/galaxy-exporter` no longer exists;
 - new production runs without Memgraph configuration or container;
 - N7 no longer has an accepted-broken Memgraph surface list;
-- live-code grep contains no Memgraph reference outside explicitly retained
-  historical evidence during MR8, and none after MR9;
+- live-code grep contains no Memgraph reference outside the named accepted
+  residuals (2.2a) and explicitly retained historical evidence during MR8,
+  and none in `edin-backend` after MR9;
 - all docs describe PostgreSQL `galaxy.*` as the sole current-galaxy source.
+
+## 8. Deferred: Galaxy Visualiser Relaunch Register
+
+Not part of this plan. Recorded so the descope does not silently lose the
+work. Un-ComingSoon-ing `/galaxy` requires a new plan covering:
+
+1. **Export membership**: a pinned predicate defining which systems the
+   static artifact contains (the legacy graph held ~633k systems; the
+   relational catalog holds 126M+; the browser loader design assumes the
+   whole artifact fits in memory — ~20 bytes/system). Populated ∪
+   powerplay-bearing is the candidate baseline.
+2. **Export pipeline redesign**: DECLARE/FETCH cursor batching under the
+   15-second per-statement timeout, spool-file design, deterministic golden
+   testing (fixed clock; compare decompressed bytes), cross-file generation
+   atomicity, Caddy `precompressed` serving, and a non-root service user.
+3. **Stats**: a `galaxy.stats_snapshot` table (or matview) refreshed by
+   data-layer tooling under a maintenance role, read by `galaxy_reader` —
+   or a sanctioned `SET LOCAL statement_timeout` for an in-process refresh.
+4. **Search**: the visualiser's search endpoint contract (route deleted in
+   this plan). The underlying LIKE-wildcard escaping defect in
+   `internal/galaxystore/search.go:50` is **fixed in MR1 of this plan** — it
+   is live via MCP search today and does not wait for the visualiser.
+5. **System detail**: the full field-map exercise (body `physical` typed
+   extraction, `BodyInfo.ID64` synthesis `SystemAddress + BodyID<<55`,
+   hotspot display-name reverse map, ring/stub row-population rules) — the
+   review's findings are recorded in the review response document alongside
+   this plan.
+6. **Viewport API**: decide whether a server-side viewport query is needed at
+   all (the binary loader superseded it); if yes, a capped-count contract.
