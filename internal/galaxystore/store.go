@@ -4,6 +4,7 @@ package galaxystore
 import (
 	"context"
 	"errors"
+	"fmt"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -59,4 +60,36 @@ func (s *Store) BeginReadOnly(ctx context.Context) (pgx.Tx, error) {
 		return nil, errors.New("galaxy store does not support transactions")
 	}
 	return starter.BeginTx(ctx, pgx.TxOptions{AccessMode: pgx.ReadOnly})
+}
+
+// BeginRepeatableReadOnly starts a stable-snapshot transaction for projections
+// assembled from more than one statement.
+func (s *Store) BeginRepeatableReadOnly(ctx context.Context) (pgx.Tx, error) {
+	starter, ok := s.db.(txStarter)
+	if !ok {
+		return nil, errors.New("galaxy store does not support transactions")
+	}
+	return starter.BeginTx(ctx, pgx.TxOptions{
+		IsoLevel:   pgx.RepeatableRead,
+		AccessMode: pgx.ReadOnly,
+	})
+}
+
+// ProbeReader verifies that the configured connection is the least-privilege
+// galaxy reader and can read the catalog.
+func (s *Store) ProbeReader(ctx context.Context) error {
+	var user string
+	var readable bool
+	if err := s.db.QueryRow(ctx, `
+SELECT current_user,
+       EXISTS (SELECT 1 FROM galaxy.system_catalog LIMIT 1)`).Scan(&user, &readable); err != nil {
+		return fmt.Errorf("galaxy reader probe: %w", err)
+	}
+	if user != "galaxy_reader" {
+		return fmt.Errorf("galaxy reader probe: current_user=%q, want galaxy_reader", user)
+	}
+	if !readable {
+		return errors.New("galaxy reader probe: system catalog is empty")
+	}
+	return nil
 }

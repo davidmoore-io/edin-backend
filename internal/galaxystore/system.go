@@ -188,6 +188,154 @@ func (s *Store) GetSystemFull(ctx context.Context, systemName string) (*SystemFu
 	return s.getSystemFull(ctx, systemLookupSelect+`WHERE lower(c.name) = lower($1) LIMIT 1`, systemName)
 }
 
+// GetFactionsInSystem returns the legacy modal faction projection for an exact,
+// case-sensitive system name.
+func (s *Store) GetFactionsInSystem(ctx context.Context, systemName string) ([]FactionPresence, error) {
+	systemID64, found, err := s.resolveExactSystem(ctx, systemName)
+	if err != nil {
+		return nil, err
+	}
+	if !found {
+		return []FactionPresence{}, nil
+	}
+	out, err := s.getFactions(ctx, systemID64, systemName)
+	if err != nil {
+		return nil, err
+	}
+	if out == nil {
+		out = []FactionPresence{}
+	}
+	return out, nil
+}
+
+// GetStationsInSystem returns the legacy modal station projection for an
+// exact, case-sensitive system name. Construction depots are excluded and FSS
+// station stubs are included unless a full station row with the same name
+// exists.
+func (s *Store) GetStationsInSystem(ctx context.Context, systemName string) ([]StationData, error) {
+	systemID64, found, err := s.resolveExactSystem(ctx, systemName)
+	if err != nil {
+		return nil, err
+	}
+	if !found {
+		return []StationData{}, nil
+	}
+
+	rows, err := s.db.Query(ctx, `
+WITH modal_stations AS (
+	SELECT
+		st.market_id AS id64,
+		st.name,
+		st.station_type AS type,
+		st.dist_from_star_ls::float8 AS distance_ls,
+		CASE
+			WHEN st.large_pads > 0 THEN 'L'
+			WHEN st.medium_pads > 0 THEN 'M'
+			WHEN st.small_pads > 0 THEN 'S'
+			ELSE ''
+		END AS max_pad,
+		st.services,
+		cf.name AS controlling_faction,
+		st.last_event_time,
+		m.market_id IS NOT NULL AS has_market,
+		sy.market_id IS NOT NULL AS has_shipyard,
+		o.market_id IS NOT NULL AS has_outfitting,
+		0 AS source_priority
+	FROM galaxy.station st
+	LEFT JOIN galaxy.faction cf ON cf.faction_id = st.controlling_faction_id
+	LEFT JOIN galaxy.market m ON m.market_id = st.market_id
+	LEFT JOIN galaxy.shipyard sy ON sy.market_id = st.market_id
+	LEFT JOIN galaxy.outfitting o ON o.market_id = st.market_id
+	WHERE st.system_id64 = $1
+	  AND st.kind = 'station'
+
+	UNION ALL
+
+	SELECT
+		0::bigint,
+		ss.name,
+		ss.type,
+		NULL::float8,
+		''::text,
+		'{}'::text[],
+		NULL::text,
+		ss.last_event_time,
+		false,
+		false,
+		false,
+		1
+	FROM galaxy.station_stub ss
+	WHERE ss.system_id64 = $1
+	  AND NOT EXISTS (
+		SELECT 1
+		FROM galaxy.station st
+		WHERE st.system_id64 = ss.system_id64
+		  AND st.name = ss.name
+		  AND st.kind = 'station'
+	  )
+)
+SELECT id64, name, type, distance_ls, max_pad, services,
+       controlling_faction, last_event_time, has_market, has_shipyard,
+       has_outfitting
+FROM modal_stations
+ORDER BY COALESCE(distance_ls, 0), name, source_priority`, systemID64)
+	if err != nil {
+		return nil, fmt.Errorf("modal stations: %w", err)
+	}
+	defer rows.Close()
+
+	out := make([]StationData, 0)
+	for rows.Next() {
+		var st StationData
+		var stationType *string
+		var distance *float64
+		var controllingFaction *string
+		if err := rows.Scan(
+			&st.ID64,
+			&st.Name,
+			&stationType,
+			&distance,
+			&st.MaxPad,
+			&st.Services,
+			&controllingFaction,
+			&st.LastEDDNUpdate,
+			&st.HasMarket,
+			&st.HasShipyard,
+			&st.HasOutfitting,
+		); err != nil {
+			return nil, fmt.Errorf("modal station scan: %w", err)
+		}
+		st.SystemName = systemName
+		if stationType != nil {
+			st.Type = *stationType
+		}
+		if distance != nil {
+			st.DistanceLS = *distance
+		}
+		if controllingFaction != nil {
+			st.ControllingFaction = *controllingFaction
+		}
+		out = append(out, st)
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) resolveExactSystem(ctx context.Context, systemName string) (int64, bool, error) {
+	var id64 int64
+	err := s.db.QueryRow(ctx, `
+SELECT id64
+FROM galaxy.system_catalog
+WHERE name = $1
+LIMIT 1`, systemName).Scan(&id64)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return 0, false, nil
+	}
+	if err != nil {
+		return 0, false, fmt.Errorf("exact system lookup: %w", err)
+	}
+	return id64, true, nil
+}
+
 // GetSystemFullBySlug fetches the core relational system-detail snapshot by
 // the canonical no-spaces slug used by Kaine URLs and the bot watch route.
 func (s *Store) GetSystemFullBySlug(ctx context.Context, slug string) (*SystemFull, error) {
@@ -376,7 +524,7 @@ SELECT
 	sf.state,
 	sf.active_states,
 	sf.pending_states,
-	sf.happiness,
+	COALESCE(sf.happiness, ''),
 	sf.last_event_time
 FROM galaxy.system_faction sf
 JOIN galaxy.faction f ON f.faction_id = sf.faction_id

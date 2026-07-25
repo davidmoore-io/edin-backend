@@ -3,7 +3,12 @@ package galaxystore
 import (
 	"context"
 	"fmt"
+	"strings"
 )
+
+func escapeLikePrefix(value string) string {
+	return strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`).Replace(value)
+}
 
 // SearchSystems returns system autocomplete rows matching prefix first, then
 // substring matches. It keeps the graph-era JSON shape while reading galaxy.*.
@@ -47,11 +52,11 @@ LEFT JOIN galaxy.system_faction csf
 	ON csf.system_id64 = sys.id64
 	AND csf.faction_id = sys.controlling_faction_id
 LEFT JOIN galaxy.system_power sp ON sp.system_id64 = sys.id64
-WHERE lower(c.name) LIKE lower($1) || '%'
+	WHERE lower(c.name) LIKE lower($1) || '%' ESCAPE '\'
 ORDER BY
 	length(c.name),
 	c.name
-LIMIT $2`, query, limit)
+	LIMIT $2`, escapeLikePrefix(query), limit)
 	if err != nil {
 		return nil, fmt.Errorf("system search: %w", err)
 	}
