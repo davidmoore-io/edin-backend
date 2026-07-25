@@ -1547,48 +1547,35 @@ func (s *Server) handleEDINSystemHistory(w http.ResponseWriter, r *http.Request)
 		})
 
 	case "factions":
-		if s.memgraph == nil {
-			s.writeError(w, http.StatusServiceUnavailable, "Memgraph not configured")
+		if s.galaxyStore == nil {
+			s.writeError(w, http.StatusServiceUnavailable, "Galaxy database not configured")
 			return
 		}
-		factions, err := s.memgraph.GetFactionsInSystem(r.Context(), systemName)
+		factions, err := s.galaxyStore.GetFactionsInSystem(r.Context(), systemName)
 		if err != nil {
 			s.logger.Error(fmt.Sprintf("edin_system_factions error for %s", systemName), err)
 			s.writeError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
-		if factions == nil {
-			factions = []memgraph.FactionPresence{}
-		}
 		s.writeJSON(w, http.StatusOK, map[string]any{
 			"system_name": systemName,
-			"factions":    factions,
+			"factions":    modalFactions(factions),
 		})
 
 	case "stations":
-		if s.memgraph == nil {
-			s.writeError(w, http.StatusServiceUnavailable, "Memgraph not configured")
+		if s.galaxyStore == nil {
+			s.writeError(w, http.StatusServiceUnavailable, "Galaxy database not configured")
 			return
 		}
-		stations, err := s.memgraph.GetStationsInSystem(r.Context(), systemName)
+		stations, err := s.galaxyStore.GetStationsInSystem(r.Context(), systemName)
 		if err != nil {
 			s.logger.Error(fmt.Sprintf("edin_system_stations error for %s", systemName), err)
 			s.writeError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
-		if stations == nil {
-			stations = []memgraph.StationData{}
-		}
-		// Filter out Fleet Carriers — transient, not useful for powerplay
-		filtered := stations[:0]
-		for _, st := range stations {
-			if strings.ToLower(st.Type) != "fleetcarrier" {
-				filtered = append(filtered, st)
-			}
-		}
 		s.writeJSON(w, http.StatusOK, map[string]any{
 			"system_name": systemName,
-			"stations":    filtered,
+			"stations":    modalStations(stations),
 		})
 
 	default:
