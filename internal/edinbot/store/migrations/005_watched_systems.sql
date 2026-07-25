@@ -15,7 +15,7 @@
 -- last_render is the JSON-encoded embed we last sent. The watch poller
 -- diffs against last_state_hash (computed off the snapshot, not the
 -- render) to decide when to edit; last_render is preserved so we can
--- inspect what's currently in Discord without re-fetching from Memgraph.
+-- inspect what's currently in Discord without re-fetching galaxy state.
 
 CREATE TABLE IF NOT EXISTS discord.watched_systems (
     guild_id        TEXT        NOT NULL,

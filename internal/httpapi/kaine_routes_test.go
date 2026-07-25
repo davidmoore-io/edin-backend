@@ -117,7 +117,7 @@ func TestKaineRoutesWithAuth(t *testing.T) {
 		{http.MethodGet, "/api/kaine/objectives/test-id", "get objective by ID", http.StatusServiceUnavailable},
 		{http.MethodPost, "/api/kaine/objectives/create", "create objective", http.StatusServiceUnavailable},
 
-		// These require memgraph to be configured
+		// These require the relational galaxy store to be configured
 		{http.MethodGet, "/api/kaine/systems/search?q=Sol", "search systems", http.StatusServiceUnavailable},
 		{http.MethodGet, "/api/kaine/systems/Sol", "get system details", http.StatusServiceUnavailable},
 

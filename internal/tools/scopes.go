@@ -27,7 +27,7 @@ var toolScopes = map[ToolName]authz.Scope{
 	ToolRunAnsible:    authz.ScopeLlmOperator,
 	ToolListServices:  authz.ScopeLlmOperator,
 
-	// Galaxy read — the bulk of the Memgraph/Elite query surface.
+	// Galaxy read — the relational current-state query surface.
 	// Shared by Kaine and copilot; all callers with galaxy_read can
 	// invoke these.
 	ToolGalaxySystem:            authz.ScopeGalaxyRead,

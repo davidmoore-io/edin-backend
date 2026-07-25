@@ -1,5 +1,5 @@
-// Package galaxy holds primitives shared across the kaine, memgraph, and
-// edinbot packages. Currently exposes the canonical slug rule for system
+// Package galaxy holds primitives shared across galaxy consumers. It
+// currently exposes the canonical slug rule for system
 // names; could grow to hold faction/power lookup helpers if a second shared
 // concern surfaces.
 package galaxy
@@ -8,7 +8,7 @@ import "strings"
 
 // Slugify converts a system name into the URL-safe slug we use as the stable
 // identifier for permalinks (https://edin.space/kaine/systems/<slug>) and
-// the lookup key on Memgraph's :System(slug) index.
+// the lookup key for relational system-name resolution.
 //
 // The rule is deliberately minimal: trim outer whitespace, then remove
 // all internal spaces. Dashes — which appear naturally in many ED system

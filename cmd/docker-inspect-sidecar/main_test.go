@@ -36,7 +36,7 @@ func TestSidecar_AllowedName_ReturnsInspectedState(t *testing.T) {
 		},
 	})
 
-	req := httptest.NewRequest("GET", "/inspect/memgraph", nil)
+	req := httptest.NewRequest("GET", "/inspect/eddn-timescaledb", nil)
 	w := httptest.NewRecorder()
 	srv.Handler.ServeHTTP(w, req)
 
@@ -94,7 +94,7 @@ func TestSidecar_NonGETMethod_Returns404(t *testing.T) {
 
 	for _, m := range []string{"POST", "PUT", "DELETE", "PATCH", "HEAD"} {
 		t.Run(m, func(t *testing.T) {
-			req := httptest.NewRequest(m, "/inspect/memgraph", nil)
+			req := httptest.NewRequest(m, "/inspect/eddn-timescaledb", nil)
 			w := httptest.NewRecorder()
 			srv.Handler.ServeHTTP(w, req)
 			require.Equal(t, http.StatusNotFound, w.Code, "method=%s must return 404", m)
@@ -140,7 +140,7 @@ func TestSidecar_DockerError_Returns502(t *testing.T) {
 		},
 	})
 
-	req := httptest.NewRequest("GET", "/inspect/memgraph", nil)
+	req := httptest.NewRequest("GET", "/inspect/eddn-timescaledb", nil)
 	w := httptest.NewRecorder()
 	srv.Handler.ServeHTTP(w, req)
 
@@ -149,7 +149,6 @@ func TestSidecar_DockerError_Returns502(t *testing.T) {
 
 func TestSidecar_AllowlistContents(t *testing.T) {
 	want := []string{
-		"memgraph",
 		"edin-timescaledb",
 		"eddn-timescaledb",
 		"eddn-listener",

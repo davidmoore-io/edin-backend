@@ -24,7 +24,6 @@ import (
 	"github.com/edin-space/edin-backend/internal/galaxystore"
 	"github.com/edin-space/edin-backend/internal/kaine"
 	"github.com/edin-space/edin-backend/internal/llm"
-	"github.com/edin-space/edin-backend/internal/memgraph"
 	"github.com/edin-space/edin-backend/internal/observability"
 	"github.com/edin-space/edin-backend/internal/ops"
 	"github.com/edin-space/edin-backend/internal/security"
@@ -38,7 +37,7 @@ import (
 )
 
 // Run launches the HTTP API server with the provided dependencies.
-func Run(ctx context.Context, cfg *config.Config, opsManager *ops.Manager, llmStore llm.SessionBackend, llmClient *anthropic.Client, toolExec *tools.Executor, runner *assistant.Runner, spanshClient *spansh.Client, cacheStore *store.CacheStore, wsHub *ws.Hub, memgraphClient *memgraph.Client, dayzService *dayz.Service, kaineStore *kaine.Store, eddnIntelStore *store.SystemIntelStore, galaxyStore *galaxystore.Store, commanderRepo store.CommanderRepository) error {
+func Run(ctx context.Context, cfg *config.Config, opsManager *ops.Manager, llmStore llm.SessionBackend, llmClient *anthropic.Client, toolExec *tools.Executor, runner *assistant.Runner, spanshClient *spansh.Client, cacheStore *store.CacheStore, wsHub *ws.Hub, dayzService *dayz.Service, kaineStore *kaine.Store, eddnIntelStore *store.SystemIntelStore, galaxyStore *galaxystore.Store, commanderRepo store.CommanderRepository) error {
 	if cfg == nil {
 		return fmt.Errorf("config is nil")
 	}
@@ -81,7 +80,6 @@ func Run(ctx context.Context, cfg *config.Config, opsManager *ops.Manager, llmSt
 		spansh:               spanshClient,
 		cacheStore:           cacheStore,
 		wsHub:                wsHub,
-		memgraph:             memgraphClient,
 		galaxyStore:          galaxyStore,
 		dayz:                 dayzService,
 		kaineStore:           kaineStore,
@@ -287,8 +285,8 @@ func Run(ctx context.Context, cfg *config.Config, opsManager *ops.Manager, llmSt
 		IdleTimeout:       2 * time.Minute,
 	}
 
-	// Start background cache refresh for powerplay data (queries Memgraph every 5 min)
-	if server.galaxyStore != nil || server.memgraph != nil {
+	// Start background cache refresh for relational powerplay data.
+	if server.galaxyStore != nil {
 		go server.startPowerplayRefresh(ctx)
 	}
 
@@ -336,7 +334,6 @@ type Server struct {
 	spansh          *spansh.Client
 	cacheStore      *store.CacheStore
 	wsHub           *ws.Hub
-	memgraph        *memgraph.Client
 	galaxyStore     *galaxystore.Store
 	dayz            *dayz.Service
 	kaineStore      *kaine.Store
@@ -1031,7 +1028,7 @@ func calculateCurrentTick(now time.Time) TickInfo {
 }
 
 // handleHIPThunderdome returns the latest powerplay data for the HIP Thunderdome systems.
-// This endpoint uses Memgraph for real-time EDDN data when available,
+// This endpoint uses relational current-state data when available,
 // falling back to the current_state table in TimescaleDB.
 func (s *Server) handleHIPThunderdome(w http.ResponseWriter, r *http.Request) {
 	s.applyCORSHeaders(w, r)
@@ -1138,7 +1135,7 @@ const powerplayRefreshInterval = 5 * time.Minute
 
 // startPowerplayRefresh runs a background loop that keeps the powerplay cache warm.
 // The cache is refreshed immediately on startup, then every powerplayRefreshInterval.
-// No user request ever queries Memgraph directly.
+// No user request rebuilds this data; all reads use the relational cache.
 func (s *Server) startPowerplayRefresh(ctx context.Context) {
 	s.refreshPowerplayCache(ctx)
 
@@ -1163,38 +1160,8 @@ func (s *Server) refreshPowerplayCache(ctx context.Context) {
 	var err error
 	if s.galaxyStore != nil {
 		systems, err = s.galaxyStore.GetAllPowerplaySystems(ctx)
-	} else if s.memgraph != nil {
-		legacySystems, legacyErr := s.memgraph.GetAllPowerplaySystems(ctx)
-		err = legacyErr
-		for _, sys := range legacySystems {
-			systems = append(systems, galaxystore.CGSystemData{
-				SystemName:                sys.SystemName,
-				ControllingPower:          sys.ControllingPower,
-				Powers:                    sys.Powers,
-				PowerplayState:            sys.PowerplayState,
-				Reinforcement:             sys.Reinforcement,
-				Undermining:               sys.Undermining,
-				ControlProgress:           sys.ControlProgress,
-				PowerplayConflictProgress: sys.PowerplayConflictProgress,
-				Allegiance:                sys.Allegiance,
-				Government:                sys.Government,
-				Population:                sys.Population,
-				ControllingFaction:        sys.ControllingFaction,
-				ControllingFactionState:   sys.ControllingFactionState,
-				LastEDDNUpdate:            sys.LastEDDNUpdate,
-				X:                         sys.X,
-				Y:                         sys.Y,
-				Z:                         sys.Z,
-				Security:                  sys.Security,
-				Economy:                   sys.Economy,
-				HasLargePad:               sys.HasLargePad,
-				NearestStation:            sys.NearestStation,
-				NearestStationLs:          sys.NearestStationLs,
-				StationCount:              sys.StationCount,
-			})
-		}
 	} else {
-		err = fmt.Errorf("no galaxy current-state store configured")
+		err = fmt.Errorf("galaxy relational store not configured")
 	}
 	if err != nil {
 		s.logger.Error("powerplay background refresh failed", err)
@@ -1267,7 +1234,7 @@ func powerplaySystemMap(sys galaxystore.CGSystemData) map[string]any {
 }
 
 // handlePowerplay returns powerplay data from the background-refreshed cache.
-// Never queries Memgraph directly — always serves from cache.
+// Always serves from the in-memory cache.
 func (s *Server) handlePowerplay(w http.ResponseWriter, r *http.Request) {
 	s.applyCORSHeaders(w, r)
 	if r.Method == http.MethodOptions {
@@ -1410,7 +1377,7 @@ func (s *Server) handlePowerStandings(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleEDINInaraLinks returns Inara IDs for all tracked systems (for direct links to Inara).
-// All powerplay data comes from EDDN/Memgraph - this endpoint only provides linking metadata.
+// Powerplay data comes from the EDDN relational materialisation; this endpoint only provides linking metadata.
 func (s *Server) handleEDINInaraLinks(w http.ResponseWriter, r *http.Request) {
 	s.applyCORSHeaders(w, r)
 	if r.Method == http.MethodOptions {
@@ -1698,7 +1665,7 @@ func (s *Server) handleEDINOpenAPI(w http.ResponseWriter, r *http.Request) {
 			"/api/edin/inara-links": map[string]any{
 				"get": map[string]any{
 					"summary":     "Get Inara system links",
-					"description": "Returns Inara IDs for all tracked systems, used to construct direct links to Inara. All powerplay data comes from EDDN/Memgraph.",
+					"description": "Returns Inara IDs for all tracked systems, used to construct direct links to Inara. Powerplay data comes from the EDDN relational materialisation.",
 					"operationId": "getInaraLinks",
 					"tags":        []string{"Metadata"},
 					"responses": map[string]any{
@@ -2005,7 +1972,7 @@ func (s *Server) handleEDINWebSocket(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleInternalSystemUpdated receives notifications from the EDDN listener when a system
-// is updated in Memgraph. It broadcasts via WebSocket so connected frontends can flash the row.
+// is updated in relational state. It broadcasts via WebSocket so connected frontends can flash the row.
 // Called via POST from the EDDN listener over WireGuard VPN.
 func (s *Server) handleInternalSystemUpdated(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {

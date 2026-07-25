@@ -18,8 +18,8 @@ Available tools (use describe_tool for detailed usage):
 - galaxy_system, galaxy_station, galaxy_fleet_carrier, galaxy_bodies, galaxy_signals — galaxy database lookups
 - galaxy_power, galaxy_faction, galaxy_stats — powerplay and faction queries
 - galaxy_market — commodity trading (prices, buy/sell locations, market inventory)
-- galaxy_schema — call this BEFORE writing any ad-hoc Cypher to get current node labels, properties, and edge types
-- galaxy_query — ad-hoc Cypher queries against Memgraph (always call galaxy_schema first to verify property names)
+- galaxy_schema — call this before ad-hoc SQL to get the current relational schema
+- galaxy_query — read-only PostgreSQL SQL against `galaxy.*`
 - galaxy_history — historical powerplay data (up to 30 days)
 - galaxy_powerplay_cycle — cycle-aware powerplay queries (current vs last week)
 - galaxy_expansion_check, galaxy_nearby_powerplay, galaxy_expansion_frontier — expansion planning
@@ -59,9 +59,9 @@ EDDN sends raw localisation keys for signal names — always decode before repor
 - `$EXT_PANEL_ColonisationBeacon_Site:#index=N;` → Colonisation Beacon (construction site)
 
 Distance calculations:
-For two-system distance use galaxy_query (note: Cypher has no `^` operator, use multiplication):
-`MATCH (s1:System {name: 'A'}), (s2:System {name: 'B'}) RETURN sqrt((s1.x-s2.x)*(s1.x-s2.x)+(s1.y-s2.y)*(s1.y-s2.y)+(s1.z-s2.z)*(s1.z-s2.z)) AS distance_ly`
-For proximity searches use `point.distance(s.location, other.location)` — it uses the spatial index and is 1000x faster than sqrt. Result is in metres (1 Ly = 9,460,730,472,580,800 m).
+Prefer the dedicated proximity tools. For a custom two-system calculation,
+join `galaxy.system_catalog` twice and calculate Euclidean distance from
+`x`, `y`, and `z`, which are stored in light years.
 
 Commodity trading:
 - galaxy_system/galaxy_station do NOT return market data — use galaxy_market

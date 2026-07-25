@@ -25,7 +25,6 @@ import (
 	"github.com/edin-space/edin-backend/internal/kaine"
 	"github.com/edin-space/edin-backend/internal/llm"
 	"github.com/edin-space/edin-backend/internal/mcp"
-	"github.com/edin-space/edin-backend/internal/memgraph"
 	"github.com/edin-space/edin-backend/internal/observability"
 	"github.com/edin-space/edin-backend/internal/ops"
 	"github.com/edin-space/edin-backend/internal/spansh"
@@ -58,7 +57,7 @@ func main() {
 	edsmClient := edsm.NewClient()
 
 	// NOTE: Inara scraping has been deprecated - see internal/deprecated/README.md
-	// Data now comes from EDDN listener via Memgraph
+	// Current galaxy state comes from the relational materialiser.
 
 	// Initialize EDIN database client (optional)
 	var edinClient *store.Client
@@ -134,26 +133,6 @@ func main() {
 			galaxyStore = galaxystore.New(galaxyPool)
 			defer galaxyPool.Close()
 			logger.Info("Galaxy relational read store initialized via GALAXY_READER_DSN")
-		}
-	}
-
-	// Initialize Memgraph client for real-time galaxy data
-	var memgraphClient *memgraph.Client
-	if cfg.EDIN.Memgraph.Enabled {
-		mgClient, err := memgraph.NewClient(memgraph.Config{
-			Host:     cfg.EDIN.Memgraph.Host,
-			Port:     cfg.EDIN.Memgraph.Port,
-			Username: cfg.EDIN.Memgraph.Username,
-			Password: cfg.EDIN.Memgraph.Password,
-		})
-		if err != nil {
-			logger.Warn(fmt.Sprintf("Memgraph client creation failed: %v", err))
-		} else if err := mgClient.Connect(ctx); err != nil {
-			logger.Warn(fmt.Sprintf("Memgraph connection failed: %v", err))
-		} else {
-			memgraphClient = mgClient
-			defer mgClient.Close(ctx)
-			logger.Info("Memgraph connected for real-time galaxy data")
 		}
 	}
 
@@ -244,7 +223,7 @@ func main() {
 		}
 	}()
 
-	if err := httpapi.Run(ctx, cfg, opsManager, llmStore, anthropicClient, toolExecutor, assistantRunner, spanshClient, cacheStore, wsHub, memgraphClient, dayzService, kaineStore, eddnIntelStore, galaxyStore, commanderRepo); err != nil && !errors.Is(err, context.Canceled) {
+	if err := httpapi.Run(ctx, cfg, opsManager, llmStore, anthropicClient, toolExecutor, assistantRunner, spanshClient, cacheStore, wsHub, dayzService, kaineStore, eddnIntelStore, galaxyStore, commanderRepo); err != nil && !errors.Is(err, context.Canceled) {
 		logger.Error("http api server", err)
 		cancel()
 	}

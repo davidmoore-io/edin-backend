@@ -8,7 +8,7 @@
 //
 // SECURITY: this binary MUST NOT import os/exec. All Docker interaction goes
 // through the official Docker Engine API SDK over the unix socket. The
-// allowlist below is the only source of truth — adding to it requires a plan
+// allowlist below is the only sidecar source of truth — adding to it requires a plan
 // task, not a config change. See ALLOWLIST.md.
 package main
 
@@ -61,13 +61,10 @@ func (r *realDockerClient) Inspect(ctx context.Context, name string) (containerS
 	return out, nil
 }
 
-// allowedContainers is the single source of truth. Lock-step with
-// /admin/diagnose's allowlist in internal/httpapi/admin_diagnose.go. Adding to
-// either without the other is a bug; the test in TestSidecar_AllowlistContents
-// guards this. See ALLOWLIST.md.
+// Every container referenced by /admin/diagnose must be present here, although
+// diagnose check names need not equal container names. See ALLOWLIST.md.
 func allowedContainers() []string {
 	return []string{
-		"memgraph",
 		"edin-timescaledb",
 		"eddn-timescaledb",
 		"eddn-listener",

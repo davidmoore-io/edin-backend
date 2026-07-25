@@ -21,7 +21,7 @@ const (
 	ScopeKaineChat   Scope = "kaine_chat"   // Limited Elite queries (public users)
 	ScopeCopilotChat Scope = "copilot_chat" // ED commander authenticated via Frontier PKCE
 
-	ScopeGalaxyRead    Scope = "galaxy_read"    // Galaxy/Memgraph read-only queries (shared by Kaine and copilot)
+	ScopeGalaxyRead    Scope = "galaxy_read"    // Relational galaxy read-only queries (shared by Kaine and copilot)
 	ScopeKaineMining   Scope = "kaine_mining"   // Mining intel tools (plasmium/LTD buyers, galaxy schema)
 	ScopeCommanderData Scope = "commander_data" // Commander-scoped tools (own journal events, location)
 )

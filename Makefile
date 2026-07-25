@@ -45,13 +45,8 @@ test-edin-bot-e2e:
 test:
 	go test ./...
 
-# Integration tests across the whole backend (testcontainers-backed).
-# Currently exercises Memgraph via internal/testutil/memgraph.go.
-#
-# `integration_search` is a separate, narrower tag used by the kaine search
-# tests so they aren't dragged into the unrelated breakage in
-# kaine_integration_test.go (anthropic.NewClient / memgraph.Close signature).
-# Once that file is repaired, fold integration_search back into integration.
+# Integration tests across the whole backend. Relational search tests require
+# GALAXY_TEST_DSN and deliberately fail when it is absent.
 test-integration:
 	go test -tags 'integration integration_search' ./...
 

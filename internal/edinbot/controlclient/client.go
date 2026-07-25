@@ -95,7 +95,7 @@ func (c *Client) GetSystemWatchSnapshot(ctx context.Context, slug string) (*Syst
 
 func (c *Client) Diagnose(ctx context.Context) (*DiagnoseReport, error) {
 	body := map[string][]string{
-		"checks": {"memgraph", "edin-timescaledb", "eddn-timescaledb", "eddn-listener"},
+		"checks": {"galaxy-reader", "edin-timescaledb", "eddn-timescaledb", "eddn-listener"},
 	}
 	var out DiagnoseReport
 	if err := c.doJSON(ctx, http.MethodPost, "/admin/diagnose", body, &out); err != nil {

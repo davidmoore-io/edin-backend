@@ -72,7 +72,7 @@ func systemOption(ic *discordgo.InteractionCreate) string {
 // placeholder, ephemeral. Discord allows 3 seconds between receiving the
 // interaction and the bot's first response; deferring buys an additional
 // 15-minute window in which we can edit the deferred response with the
-// real reply. Without deferral a slow Memgraph or Discord post (>3s)
+// real reply. Without deferral a slow database or Discord post (>3s)
 // would cause Discord to drop the interaction and the operator would
 // see "interaction failed" with no recourse.
 func deferEphemeral(resp slash.Responder, ic *discordgo.InteractionCreate) error {
@@ -112,7 +112,7 @@ func messageLink(guildID, channelID, messageID string) string {
 //
 // Behaviour branches (each ending in an ephemeral reply):
 //   - Empty input              → "system name required"
-//   - Memgraph 404              → "I can't find a system named X"
+//   - galaxy API 404            → "I can't find a system named X"
 //   - Cap reached               → "channel already has the maximum N watches"
 //   - Already watched           → "X is already being watched in this channel"
 //   - Discord post failed       → "I couldn't post the watch message"

@@ -27,7 +27,7 @@ const permalinkBase = "https://edin.space/kaine/systems/"
 //   - Allegiance, controlling faction + faction state.
 //   - Faction list (name, state, influence) in sorted order.
 //
-// Snapshot.LastUpdatedAt is intentionally NOT in the hash — if Memgraph
+// Snapshot.LastUpdatedAt is intentionally NOT in the hash — if relational state
 // touches a row with no actual content change, we don't want to spam an
 // edit just because a timestamp moved. The "Last updated" line on the
 // embed reads from LastUpdatedAt directly, so the operator still sees

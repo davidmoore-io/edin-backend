@@ -71,7 +71,7 @@ type Config struct {
 	PollInterval time.Duration
 
 	// PerWatchStagger — delay between consecutive watch fetches inside
-	// one tick. Default 1s; protects Memgraph + control-API from a
+	// one tick. Default 1s; protects the galaxy database + control-API from a
 	// thundering-herd of N parallel queries when the cap is full.
 	PerWatchStagger time.Duration
 }

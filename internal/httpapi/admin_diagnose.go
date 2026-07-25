@@ -9,17 +9,17 @@ import (
 	"time"
 )
 
-// allowedDiagnoseChecks is the explicit allowlist. ANY value in a /admin/diagnose
-// request body that is not a key here is rejected with 400 BEFORE any probe
-// runs. This list MUST stay in lock-step with cmd/docker-inspect-sidecar's
-// allowedContainers(). See cmd/docker-inspect-sidecar/ALLOWLIST.md.
+// allowedDiagnoseChecks is the explicit allowlist. ANY value in a
+// /admin/diagnose request body that is not a key here is rejected with 400
+// BEFORE any probe runs. Its container values must be a subset of the
+// docker-inspect-sidecar allowlist. See cmd/docker-inspect-sidecar/ALLOWLIST.md.
 var allowedDiagnoseChecks = map[string]struct {
 	container string // sidecar container to inspect
 	probe     func(ctx context.Context, deps diagnoseDeps) probeResult
 }{
-	"memgraph": {
-		container: "memgraph",
-		probe:     func(ctx context.Context, d diagnoseDeps) probeResult { return probeMemgraph(ctx, d.memgraph) },
+	"galaxy-reader": {
+		container: "eddn-timescaledb",
+		probe:     func(ctx context.Context, d diagnoseDeps) probeResult { return probeGalaxyReader(ctx, d.galaxyReader) },
 	},
 	"edin-timescaledb": {
 		container: "edin-timescaledb",
@@ -36,11 +36,11 @@ var allowedDiagnoseChecks = map[string]struct {
 }
 
 type diagnoseDeps struct {
-	memgraph memgraphProber
-	edinTS   pgProber
-	eddnTS   pgProber
-	listener listenerLagProber
-	sidecar  sidecarInspector
+	galaxyReader galaxyReaderProber
+	edinTS       pgProber
+	eddnTS       pgProber
+	listener     listenerLagProber
+	sidecar      sidecarInspector
 }
 
 type sidecarInspector interface {

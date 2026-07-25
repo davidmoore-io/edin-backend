@@ -88,7 +88,7 @@ func (r *LTDBuyersResponse) IsStructurallyValid() bool {
 	return r != nil && !r.GeneratedAt.IsZero() && r.Maps != nil
 }
 
-// SystemWatchSnapshot mirrors memgraph.SystemWatchSnapshot — the JSON tags
+// SystemWatchSnapshot mirrors the control API watch payload — the JSON tags
 // match exactly so the bot can decode the API response without a
 // translation layer. Kept in sync by virtue of the integration smoke
 // test in Phase 6 (an actual /api round-trip would catch any drift).
@@ -109,7 +109,7 @@ type SystemWatchSnapshot struct {
 	LastUpdatedAt             time.Time       `json:"last_updated_at"`
 }
 
-// WatchFaction mirrors memgraph.WatchFaction — same json tags.
+// WatchFaction mirrors the control API faction payload — same JSON tags.
 type WatchFaction struct {
 	Name      string  `json:"name"`
 	State     string  `json:"state,omitempty"`

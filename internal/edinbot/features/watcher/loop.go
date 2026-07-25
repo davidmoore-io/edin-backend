@@ -136,7 +136,7 @@ func (w *Watcher) processOne(ctx context.Context, row store.WatchedSystem) {
 	snap, err := w.deps.Snap.GetSystemWatchSnapshot(ctx, row.SystemSlug)
 	if err != nil {
 		if errors.Is(err, controlclient.ErrSystemNotFound) {
-			// System dropped from Memgraph — vanishingly rare for
+			// System absent from current relational state — vanishingly rare for
 			// real-galaxy data, but if it happens we don't want a
 			// dead watch in the channel. Drop it.
 			w.logf("[WARN] watcher: system %q no longer in galaxy data; removing watch", row.SystemSlug)

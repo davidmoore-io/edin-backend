@@ -14,10 +14,8 @@ type probeResult struct {
 	LastMessageAt  *time.Time      `json:"last_message_at,omitempty"`
 }
 
-// memgraphProber is satisfied by the production memgraph client; the diagnose
-// handler accepts an interface for testability.
-type memgraphProber interface {
-	ProbeMemgraph(ctx context.Context) error
+type galaxyReaderProber interface {
+	ProbeReader(ctx context.Context) error
 }
 
 type pgProber interface {
@@ -30,9 +28,9 @@ type listenerLagProber interface {
 
 const eddnListenerStaleThreshold = 5 * time.Minute
 
-func probeMemgraph(ctx context.Context, p memgraphProber) probeResult {
+func probeGalaxyReader(ctx context.Context, p galaxyReaderProber) probeResult {
 	start := time.Now()
-	err := p.ProbeMemgraph(ctx)
+	err := p.ProbeReader(ctx)
 	r := probeResult{LatencyMs: int(time.Since(start).Milliseconds())}
 	if err != nil {
 		r.OK = false

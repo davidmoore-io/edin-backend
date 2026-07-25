@@ -95,13 +95,13 @@ func TestClient_Diagnose_HappyPath(t *testing.T) {
 		var body map[string]any
 		require.NoError(t, json.NewDecoder(r.Body).Decode(&body))
 		require.ElementsMatch(t,
-			[]any{"memgraph", "edin-timescaledb", "eddn-timescaledb", "eddn-listener"},
+			[]any{"galaxy-reader", "edin-timescaledb", "eddn-timescaledb", "eddn-listener"},
 			body["checks"])
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"checked_at": "2026-04-26T14:23:01Z",
 			"results": map[string]any{
-				"memgraph": map[string]any{"ok": true, "latency_ms": 12},
+				"galaxy-reader": map[string]any{"ok": true, "latency_ms": 12},
 			},
 		})
 	}))
@@ -110,7 +110,7 @@ func TestClient_Diagnose_HappyPath(t *testing.T) {
 	c := controlclient.New(srv.URL, &fakeTokenSource{tok: "fake-token"})
 	report, err := c.Diagnose(context.Background())
 	require.NoError(t, err)
-	require.Contains(t, report.Results, "memgraph")
+	require.Contains(t, report.Results, "galaxy-reader")
 }
 
 func TestClient_StructurallyValidEnvelope(t *testing.T) {

@@ -9,11 +9,11 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-type fakeMemgraphProber struct {
+type fakeGalaxyReaderProber struct {
 	queryFn func(ctx context.Context) error
 }
 
-func (f *fakeMemgraphProber) ProbeMemgraph(ctx context.Context) error {
+func (f *fakeGalaxyReaderProber) ProbeReader(ctx context.Context) error {
 	return f.queryFn(ctx)
 }
 
@@ -31,19 +31,19 @@ func (f *fakeListenerLagProber) Lag(ctx context.Context) (time.Duration, error) 
 	return f.lagFn(ctx)
 }
 
-func TestProbeMemgraph_OK(t *testing.T) {
-	pp := &fakeMemgraphProber{queryFn: func(ctx context.Context) error { return nil }}
-	r := probeMemgraph(context.Background(), pp)
+func TestProbeGalaxyReader_OK(t *testing.T) {
+	pp := &fakeGalaxyReaderProber{queryFn: func(ctx context.Context) error { return nil }}
+	r := probeGalaxyReader(context.Background(), pp)
 	require.True(t, r.OK)
 	require.Empty(t, r.Error)
 	require.GreaterOrEqual(t, r.LatencyMs, 0)
 }
 
-func TestProbeMemgraph_FailureIsRecorded(t *testing.T) {
-	pp := &fakeMemgraphProber{queryFn: func(ctx context.Context) error { return errors.New("connection refused") }}
-	r := probeMemgraph(context.Background(), pp)
+func TestProbeGalaxyReader_FailureIsRecorded(t *testing.T) {
+	pp := &fakeGalaxyReaderProber{queryFn: func(ctx context.Context) error { return errors.New("wrong database role") }}
+	r := probeGalaxyReader(context.Background(), pp)
 	require.False(t, r.OK)
-	require.Contains(t, r.Error, "connection refused")
+	require.Contains(t, r.Error, "wrong database role")
 }
 
 func TestProbePostgres_OK(t *testing.T) {

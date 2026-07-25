@@ -149,9 +149,6 @@ type EDINConfig struct {
 	Schema   string
 	PoolSize int
 
-	// Memgraph configuration (for current state queries)
-	Memgraph MemgraphConfig
-
 	// EDDNRaw configuration (for raw EDDN feed queries - historical data)
 	EDDNRaw         EDDNRawConfig
 	GalaxyReaderDSN string
@@ -167,15 +164,6 @@ type EDDNRawConfig struct {
 	Database string
 	Schema   string
 	PoolSize int
-}
-
-// MemgraphConfig holds Memgraph graph database connection settings.
-type MemgraphConfig struct {
-	Enabled  bool
-	Host     string
-	Port     int
-	Username string
-	Password string
 }
 
 // HTTPConfig captures HTTP server settings.
@@ -750,13 +738,6 @@ func loadEDINConfig() EDINConfig {
 		Database: getenvDefault("EDIN_DB_NAME", "edin"),
 		Schema:   getenvDefault("EDIN_DB_SCHEMA", "powerplay"),
 		PoolSize: getenvInt("EDIN_DB_POOL_SIZE", 5),
-		Memgraph: MemgraphConfig{
-			Enabled:  getEnvBool("MEMGRAPH_ENABLED", false),
-			Host:     getenvDefault("MEMGRAPH_HOST", "10.8.0.3"), // db.ssg.sh via WireGuard
-			Port:     getenvInt("MEMGRAPH_PORT", 7687),
-			Username: getenvDefault("MEMGRAPH_USERNAME", ""),
-			Password: os.Getenv("MEMGRAPH_PASSWORD"),
-		},
 		EDDNRaw: EDDNRawConfig{
 			Enabled:  getEnvBool("EDDN_RAW_DB_ENABLED", enabled), // Default to same as EDIN
 			Host:     getenvDefault("EDDN_RAW_DB_HOST", host),    // Same host as EDIN

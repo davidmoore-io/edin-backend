@@ -420,10 +420,10 @@ func (s *Server) buildDiagnoseDeps() diagnoseDeps {
 	deps := diagnoseDeps{
 		sidecar: newSidecarClient(sidecarURL),
 	}
-	if s.memgraph != nil {
-		deps.memgraph = s.memgraph
+	if s.galaxyStore != nil {
+		deps.galaxyReader = s.galaxyStore
 	} else {
-		deps.memgraph = nilMemgraphProber{}
+		deps.galaxyReader = nilGalaxyReaderProber{}
 	}
 	if s.cacheStore != nil {
 		deps.edinTS = s.cacheStore.Pool()
@@ -443,10 +443,10 @@ func (s *Server) buildDiagnoseDeps() diagnoseDeps {
 // nil*Prober implementations: returned when the corresponding dependency
 // isn't wired on the Server. They fail-loudly so the diagnose response shows
 // the missing wire-up rather than silently lying.
-type nilMemgraphProber struct{}
+type nilGalaxyReaderProber struct{}
 
-func (nilMemgraphProber) ProbeMemgraph(ctx context.Context) error {
-	return fmt.Errorf("memgraph prober not configured on this server")
+func (nilGalaxyReaderProber) ProbeReader(ctx context.Context) error {
+	return fmt.Errorf("galaxy reader prober not configured on this server")
 }
 
 type nilPgProber struct{}

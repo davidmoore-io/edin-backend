@@ -17,16 +17,18 @@ import (
 
 // stubProbers wires individual probe outcomes via closures.
 type stubProbers struct {
-	memgraph       func(ctx context.Context) error
+	galaxyReader   func(ctx context.Context) error
 	edinTSPing     func(ctx context.Context) error
 	eddnTSPing     func(ctx context.Context) error
 	listenerLag    func(ctx context.Context) (time.Duration, error)
 	sidecarInspect func(ctx context.Context, name string) (containerState, error)
 }
 
-func (s *stubProbers) ProbeMemgraph(ctx context.Context) error { return s.memgraph(ctx) }
+func (s *stubProbers) ProbeReader(ctx context.Context) error { return s.galaxyReader(ctx) }
 
-type stubPgProberDiagnose struct{ fn func(ctx context.Context) error }
+type stubPgProberDiagnose struct {
+	fn func(ctx context.Context) error
+}
 
 func (s *stubPgProberDiagnose) Ping(ctx context.Context) error { return s.fn(ctx) }
 
@@ -47,24 +49,26 @@ func (s *stubSidecar) Inspect(ctx context.Context, name string) (containerState,
 func newDiagnoseHandler(t *testing.T, p *stubProbers) http.Handler {
 	t.Helper()
 	return diagnoseHandler(diagnoseDeps{
-		memgraph: p,
-		edinTS:   &stubPgProberDiagnose{fn: p.edinTSPing},
-		eddnTS:   &stubPgProberDiagnose{fn: p.eddnTSPing},
-		listener: &stubListener{fn: p.listenerLag},
-		sidecar:  &stubSidecar{fn: p.sidecarInspect},
+		galaxyReader: p,
+		edinTS:       &stubPgProberDiagnose{fn: p.edinTSPing},
+		eddnTS:       &stubPgProberDiagnose{fn: p.eddnTSPing},
+		listener:     &stubListener{fn: p.listenerLag},
+		sidecar:      &stubSidecar{fn: p.sidecarInspect},
 	})
 }
 
 func TestDiagnoseHandler_AllChecksHealthy(t *testing.T) {
 	h := newDiagnoseHandler(t, &stubProbers{
-		memgraph:       func(ctx context.Context) error { return nil },
-		edinTSPing:     func(ctx context.Context) error { return nil },
-		eddnTSPing:     func(ctx context.Context) error { return nil },
-		listenerLag:    func(ctx context.Context) (time.Duration, error) { return 30 * time.Second, nil },
-		sidecarInspect: func(ctx context.Context, name string) (containerState, error) { return containerState{Status: "running", Health: "healthy"}, nil },
+		galaxyReader: func(ctx context.Context) error { return nil },
+		edinTSPing:   func(ctx context.Context) error { return nil },
+		eddnTSPing:   func(ctx context.Context) error { return nil },
+		listenerLag:  func(ctx context.Context) (time.Duration, error) { return 30 * time.Second, nil },
+		sidecarInspect: func(ctx context.Context, name string) (containerState, error) {
+			return containerState{Status: "running", Health: "healthy"}, nil
+		},
 	})
 
-	body := bytes.NewBufferString(`{"checks":["memgraph","edin-timescaledb","eddn-timescaledb","eddn-listener"]}`)
+	body := bytes.NewBufferString(`{"checks":["galaxy-reader","edin-timescaledb","eddn-timescaledb","eddn-listener"]}`)
 	req := httptest.NewRequest("POST", "/admin/diagnose", body)
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, req)
@@ -86,7 +90,7 @@ func TestDiagnoseHandler_AllChecksHealthy(t *testing.T) {
 func TestDiagnoseHandler_RejectsNonAllowlistedChecks(t *testing.T) {
 	probeRan := false
 	h := newDiagnoseHandler(t, &stubProbers{
-		memgraph: func(ctx context.Context) error {
+		galaxyReader: func(ctx context.Context) error {
 			probeRan = true
 			return nil
 		},
@@ -97,7 +101,8 @@ func TestDiagnoseHandler_RejectsNonAllowlistedChecks(t *testing.T) {
 	})
 
 	for _, bad := range []string{
-		"memgraph; rm -rf /",
+		"galaxy-reader; rm -rf /",
+		"memgraph",
 		"control-api",
 		"random",
 		"../etc/passwd",
@@ -116,16 +121,16 @@ func TestDiagnoseHandler_RejectsNonAllowlistedChecks(t *testing.T) {
 
 func TestDiagnoseHandler_PartialFailure_IndividualResultsReflectIt(t *testing.T) {
 	h := newDiagnoseHandler(t, &stubProbers{
-		memgraph:    func(ctx context.Context) error { return errors.New("connection refused") },
-		edinTSPing:  func(ctx context.Context) error { return nil },
-		eddnTSPing:  func(ctx context.Context) error { return nil },
-		listenerLag: func(ctx context.Context) (time.Duration, error) { return 30 * time.Second, nil },
+		galaxyReader: func(ctx context.Context) error { return errors.New("connection refused") },
+		edinTSPing:   func(ctx context.Context) error { return nil },
+		eddnTSPing:   func(ctx context.Context) error { return nil },
+		listenerLag:  func(ctx context.Context) (time.Duration, error) { return 30 * time.Second, nil },
 		sidecarInspect: func(ctx context.Context, name string) (containerState, error) {
 			return containerState{Status: "running", Health: "healthy"}, nil
 		},
 	})
 
-	body := bytes.NewBufferString(`{"checks":["memgraph","edin-timescaledb"]}`)
+	body := bytes.NewBufferString(`{"checks":["galaxy-reader","edin-timescaledb"]}`)
 	req := httptest.NewRequest("POST", "/admin/diagnose", body)
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, req)
@@ -135,22 +140,22 @@ func TestDiagnoseHandler_PartialFailure_IndividualResultsReflectIt(t *testing.T)
 		Results map[string]probeResult `json:"results"`
 	}
 	require.NoError(t, json.NewDecoder(w.Body).Decode(&resp))
-	require.False(t, resp.Results["memgraph"].OK)
+	require.False(t, resp.Results["galaxy-reader"].OK)
 	require.True(t, resp.Results["edin-timescaledb"].OK)
 }
 
 func TestDiagnoseHandler_SidecarUnreachable_FailsOpen(t *testing.T) {
 	h := newDiagnoseHandler(t, &stubProbers{
-		memgraph:    func(ctx context.Context) error { return nil },
-		edinTSPing:  func(ctx context.Context) error { return nil },
-		eddnTSPing:  func(ctx context.Context) error { return nil },
-		listenerLag: func(ctx context.Context) (time.Duration, error) { return 30 * time.Second, nil },
+		galaxyReader: func(ctx context.Context) error { return nil },
+		edinTSPing:   func(ctx context.Context) error { return nil },
+		eddnTSPing:   func(ctx context.Context) error { return nil },
+		listenerLag:  func(ctx context.Context) (time.Duration, error) { return 30 * time.Second, nil },
 		sidecarInspect: func(ctx context.Context, name string) (containerState, error) {
 			return containerState{}, errSidecarUnreachable
 		},
 	})
 
-	body := bytes.NewBufferString(`{"checks":["memgraph","edin-timescaledb","eddn-timescaledb","eddn-listener"]}`)
+	body := bytes.NewBufferString(`{"checks":["galaxy-reader","edin-timescaledb","eddn-timescaledb","eddn-listener"]}`)
 	req := httptest.NewRequest("POST", "/admin/diagnose", body)
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, req)
@@ -167,12 +172,19 @@ func TestDiagnoseHandler_SidecarUnreachable_FailsOpen(t *testing.T) {
 }
 
 func TestDiagnoseHandler_AllowlistContents(t *testing.T) {
-	want := []string{"memgraph", "edin-timescaledb", "eddn-timescaledb", "eddn-listener"}
+	want := []string{"galaxy-reader", "edin-timescaledb", "eddn-timescaledb", "eddn-listener"}
 	got := make([]string, 0, len(allowedDiagnoseChecks))
 	for k := range allowedDiagnoseChecks {
 		got = append(got, k)
 	}
-	require.ElementsMatch(t, want, got, "allowlist must match sidecar's allowedContainers() — see ALLOWLIST.md")
+	require.ElementsMatch(t, want, got)
+	for _, spec := range allowedDiagnoseChecks {
+		require.Contains(t,
+			[]string{"edin-timescaledb", "eddn-timescaledb", "eddn-listener"},
+			spec.container,
+			"diagnose container values must be a subset of the sidecar allowlist",
+		)
+	}
 }
 
 // Source guard: this file MUST NOT contain os/exec usage.
