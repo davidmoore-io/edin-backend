@@ -254,9 +254,6 @@ func Run(ctx context.Context, cfg *config.Config, opsManager *ops.Manager, llmSt
 	// Kaine Portal API - Requires Authentik JWT auth
 	server.RegisterKaineRoutes(mux)
 
-	// Galaxy Visualization API
-	server.RegisterGalaxyRoutes(mux)
-
 	// Commander (Copilot) auth routes
 	server.RegisterCommanderRoutes(mux)
 
