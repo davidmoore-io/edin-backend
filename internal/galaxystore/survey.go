@@ -48,7 +48,7 @@ func (s *Store) GetSurveyProjection(ctx context.Context, mapSystems []string, st
 	if err != nil {
 		return nil, err
 	}
-	if startSystem != "" {
+	if startSystem != "" && out.AnchorsUsed > 0 {
 		var start Coords
 		err := tx.QueryRow(ctx, `
 SELECT x::float8, y::float8, z::float8
@@ -60,7 +60,7 @@ LIMIT 1`, startSystem).Scan(&start.X, &start.Y, &start.Z)
 			return nil, ErrSystemNotFound
 		}
 		if err != nil {
-			return nil, fmt.Errorf("survey start lookup: %w", err)
+			return nil, fmt.Errorf("%w: %v", ErrSurveyStartLookup, err)
 		}
 		out.Start = &start
 	}

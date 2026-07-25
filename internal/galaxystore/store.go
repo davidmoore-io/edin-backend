@@ -14,6 +14,10 @@ import (
 // galaxy.system_catalog row.
 var ErrSystemNotFound = errors.New("system not found")
 
+// ErrSurveyStartLookup marks a database failure while resolving the optional
+// survey-route origin. The legacy HTTP contract maps this class to status 400.
+var ErrSurveyStartLookup = errors.New("survey start lookup failed")
+
 type querier interface {
 	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
 	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
