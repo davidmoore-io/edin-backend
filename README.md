@@ -15,7 +15,7 @@ deployed.
 |---------|---------|------|
 | Control API | REST API + MCP server for AI tools | 8080 |
 | Discord Bot source | Slash commands for powerplay and system lookups; deployed by Atlas | — |
-| Redis | Session store for Kaine portal auth | 6379 |
+| EDIN application Redis | Session store for Kaine portal auth | 6379 |
 
 ## Desktop And Identity Contracts
 
@@ -44,6 +44,13 @@ Key packages:
 ## Usage
 
 ```bash
+# Start the complete local development stack
+make quick-dev
+
+# Inspect or stop it
+make dev-status
+make dev-stop
+
 # Build all binaries
 make build
 
@@ -67,6 +74,36 @@ ansible-playbook -i inventories/prod/hosts.ini site.yml \
 # Reconcile commander database roles as a separate, explicit operation.
 BACKEND_DB_ROLES_CONFIRMED=1 make -C .. deploy-backend-db-roles
 ```
+
+### Full Local Stack
+
+`make quick-dev` starts the local EDIN and EDDN PostgreSQL databases, the EDIN
+application Redis, Authentik, the EDDN listener, control API, MCP endpoint,
+frontend, and the ngrok tunnel used by the EDIN Client Frontier callback.
+Authentik 2026 is PostgreSQL-only and does not use this Redis instance. The
+launcher loads development secrets from the existing Ansible vaults into the
+ignored, mode-`0600`
+`.dev-state/secrets.env`; secret values are not copied into tracked env files.
+It also provisions non-superuser local commander reader/writer roles and runs
+the embedded commander migrations, so journal ingest and commander tools use
+the same row-level-security shape as production.
+
+The frontend is available at `http://127.0.0.1:3090`, with browser OAuth served
+entirely by the local Authentik instance at `http://127.0.0.1:9000`.
+Authenticated local users receive the `kaine-god` development claim. The
+Discord bot is deliberately excluded because it is a singleton and running a
+local copy would duplicate production responses.
+
+Kaine chat tools compose from Authentik groups. `kaine-approved` supplies the
+galaxy/mining surface, `kaine-god` additionally supplies server operations,
+and `edin-copilot` supplies the authenticated commander's journal/location
+tools. A user in both Kaine and Copilot groups receives both surfaces;
+`kaine-god` alone never grants private commander data.
+
+`make dev-stop` stops processes and containers only. It never runs
+`docker compose down`, `down -v`, or removes a volume. Existing EDIN/EDDN
+database volumes and the namespaced `edin-dev-authentik-*` volumes are
+preserved.
 
 ## Docker Network
 

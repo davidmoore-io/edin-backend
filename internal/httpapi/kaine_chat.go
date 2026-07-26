@@ -12,6 +12,8 @@ import (
 	"github.com/edin-space/edin-backend/internal/assistant"
 	"github.com/edin-space/edin-backend/internal/authz"
 	"github.com/edin-space/edin-backend/internal/llm"
+	"github.com/edin-space/edin-backend/internal/store"
+	"github.com/edin-space/edin-backend/internal/tools"
 	"github.com/gorilla/websocket"
 )
 
@@ -31,27 +33,31 @@ const (
 	ChatWSTypeChatHistory  ChatWSMessageType = "chat_history"
 	ChatWSTypeChatCleared  ChatWSMessageType = "chat_cleared"
 	ChatWSTypeAudioChunk   ChatWSMessageType = "audio_chunk"
+	ChatWSTypeMessageAck   ChatWSMessageType = "message_ack"
+	ChatWSTypeHeartbeat    ChatWSMessageType = "heartbeat"
 	// speak_start is sent immediately before each speak text_delta burst.
 	// Flutter uses it to start a new chat bubble for each discrete <speak> segment.
-	ChatWSTypeSpeakStart   ChatWSMessageType = "speak_start"
+	ChatWSTypeSpeakStart ChatWSMessageType = "speak_start"
 )
 
 // ChatWSMessage represents a WebSocket message for the chat interface.
 type ChatWSMessage struct {
-	Type       ChatWSMessageType `json:"type"`
-	SessionID  string            `json:"session_id,omitempty"`
-	Content    string            `json:"content,omitempty"`
-	ToolName   string            `json:"tool_name,omitempty"`
-	ToolID     string            `json:"tool_id,omitempty"`
-	ToolInput  any               `json:"tool_input,omitempty"`  // Only sent to debug users
-	ToolOutput any               `json:"tool_output,omitempty"` // Only sent to debug users
-	Duration   string            `json:"duration,omitempty"`
-	Error      bool              `json:"error,omitempty"`
-	DebugMode  bool              `json:"debug_mode,omitempty"`
-	Timestamp  time.Time         `json:"timestamp"`
-	Messages   []llm.Message     `json:"messages,omitempty"` // For chat_history
-	Channel    string            `json:"channel,omitempty"`   // "speak" or "data" on text_delta frames
-	AudioData  string            `json:"audio_data,omitempty"` // base64 audio on audio_chunk frames
+	Type            ChatWSMessageType `json:"type"`
+	SessionID       string            `json:"session_id,omitempty"`
+	Content         string            `json:"content,omitempty"`
+	ToolName        string            `json:"tool_name,omitempty"`
+	ToolID          string            `json:"tool_id,omitempty"`
+	ToolInput       any               `json:"tool_input,omitempty"`  // Only sent to debug users
+	ToolOutput      any               `json:"tool_output,omitempty"` // Only sent to debug users
+	Duration        string            `json:"duration,omitempty"`
+	Error           bool              `json:"error,omitempty"`
+	DebugMode       bool              `json:"debug_mode,omitempty"`
+	Timestamp       time.Time         `json:"timestamp"`
+	Messages        []llm.Message     `json:"messages,omitempty"`   // For chat_history
+	Channel         string            `json:"channel,omitempty"`    // "speak" or "data" on text_delta frames
+	AudioData       string            `json:"audio_data,omitempty"` // base64 audio on audio_chunk frames
+	ClientMessageID string            `json:"client_message_id,omitempty"`
+	Duplicate       bool              `json:"duplicate,omitempty"`
 }
 
 // VoiceConfig is sent by the Flutter client with every user_message frame.
@@ -63,14 +69,16 @@ type VoiceConfig struct {
 
 // chatSession holds the state for a single chat WebSocket connection.
 type chatSession struct {
-	conn       *websocket.Conn
-	user       *KaineUser
-	sessionID  string
-	history    []llm.Message
-	debugMode  bool
-	writeMu    sync.Mutex
-	done       chan struct{}
-	lastActive time.Time
+	conn         *websocket.Conn
+	user         *KaineUser
+	sessionID    string
+	history      []llm.Message
+	debugMode    bool
+	toolScopes   []authz.Scope
+	commanderFID string
+	writeMu      sync.Mutex
+	done         chan struct{}
+	lastActive   time.Time
 }
 
 func (cs *chatSession) send(msg ChatWSMessage) error {
@@ -151,15 +159,25 @@ func (s *Server) handleKaineChatWebSocket(w http.ResponseWriter, r *http.Request
 
 	// Load or create session
 	sessionID, history := s.loadOrCreateChatSession(user.Sub)
+	toolScopes, commanderFID, commanderErr := s.resolveKaineChatCapabilities(r.Context(), user)
+	if commanderErr != nil {
+		s.logger.Warn(fmt.Sprintf(
+			"chat_commander_identity_unavailable user=%s: %v",
+			user.Sub,
+			commanderErr,
+		))
+	}
 
 	session := &chatSession{
-		conn:       conn,
-		user:       user,
-		sessionID:  sessionID,
-		history:    history,
-		debugMode:  user.CanAccessChatDebug(),
-		done:       make(chan struct{}),
-		lastActive: time.Now(),
+		conn:         conn,
+		user:         user,
+		sessionID:    sessionID,
+		history:      history,
+		debugMode:    user.CanAccessChatDebug(),
+		toolScopes:   toolScopes,
+		commanderFID: commanderFID,
+		done:         make(chan struct{}),
+		lastActive:   time.Now(),
 	}
 
 	s.logger.Info(fmt.Sprintf("chat_ws connected user=%s session=%s debug=%t history=%d", user.Sub, sessionID, session.debugMode, len(history)))
@@ -366,16 +384,16 @@ func (s *Server) handleChatMessage(session *chatSession, content string) {
 		Content: "Processing your question...",
 	})
 
-	// Set up context with authorization. Scopes derive from the
-	// authenticated user's Authentik groups (see authz.ScopesForGroups)
-	// plus ScopeKaineChat, which is the coarse endpoint gate for any
-	// request that reaches this handler. The endpoint-level auth
-	// middleware has already asserted chat access, so ScopeKaineChat is
-	// safe to add unconditionally here — it keeps downstream gate checks
-	// uniform regardless of the group mapping.
+	// Set up context with authorization. Tool capabilities compose from all
+	// Authentik groups: Kaine groups provide galaxy/mining tools, kaine-god
+	// adds operations tools, and an edin-copilot group adds the commander's
+	// own journal tools. ScopeKaineChat is guaranteed here because the
+	// endpoint middleware has already admitted the user.
 	ctx := assistant.WithContext(context.Background(), session.sessionID, session.user.Sub)
-	scopes := append(authz.ScopesForGroups(session.user.Groups), authz.ScopeKaineChat)
-	ctx = authz.ContextWithScopes(ctx, scopes...)
+	ctx = authz.ContextWithScopes(ctx, session.toolScopes...)
+	if session.commanderFID != "" {
+		ctx = tools.WithCommanderFID(ctx, session.commanderFID)
+	}
 
 	// Create progress callback that streams to WebSocket
 	onProgress := func(event assistant.ProgressEvent) {
@@ -439,6 +457,60 @@ func (s *Server) handleChatMessage(session *chatSession, content string) {
 	})
 
 	s.logger.Info(fmt.Sprintf("chat_complete user=%s session=%s duration=%s reply=\"%s\"", session.user.Sub, session.sessionID, time.Since(start), truncate(reply, 200)))
+}
+
+func kaineChatScopesForGroups(groups []string) []authz.Scope {
+	scopes := authz.ScopesForGroups(groups)
+	if authz.Allow(scopes, authz.ScopeKaineChat) {
+		return scopes
+	}
+	return append(scopes, authz.ScopeKaineChat)
+}
+
+func withoutScope(scopes []authz.Scope, remove authz.Scope) []authz.Scope {
+	out := make([]authz.Scope, 0, len(scopes))
+	for _, scope := range scopes {
+		if scope != remove {
+			out = append(out, scope)
+		}
+	}
+	return out
+}
+
+func (s *Server) resolveKaineChatCapabilities(ctx context.Context, user *KaineUser) ([]authz.Scope, string, error) {
+	scopes := kaineChatScopesForGroups(user.Groups)
+	if !authz.Allow(scopes, authz.ScopeCommanderData) {
+		return scopes, "", nil
+	}
+
+	fid, err := s.resolveKaineCommanderFID(ctx, user)
+	if err != nil {
+		return withoutScope(scopes, authz.ScopeCommanderData), "", err
+	}
+	return scopes, fid, nil
+}
+
+func (s *Server) resolveKaineCommanderFID(ctx context.Context, user *KaineUser) (string, error) {
+	if user == nil || user.Username == "" {
+		return "", fmt.Errorf("authenticated username claim missing")
+	}
+	if s.authentikClient == nil {
+		return "", fmt.Errorf("Authentik API unavailable")
+	}
+	lookup, ok := s.commanderRepo.(store.CommanderAuthentikLookup)
+	if !ok {
+		return "", fmt.Errorf("commander Authentik lookup unavailable")
+	}
+
+	authentikUser, err := s.authentikClient.GetUserByUsername(ctx, user.Username)
+	if err != nil {
+		return "", fmt.Errorf("resolve Authentik user: %w", err)
+	}
+	commander, err := lookup.GetCommanderByAuthentikUserID(ctx, authentikUser.UUID)
+	if err != nil {
+		return "", fmt.Errorf("resolve linked commander: %w", err)
+	}
+	return commander.FID, nil
 }
 
 // handleKaineChatSessions returns the list of sessions for the authenticated user.

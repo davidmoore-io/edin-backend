@@ -106,7 +106,6 @@ func TestRunnerToolDefsForScope_UsesFullForOps(t *testing.T) {
 		authz.ScopeKaineChat,
 		authz.ScopeGalaxyRead,
 		authz.ScopeKaineMining,
-		authz.ScopeCommanderData,
 	)
 
 	betaDefs := runner.betaToolDefsForContext(ctx)
@@ -114,13 +113,22 @@ func TestRunnerToolDefsForScope_UsesFullForOps(t *testing.T) {
 		t.Fatal("expected non-empty tool defs for ops scope")
 	}
 
-	// Full definitions should have parameters for all tools
+	var sawOps, sawMarket bool
+	// Full definitions should have parameters for visible tools, while tools
+	// requiring scopes the operator does not hold remain hidden.
 	for _, def := range betaDefs {
 		if def.OfTool == nil {
 			continue
 		}
 		name := tools.ToolName(def.OfTool.Name)
+		if name == tools.ToolStatusService {
+			sawOps = true
+		}
+		if name == tools.ToolCommanderEvents || name == tools.ToolCommanderLocation {
+			t.Fatalf("commander tool %q visible without commander_data scope", name)
+		}
 		if name == tools.ToolGalaxyMarket {
+			sawMarket = true
 			props, ok := def.OfTool.InputSchema.Properties.(map[string]any)
 			if !ok {
 				t.Fatalf("expected Properties to be map[string]any for %s", name)
@@ -128,10 +136,41 @@ func TestRunnerToolDefsForScope_UsesFullForOps(t *testing.T) {
 			if len(props) == 0 {
 				t.Fatal("expected galaxy_market to have properties in ops scope (full)")
 			}
-			return
 		}
 	}
-	t.Fatal("galaxy_market not found in ops tool defs")
+	if !sawOps || !sawMarket {
+		t.Fatalf("ops tool set incomplete: ops=%v market=%v", sawOps, sawMarket)
+	}
+}
+
+func TestRunnerToolDefsForScope_CombinesKaineOpsAndCommander(t *testing.T) {
+	runner := NewRunner(nil, nil, "", 5)
+	ctx := authz.ContextWithScopes(
+		context.Background(),
+		authz.ScopeAdmin,
+		authz.ScopeLlmOperator,
+		authz.ScopeKaineChat,
+		authz.ScopeGalaxyRead,
+		authz.ScopeKaineMining,
+		authz.ScopeCopilotChat,
+		authz.ScopeCommanderData,
+	)
+
+	var sawOps, sawCommander bool
+	for _, def := range runner.betaToolDefsForContext(ctx) {
+		if def.OfTool == nil {
+			continue
+		}
+		switch tools.ToolName(def.OfTool.Name) {
+		case tools.ToolStatusService:
+			sawOps = true
+		case tools.ToolCommanderEvents:
+			sawCommander = true
+		}
+	}
+	if !sawOps || !sawCommander {
+		t.Fatalf("combined scope missing capabilities: ops=%v commander=%v", sawOps, sawCommander)
+	}
 }
 
 func TestRunnerBuildBetaMessageParams(t *testing.T) {

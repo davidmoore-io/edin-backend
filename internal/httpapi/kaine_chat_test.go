@@ -1,18 +1,23 @@
 package httpapi
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"sort"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
 
 	"github.com/edin-space/edin-backend/internal/assistant"
+	"github.com/edin-space/edin-backend/internal/authentik"
 	"github.com/edin-space/edin-backend/internal/authz"
 	"github.com/edin-space/edin-backend/internal/config"
 	"github.com/edin-space/edin-backend/internal/llm"
@@ -473,25 +478,14 @@ func TestTruncate(t *testing.T) {
 
 // TestKaineChatScopeDerivation_ApprovedUser_SeesLegacyKaineTools mirrors the
 // scope-threading that handleChatMessage performs for an authenticated Kaine
-// chat user: ScopesForGroups(user.Groups) + ScopeKaineChat. It asserts the
+// chat user. It asserts the
 // derived scope set yields exactly the legacy kaine-approved tool surface when
 // run through the scope-driven filter, so any regression in group→scope→tool
 // mapping is caught at the httpapi boundary, not just in tools/.
 func TestKaineChatScopeDerivation_ApprovedUser_SeesLegacyKaineTools(t *testing.T) {
 	user := &KaineUser{Sub: "approved-user", Groups: []string{"kaine-approved"}}
 
-	// Reproduce the exact derivation from kaine_chat.go's handleChatMessage.
-	scopes := append(authz.ScopesForGroups(user.Groups), authz.ScopeKaineChat)
-
-	defs := tools.MCPToAnthropicAll(tools.MCPToolDefinitions(), scopes)
-
-	var got []string
-	for _, def := range defs {
-		if def.OfTool != nil {
-			got = append(got, def.OfTool.Name)
-		}
-	}
-	sort.Strings(got)
+	got := kaineChatToolNames(user.Groups)
 
 	// Kaine-approved tool surface. Kept in sync with
 	// internal/tools/convert_test.go's legacyKaineTools; W5.5 deliberately
@@ -534,6 +528,149 @@ func TestKaineChatScopeDerivation_ApprovedUser_SeesLegacyKaineTools(t *testing.T
 			t.Fatalf("kaine-approved derived tool set drift at %d: got %q, want %q\ngot:  %v\nwant: %v", i, got[i], want[i], got, want)
 		}
 	}
+}
+
+func TestKaineChatScopeDerivation_ComposesCapabilitiesByGroup(t *testing.T) {
+	base := kaineChatToolNames([]string{"kaine-approved"})
+	ops := []string{
+		"list_services",
+		"restart_service",
+		"run_ansible",
+		"status_service",
+		"tail_logs",
+	}
+	commander := []string{"commander_events", "commander_location"}
+
+	tests := []struct {
+		name   string
+		groups []string
+		want   []string
+	}{
+		{
+			name:   "ordinary Kaine user",
+			groups: []string{"kaine-approved"},
+			want:   base,
+		},
+		{
+			name:   "Kaine and Copilot user",
+			groups: []string{"kaine-approved", "edin-copilot"},
+			want:   appendCopy(base, commander...),
+		},
+		{
+			name:   "god without Copilot",
+			groups: []string{"kaine-god"},
+			want:   appendCopy(base, ops...),
+		},
+		{
+			name:   "god with Copilot",
+			groups: []string{"kaine-god", "edin-copilot"},
+			want:   appendCopy(appendCopy(base, ops...), commander...),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := kaineChatToolNames(tt.groups)
+			want := append([]string(nil), tt.want...)
+			sort.Strings(want)
+			if !reflect.DeepEqual(got, want) {
+				t.Fatalf("tool set mismatch\ngot:  %v\nwant: %v", got, want)
+			}
+		})
+	}
+}
+
+func TestResolveKaineCommanderFID_UsesStableAuthentikLink(t *testing.T) {
+	userID := uuid.New()
+	authentikServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v3/core/users/" || r.URL.Query().Get("username") != "iamadavid" {
+			t.Fatalf("unexpected Authentik request: %s", r.URL.String())
+		}
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintf(w, `{"pagination":{"count":1},"results":[{"pk":7,"uuid":%q,"username":"iamadavid","is_active":true}]}`, userID.String())
+	}))
+	defer authentikServer.Close()
+
+	repo := newLinkTestRepo()
+	repo.seedRow("F123", &userID)
+	if err := repo.SetApproved(context.Background(), "F123", true); err != nil {
+		t.Fatalf("approve linked commander: %v", err)
+	}
+
+	server := &Server{
+		authentikClient: authentik.NewClient(authentikServer.URL, "test-token"),
+		commanderRepo:   repo,
+	}
+	scopes, fid, err := server.resolveKaineChatCapabilities(
+		context.Background(),
+		&KaineUser{
+			Username: "iamadavid",
+			Groups:   []string{"kaine-approved", "edin-copilot"},
+		},
+	)
+	if err != nil {
+		t.Fatalf("resolveKaineChatCapabilities: %v", err)
+	}
+	if fid != "F123" {
+		t.Fatalf("resolved FID = %q, want F123", fid)
+	}
+	if !authz.Allow(scopes, authz.ScopeCommanderData) {
+		t.Fatal("commander_data scope missing for approved linked commander")
+	}
+}
+
+func TestResolveKaineCommanderFID_RejectsUnapprovedLink(t *testing.T) {
+	userID := uuid.New()
+	authentikServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintf(w, `{"pagination":{"count":1},"results":[{"pk":7,"uuid":%q,"username":"iamadavid","is_active":true}]}`, userID.String())
+	}))
+	defer authentikServer.Close()
+
+	repo := newLinkTestRepo()
+	repo.seedRow("F123", &userID)
+	server := &Server{
+		authentikClient: authentik.NewClient(authentikServer.URL, "test-token"),
+		commanderRepo:   repo,
+	}
+	scopes, fid, err := server.resolveKaineChatCapabilities(
+		context.Background(),
+		&KaineUser{
+			Username: "iamadavid",
+			Groups:   []string{"kaine-approved", "edin-copilot"},
+		},
+	)
+	if err == nil {
+		t.Fatal("expected unapproved commander link to be rejected")
+	}
+	if fid != "" {
+		t.Fatalf("unapproved commander FID = %q, want empty", fid)
+	}
+	for _, scope := range scopes {
+		if scope == authz.ScopeCommanderData {
+			t.Fatal("commander_data scope retained without an approved identity link")
+		}
+	}
+}
+
+func kaineChatToolNames(groups []string) []string {
+	defs := tools.MCPToAnthropicAll(
+		tools.MCPToolDefinitions(),
+		kaineChatScopesForGroups(groups),
+	)
+	names := make([]string, 0, len(defs))
+	for _, def := range defs {
+		if def.OfTool != nil {
+			names = append(names, def.OfTool.Name)
+		}
+	}
+	sort.Strings(names)
+	return names
+}
+
+func appendCopy(base []string, extras ...string) []string {
+	out := append([]string(nil), base...)
+	return append(out, extras...)
 }
 
 // TestChatSessionDebugModeDetection tests that debug mode is correctly detected.

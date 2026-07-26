@@ -8,9 +8,9 @@ import (
 	"sync"
 	"time"
 
+	"github.com/edin-space/edin-backend/internal/observability"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/redis/go-redis/v9"
-	"github.com/edin-space/edin-backend/internal/observability"
 )
 
 const (
@@ -18,6 +18,29 @@ const (
 	defaultRedisMaxMessages = 20
 	defaultRedisPrefix      = "llm:sessions"
 )
+
+var appendMessageOnceScript = redis.NewScript(`
+if redis.call("EXISTS", KEYS[1]) == 0 then
+  return -1
+end
+if ARGV[2] ~= "" and redis.call("SISMEMBER", KEYS[3], ARGV[2]) == 1 then
+  return 0
+end
+if ARGV[2] ~= "" then
+  redis.call("SADD", KEYS[3], ARGV[2])
+end
+redis.call("RPUSH", KEYS[2], ARGV[1])
+local max_messages = tonumber(ARGV[3])
+if max_messages > 0 then
+  redis.call("LTRIM", KEYS[2], -max_messages, -1)
+end
+redis.call("HSET", KEYS[1], "updated_at", ARGV[4])
+local ttl = tonumber(ARGV[5])
+redis.call("EXPIRE", KEYS[1], ttl)
+redis.call("EXPIRE", KEYS[2], ttl)
+redis.call("EXPIRE", KEYS[3], ttl)
+return 1
+`)
 
 // RedisStore persists sessions in Redis, falling back to an in-memory store when Redis is unavailable.
 type RedisStore struct {
@@ -168,6 +191,59 @@ func (s *RedisStore) AppendMessage(sessionID string, msg Message) (*Session, err
 	return session, nil
 }
 
+// AppendMessageOnce atomically deduplicates a client-authored message and
+// appends it to the Redis conversation. Duplicate IDs return the current
+// session with appended=false.
+func (s *RedisStore) AppendMessageOnce(sessionID string, msg Message) (*Session, bool, error) {
+	if s.client == nil {
+		updated, appended, err := s.fallback.AppendMessageOnce(sessionID, msg)
+		if err == nil {
+			s.metrics.recordFallback("append_once")
+			s.metrics.recordHit("append_once", len(updated.Messages), "fallback")
+		}
+		return updated, appended, err
+	}
+
+	if msg.CreatedAt.IsZero() {
+		msg.CreatedAt = time.Now().UTC()
+	}
+	payload, err := json.Marshal(msg)
+	if err != nil {
+		return nil, false, fmt.Errorf("marshal message: %w", err)
+	}
+
+	ctx := context.Background()
+	result, err := appendMessageOnceScript.Run(ctx, s.client, []string{
+		s.sessionKey(sessionID),
+		s.messagesKey(sessionID),
+		s.messageIDsKey(sessionID),
+	}, payload, msg.ClientMessageID, s.maxMessages,
+		msg.CreatedAt.Format(time.RFC3339Nano), int64(s.ttl.Seconds())).Int()
+	if err != nil {
+		s.warn("append_message_once", sessionID, err)
+		updated, appended, fallbackErr := s.fallback.AppendMessageOnce(sessionID, msg)
+		if fallbackErr == nil {
+			s.metrics.recordFallback("append_once")
+			s.metrics.recordHit("append_once", len(updated.Messages), "fallback")
+		}
+		return updated, appended, fallbackErr
+	}
+	if result == -1 {
+		return nil, false, errors.New("session not found")
+	}
+
+	session, ok := s.loadSession(ctx, sessionID)
+	if !ok {
+		return nil, false, errors.New("session not found")
+	}
+	if session.UserID != "" && result == 1 {
+		s.refreshUserIndex(ctx, session.UserID, sessionID, msg.CreatedAt)
+	}
+	s.fallback.UpsertSession(session)
+	s.metrics.recordHit("append_once", len(session.Messages), "redis")
+	return session, result == 1, nil
+}
+
 // Get retrieves a session from Redis or the fallback store.
 func (s *RedisStore) Get(id string) (*Session, bool) {
 	if s.client == nil {
@@ -200,7 +276,8 @@ func (s *RedisStore) Delete(id string) {
 		ctx := context.Background()
 		metaKey := s.sessionKey(id)
 		messagesKey := s.messagesKey(id)
-		if err := s.client.Del(ctx, metaKey, messagesKey).Err(); err != nil {
+		messageIDsKey := s.messageIDsKey(id)
+		if err := s.client.Del(ctx, metaKey, messagesKey, messageIDsKey).Err(); err != nil {
 			s.warn("delete_session", id, err)
 		}
 	}
@@ -341,6 +418,7 @@ func (s *RedisStore) refreshUserIndex(ctx context.Context, userID, sessionID str
 func (s *RedisStore) persistSession(ctx context.Context, session *Session) error {
 	metaKey := s.sessionKey(session.ID)
 	messagesKey := s.messagesKey(session.ID)
+	messageIDsKey := s.messageIDsKey(session.ID)
 
 	pipe := s.client.TxPipeline()
 	pipe.HSet(ctx, metaKey, map[string]any{
@@ -351,6 +429,7 @@ func (s *RedisStore) persistSession(ctx context.Context, session *Session) error
 
 	if len(session.Messages) > 0 {
 		payloads := make([]any, 0, len(session.Messages))
+		messageIDs := make([]any, 0, len(session.Messages))
 		for _, msg := range session.Messages {
 			if msg.CreatedAt.IsZero() {
 				msg.CreatedAt = session.CreatedAt
@@ -360,16 +439,24 @@ func (s *RedisStore) persistSession(ctx context.Context, session *Session) error
 				return fmt.Errorf("marshal message: %w", err)
 			}
 			payloads = append(payloads, raw)
+			if msg.ClientMessageID != "" {
+				messageIDs = append(messageIDs, msg.ClientMessageID)
+			}
 		}
 		pipe.Del(ctx, messagesKey) // ensure clean slate
 		pipe.RPush(ctx, messagesKey, payloads...)
 		if s.maxMessages > 0 {
 			pipe.LTrim(ctx, messagesKey, int64(-s.maxMessages), -1)
 		}
+		pipe.Del(ctx, messageIDsKey)
+		if len(messageIDs) > 0 {
+			pipe.SAdd(ctx, messageIDsKey, messageIDs...)
+		}
 	}
 
 	pipe.Expire(ctx, metaKey, s.ttl)
 	pipe.Expire(ctx, messagesKey, s.ttl)
+	pipe.Expire(ctx, messageIDsKey, s.ttl)
 
 	if _, err := pipe.Exec(ctx); err != nil {
 		return err
@@ -441,6 +528,10 @@ func (s *RedisStore) sessionKey(id string) string {
 
 func (s *RedisStore) messagesKey(id string) string {
 	return fmt.Sprintf("%s:%s:messages", s.prefix, id)
+}
+
+func (s *RedisStore) messageIDsKey(id string) string {
+	return fmt.Sprintf("%s:%s:message_ids", s.prefix, id)
 }
 
 func (s *RedisStore) warn(op, id string, err error) {

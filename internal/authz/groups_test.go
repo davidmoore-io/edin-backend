@@ -14,11 +14,10 @@ func TestScopesForGroups_EmptyInput_ReturnsEmpty(t *testing.T) {
 	}
 }
 
-func TestScopesForGroups_KaineGod_GrantsFullSet(t *testing.T) {
+func TestScopesForGroups_KaineGod_GrantsKaineAndOpsWithoutCommanderData(t *testing.T) {
 	got := ScopesForGroups([]string{"kaine-god"})
 	want := []Scope{
 		ScopeAdmin,
-		ScopeCommanderData,
 		ScopeGalaxyRead,
 		ScopeKaineChat,
 		ScopeKaineMining,
@@ -26,6 +25,22 @@ func TestScopesForGroups_KaineGod_GrantsFullSet(t *testing.T) {
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("ScopesForGroups([kaine-god]) = %v, want %v", got, want)
+	}
+}
+
+func TestScopesForGroups_KaineGodAndCopilot_ComposesOpsAndCommanderData(t *testing.T) {
+	got := ScopesForGroups([]string{"kaine-god", "edin-copilot"})
+	want := []Scope{
+		ScopeAdmin,
+		ScopeCommanderData,
+		ScopeCopilotChat,
+		ScopeGalaxyRead,
+		ScopeKaineChat,
+		ScopeKaineMining,
+		ScopeLlmOperator,
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("ScopesForGroups([kaine-god edin-copilot]) = %v, want %v", got, want)
 	}
 }
 

@@ -563,6 +563,26 @@ func TestCommanderRepo_SetAuthentikLink_RoundTrip(t *testing.T) {
 	require.Equal(t, userID, *row.AuthentikUserID)
 }
 
+func TestCommanderRepo_GetCommanderByAuthentikUserID_RequiresApprovedLink(t *testing.T) {
+	repo := setupRepo(t)
+	lookup := repo.(store.CommanderAuthentikLookup)
+	ctx := context.Background()
+
+	_, err := repo.UpsertCommander(ctx, "F001", "CMDR One", "frontier")
+	require.NoError(t, err)
+	userID := uuid.New()
+	require.NoError(t, repo.SetAuthentikLink(ctx, "F001", &userID))
+
+	_, err = lookup.GetCommanderByAuthentikUserID(ctx, userID)
+	require.ErrorIs(t, err, store.ErrCommanderNotFound)
+
+	require.NoError(t, repo.SetApproved(ctx, "F001", true))
+	row, err := lookup.GetCommanderByAuthentikUserID(ctx, userID)
+	require.NoError(t, err)
+	require.Equal(t, "F001", row.FID)
+	require.True(t, row.Approved)
+}
+
 func TestCommanderRepo_SetAuthentikLink_Unset_ClearsColumn(t *testing.T) {
 	repo := setupRepo(t)
 	ctx := context.Background()

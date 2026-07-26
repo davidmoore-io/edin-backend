@@ -1,5 +1,6 @@
 bin/
 dev-keys/
+.dev-state/
 .env.local
 .venv/
 .vault_pass.txt

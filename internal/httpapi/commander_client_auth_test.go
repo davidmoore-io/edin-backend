@@ -292,6 +292,11 @@ func TestClientAuthCallback_DesktopFlow_StoresTokenForPolling(t *testing.T) {
 	// Callback must return the HTML success page.
 	require.Equal(t, http.StatusOK, rr.Code, "desktop callback must return 200; body: %s", rr.Body.String())
 	assert.Contains(t, rr.Body.String(), "Authentication successful")
+	assert.Contains(t, rr.Body.String(), `name="viewport"`)
+	assert.Contains(t, rr.Body.String(), "data:image/png;base64,")
+	assert.Contains(t, rr.Body.String(), "Secure link established")
+	assert.Equal(t, "no-store", rr.Header().Get("Cache-Control"))
+	assert.Contains(t, rr.Header().Get("Content-Security-Policy"), "img-src data:")
 
 	// Session must now be marked complete with a token.
 	raw, err := mr.Get(clientAuthSessionKey(sessionID))

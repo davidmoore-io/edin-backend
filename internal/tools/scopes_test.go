@@ -1,6 +1,8 @@
 package tools
 
 import (
+	"context"
+	"strings"
 	"testing"
 
 	"github.com/edin-space/edin-backend/internal/authz"
@@ -134,6 +136,28 @@ func TestToolScopes_CommanderTools_RequireCommanderData(t *testing.T) {
 		if got := toolScopes[name]; got != authz.ScopeCommanderData {
 			t.Errorf("toolScopes[%q] = %q, want %q", name, got, authz.ScopeCommanderData)
 		}
+	}
+}
+
+func TestExecutor_CommanderToolsRequireCopilotDerivedScope(t *testing.T) {
+	executor := &Executor{}
+
+	godOnly := authz.ContextWithScopes(
+		context.Background(),
+		authz.ScopesForGroups([]string{"kaine-god"})...,
+	)
+	_, err := executor.Invoke(godOnly, string(ToolCommanderEvents), map[string]any{})
+	if err == nil || !strings.Contains(err.Error(), "not available in this context") {
+		t.Fatalf("god-only commander invocation error = %v, want scope rejection", err)
+	}
+
+	godAndCopilot := authz.ContextWithScopes(
+		context.Background(),
+		authz.ScopesForGroups([]string{"kaine-god", "edin-copilot"})...,
+	)
+	_, err = executor.Invoke(godAndCopilot, string(ToolCommanderEvents), map[string]any{})
+	if err == nil || !strings.Contains(err.Error(), "commander repository not available") {
+		t.Fatalf("god+copilot commander invocation error = %v, want invocation past scope gate", err)
 	}
 }
 

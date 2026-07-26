@@ -89,6 +89,13 @@ type CommanderRepository interface {
 	GetCommanderAsAdmin(ctx context.Context, fid string) (*CommanderRow, error)
 }
 
+// CommanderAuthentikLookup resolves the commander linked to an Authentik user.
+// It is a separate optional interface so focused repository fakes do not need
+// an unrelated admin lookup method. The PostgreSQL implementation supports it.
+type CommanderAuthentikLookup interface {
+	GetCommanderByAuthentikUserID(ctx context.Context, userID uuid.UUID) (*CommanderRow, error)
+}
+
 // pgCommanderRepository is the PostgreSQL/TimescaleDB implementation.
 type pgCommanderRepository struct {
 	pool   *pgxpool.Pool
@@ -631,6 +638,42 @@ func (r *pgCommanderRepository) GetCommanderAsAdmin(ctx context.Context, fid str
 			return nil, err
 		}
 		return nil, fmt.Errorf("get commander as admin fid=%s: %w", fid, err)
+	}
+	return row, nil
+}
+
+// GetCommanderByAuthentikUserID resolves an approved commander by the stable
+// Authentik UUID stored in commander.commanders. It is used to add the
+// authenticated commander's FID to Kaine chat when the user also has Copilot
+// access.
+func (r *pgCommanderRepository) GetCommanderByAuthentikUserID(ctx context.Context, userID uuid.UUID) (*CommanderRow, error) {
+	var row *CommanderRow
+	err := r.withAdminTx(ctx, func(tx pgx.Tx) error {
+		var c CommanderRow
+		err := tx.QueryRow(ctx, `
+			SELECT id, fid, cmdr_name, platform, first_seen_at, last_seen_at,
+			       authentik_user_id, approved
+			FROM commander.commanders
+			WHERE authentik_user_id = $1
+			  AND approved = true`,
+			userID,
+		).Scan(&c.ID, &c.FID, &c.CmdrName, &c.Platform,
+			&c.FirstSeenAt, &c.LastSeenAt,
+			&c.AuthentikUserID, &c.Approved)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return ErrCommanderNotFound
+		}
+		if err != nil {
+			return fmt.Errorf("query commander by authentik user id: %w", err)
+		}
+		row = &c
+		return nil
+	})
+	if err != nil {
+		if errors.Is(err, ErrCommanderNotFound) {
+			return nil, err
+		}
+		return nil, fmt.Errorf("get commander by authentik user id=%s: %w", userID, err)
 	}
 	return row, nil
 }

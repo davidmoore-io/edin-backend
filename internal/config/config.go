@@ -402,7 +402,7 @@ func loadAnthropicConfig() (AnthropicConfig, error) {
 		return AnthropicConfig{}, err
 	}
 
-	model := getenvDefault("ANTHROPIC_MODEL", "claude-opus-4-6")
+	model := getenvDefault("ANTHROPIC_MODEL", "claude-sonnet-5")
 	maxTokens := getenvInt("ANTHROPIC_MAX_TOKENS", 16384)
 
 	return AnthropicConfig{

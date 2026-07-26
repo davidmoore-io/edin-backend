@@ -2,7 +2,7 @@
 
 Date: 2026-07-25
 
-Status: **MR0-MR7 COMPLETE LOCALLY 2026-07-25 - STOP BEFORE MR8**
+Status: **MR0-MR7 COMPLETE LOCALLY 2026-07-25 - MR7A REQUIRED BEFORE MR8**
 
 Owners:
 
@@ -45,6 +45,9 @@ BLOCKED. Two changes follow:
    (4.5), diagnostics allowlist invariant and deploy-ordering (4.6, MR8), the
    MR6/MR9 gate scope corrections, the Kaine system prompt correction, the
    MR-D3 wording correction, and a new MR9 gate.
+3. **2026-07-25 local-chat finding:** Anthropic now rejects the request's
+   `compact_20260112` context edit. MR7A (section 9) is a required compatibility
+   gate before MR8 and covers both streaming and non-streaming assistant paths.
 
 ## 0. Verified Baseline
 
@@ -831,6 +834,8 @@ This plan is complete only when all are true:
 - live-code grep contains no Memgraph reference outside the named accepted
   residuals (2.2a) and explicitly retained historical evidence during MR8,
   and none in `edin-backend` after MR9;
+- MR7A's Anthropic compatibility tests and authenticated local web/streaming
+  chat smoke checks pass against the configured model;
 - all docs describe PostgreSQL `galaxy.*` as the sole current-galaxy source.
 
 ## 8. Deferred: Galaxy Visualiser Relaunch Register
@@ -861,3 +866,165 @@ work. Un-ComingSoon-ing `/galaxy` requires a new plan covering:
    this plan.
 6. **Viewport API**: decide whether a server-side viewport query is needed at
    all (the binary loader superseded it); if yes, a capped-count contract.
+
+## 9. MR7A - Anthropic API Compatibility (Required Before MR8)
+
+Added 2026-07-25 after the first authenticated local Kaine chat request exposed
+an upstream API contract change. This is part of the MR7 application regression
+surface and MUST complete before MR8. It does not reopen the relational-read or
+Memgraph dispositions in this plan.
+
+### 9.1 Observed failure and scope
+
+The local request reached Anthropic and received HTTP 400
+`invalid_request_error`:
+
+```text
+context_management.edits.0: Input tag 'compact_20260112' found using 'type'
+does not match any of the expected tags: 'clear_thinking_20251015',
+'clear_tool_uses_20250919'
+```
+
+This is authenticated schema rejection, not an absent or invalid API key.
+
+Both assistant execution paths construct the rejected edit:
+
+- `internal/assistant/runner.go` (`RunWithProgress`, used by Kaine web chat);
+- `internal/assistant/runner_streaming.go` (`RunWithStreaming`, used by the
+  streaming/client path).
+
+Both currently send the `compact-2026-01-12` and
+`context-management-2025-06-27` beta headers and include
+`compact_20260112` plus `clear_tool_uses_20250919` in
+`context_management.edits`. The repository pins
+`github.com/anthropics/anthropic-sdk-go v1.22.1`; the current upstream SDK is
+newer, so generated SDK types are not proof that the live API still accepts a
+request.
+
+At the time of the original failure, the configured model was
+`claude-opus-4-6`. The current compaction documentation explicitly lists that
+model as supported. Live one-token probes on 2026-07-25 proved all three exact
+request shapes against `claude-opus-4-6`:
+
+| Request | Result |
+|---|---|
+| `compact-2026-01-12` + `compact_20260112` only | accepted |
+| `context-management-2025-06-27` + `clear_tool_uses_20250919` only | accepted |
+| both beta headers + both edits | accepted |
+
+The observed 400 is therefore not evidence that Opus 4.6 or server-side
+compaction is unsupported. Treat it as a request-path/runtime compatibility
+failure until the rebuilt application sends and records the same accepted
+wire shape.
+
+David changed the configured model to `claude-sonnet-5` on 2026-07-25. Sonnet
+5 is also explicitly listed as supporting server-side compaction. The MR7A
+live gate applies to the new configured model; the Opus results above remain
+historical evidence and do not substitute for the Sonnet 5 gate.
+
+The runtime-path cause was subsequently identified: quick-dev inherited
+`ANTHROPIC_BASE_URL=http://127.0.0.1:8787` from its parent process and sent the
+failing request to that local compatibility proxy, while the successful probes
+went directly to Anthropic. Development configuration now pins
+`ANTHROPIC_BASE_URL=https://api.anthropic.com`. The application smoke gate must
+record the effective host so this class of inherited-environment drift cannot
+recur silently.
+
+The ordinary non-beta `internal/anthropic.Client.Complete` path does not send
+context management and is outside this specific failure.
+
+The code review against
+`supporting-docs/anthropic/compaction-api-readme.md` found two independent
+contract violations that must be fixed even after the 400 disappears:
+
+1. `extractBetaCompactionBlocks` and `sanitizeBetaAssistantMessage` convert a
+   typed `compaction` block into an ordinary text block. The API contract
+   requires the compaction block to be round-tripped as a compaction block;
+   only then does the API ignore content before it.
+2. `RunWithStreaming` does not capture `compaction` block start/delta events or
+   a compaction stop reason. The streaming/client path therefore cannot
+   preserve or continue from compaction.
+
+Session persistence is currently `llm.Message{Role, Content}` and cannot store
+a typed compaction block. MR7A must either extend the persisted message
+contract to retain typed Anthropic content safely or introduce an explicit,
+tested compacted-session state. Re-emitting the summary as ordinary assistant
+text while retaining the old history is forbidden.
+
+### 9.2 Pinned resolution procedure
+
+1. Record the current configured model, SDK version, exact beta headers, edit
+   types, and redacted API error under
+   `docs/plans/2026-07-25-memgraph-api-retirement/anthropic-compat.md`.
+   Never record the API key or complete user conversation.
+2. Check the current official Anthropic API documentation and current Go SDK
+   release. Upgrade the SDK in an isolated change if required to represent the
+   current API contract; run the full build/test gate before changing request
+   behavior.
+3. Add one shared request-builder helper used by BOTH `RunWithProgress` and
+   `RunWithStreaming`. Duplicated beta headers, thresholds, or edit
+   construction are forbidden after MR7A.
+4. Retain both currently verified strategies:
+   - `compact_20260112` under `compact-2026-01-12`;
+   - `clear_tool_uses_20250919` under
+     `context-management-2025-06-27`.
+   Do not send `clear_thinking_20251015` unless extended thinking is enabled
+   and a fixture proves thinking-block round trips.
+5. Capture the effective outbound URL, model, beta values, and edit type names
+   in a redacted request-recorder test. Assert the rebuilt local application
+   matches the accepted live probe. Do not log headers generally because the
+   same request carries the API key.
+6. Preserve every compaction response block as its typed SDK parameter
+   (`ToParam` or the current SDK equivalent), including across persisted user
+   turns. Both streaming and non-streaming paths must implement the documented
+   continuation behavior. The compaction instructions must explicitly say not
+   to call tools while summarizing, because tools are present on these
+   requests.
+7. Account for `usage.iterations` when recording usage or cost. Top-level usage
+   excludes compaction iterations.
+8. Do not retry HTTP 400 schema errors. Return a sanitized user-facing message
+   while logging the Anthropic request ID, status, and structured error without
+   credentials or conversation content.
+
+### 9.3 Tests and live gate
+
+Required automated tests:
+
+- the shared builder emits only the pinned, currently supported beta headers
+  and edit tags;
+- streaming and non-streaming paths use byte-equivalent context-management
+  configuration;
+- rejected/deprecated edit tags cannot reappear as string constants outside
+  explicitly historical documentation;
+- an Anthropic 400 is surfaced once and is not retried;
+- existing tool filtering, tool-result pairing, prompt caching, and streaming
+  callbacks remain unchanged;
+- a multi-turn fixture proves the complete typed compaction block is appended,
+  persisted, restored, and round-tripped rather than reduced to text;
+- a streaming fixture proves `compaction` start/delta/stop handling and
+  continuation;
+- usage accounting includes compaction iterations without double-counting the
+  top-level message usage.
+
+Gate:
+
+```bash
+GOWORK=off go build ./...
+GOWORK=off go test -count=1 ./internal/assistant ./internal/anthropic ./internal/httpapi ./internal/mcp
+GOWORK=off go test -count=1 ./...
+rg -n 'compact_20260112|compact-2026-01-12' \
+  --glob '!docs/**' --glob '!deprecated/**' .
+```
+
+Every grep hit must be in the shared builder or its focused tests.
+
+Then exercise locally with the real configured model and local Authentik:
+
+1. new Kaine web-chat session sends a plain text turn;
+2. a second turn proves conversation continuity;
+3. one tool-using turn completes its tool call and response;
+4. the streaming/client path completes a text turn and a tool-using turn;
+5. backend logs contain no 4xx response, deprecated edit tag, credential, or
+   full conversation body.
+
+Store redacted results in `anthropic-compat.md`. Any failure stops MR8.

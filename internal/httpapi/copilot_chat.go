@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
 
 	"github.com/edin-space/edin-backend/internal/assistant"
@@ -39,6 +40,30 @@ type copilotChatSession struct {
 	writeMu    sync.Mutex
 	done       chan struct{}
 	lastActive time.Time
+	stateMu    sync.Mutex
+	turnActive bool
+}
+
+func (cs *copilotChatSession) beginTurn() bool {
+	cs.stateMu.Lock()
+	defer cs.stateMu.Unlock()
+	if cs.turnActive {
+		return false
+	}
+	cs.turnActive = true
+	return true
+}
+
+func (cs *copilotChatSession) endTurn() {
+	cs.stateMu.Lock()
+	cs.turnActive = false
+	cs.stateMu.Unlock()
+}
+
+func (cs *copilotChatSession) hasActiveTurn() bool {
+	cs.stateMu.Lock()
+	defer cs.stateMu.Unlock()
+	return cs.turnActive
 }
 
 // send serialises a ChatWSMessage and writes it to the WebSocket under the
@@ -178,6 +203,9 @@ func (s *Server) handleCopilotChatWebSocket(w http.ResponseWriter, r *http.Reque
 		for {
 			select {
 			case <-pingTicker.C:
+				if err := session.send(ChatWSMessage{Type: ChatWSTypeHeartbeat}); err != nil {
+					return
+				}
 				session.writeMu.Lock()
 				conn.SetWriteDeadline(time.Now().Add(copilotCfg.WSWriteDeadline))
 				if err := conn.WriteMessage(websocket.PingMessage, nil); err != nil {
@@ -215,11 +243,12 @@ func (s *Server) handleCopilotChatWebSocket(w http.ResponseWriter, r *http.Reque
 
 		// Parse incoming message.
 		var incoming struct {
-			Type      string       `json:"type"`
-			Content   string       `json:"content"`
-			ImageData string       `json:"image_data"`
-			SessionID string       `json:"session_id"`
-			Voice     *VoiceConfig `json:"voice"`
+			Type            string       `json:"type"`
+			Content         string       `json:"content"`
+			ImageData       string       `json:"image_data"`
+			SessionID       string       `json:"session_id"`
+			ClientMessageID string       `json:"client_message_id"`
+			Voice           *VoiceConfig `json:"voice"`
 		}
 		if err := json.Unmarshal(message, &incoming); err != nil {
 			session.send(ChatWSMessage{
@@ -233,16 +262,130 @@ func (s *Server) handleCopilotChatWebSocket(w http.ResponseWriter, r *http.Reque
 		switch incoming.Type {
 		case "user_message":
 			if incoming.Content != "" || incoming.ImageData != "" {
-				s.handleCopilotMessage(session, incoming.Content, incoming.ImageData, sessionRunner, incoming.Voice)
+				s.acceptCopilotMessage(session, incoming.ClientMessageID, incoming.Content,
+					incoming.ImageData, sessionRunner, incoming.Voice)
 			}
 		case "new_chat":
-			s.handleCopilotNewChat(session)
+			if session.hasActiveTurn() {
+				session.send(ChatWSMessage{
+					Type:    ChatWSTypeError,
+					Content: "wait for the current response before starting a new chat",
+					Error:   true,
+				})
+			} else {
+				s.handleCopilotNewChat(session)
+			}
 		case "switch_session":
 			if incoming.SessionID != "" {
-				s.handleCopilotSwitchSession(session, incoming.SessionID)
+				if session.hasActiveTurn() {
+					session.send(ChatWSMessage{
+						Type:    ChatWSTypeError,
+						Content: "wait for the current response before switching chats",
+						Error:   true,
+					})
+				} else {
+					s.handleCopilotSwitchSession(session, incoming.SessionID)
+				}
 			}
+		case "sync_session":
+			s.handleCopilotSyncSession(session)
 		}
 	}
+}
+
+func (s *Server) acceptCopilotMessage(
+	session *copilotChatSession,
+	clientMessageID string,
+	content string,
+	imageData string,
+	sessionRunner *assistant.Runner,
+	voiceCfg *VoiceConfig,
+) {
+	if _, err := uuid.Parse(clientMessageID); err != nil {
+		session.send(ChatWSMessage{
+			Type:            ChatWSTypeError,
+			Content:         "invalid or missing client message id",
+			ClientMessageID: clientMessageID,
+			Error:           true,
+		})
+		return
+	}
+	if !session.beginTurn() {
+		session.send(ChatWSMessage{
+			Type:            ChatWSTypeError,
+			Content:         "another message is still being processed",
+			ClientMessageID: clientMessageID,
+			Error:           true,
+		})
+		return
+	}
+
+	storedContent := content
+	if storedContent == "" && imageData != "" {
+		storedContent = "[image attached]"
+	}
+	userMsg := llm.Message{
+		Role:            "user",
+		Content:         storedContent,
+		CreatedAt:       time.Now().UTC(),
+		ClientMessageID: clientMessageID,
+	}
+
+	store, ok := s.llmStore.(llm.IdempotentSessionBackend)
+	if !ok {
+		session.endTurn()
+		session.send(ChatWSMessage{
+			Type:            ChatWSTypeError,
+			Content:         "chat persistence does not support reliable delivery",
+			ClientMessageID: clientMessageID,
+			Error:           true,
+		})
+		return
+	}
+
+	updated, appended, err := store.AppendMessageOnce(session.sessionID, userMsg)
+	if err != nil {
+		session.endTurn()
+		s.logger.Error(fmt.Sprintf("copilot_message_persist_error fid=%s session=%s", session.user.FID, session.sessionID), err)
+		session.send(ChatWSMessage{
+			Type:            ChatWSTypeError,
+			Content:         "message could not be stored",
+			ClientMessageID: clientMessageID,
+			Error:           true,
+		})
+		return
+	}
+
+	session.stateMu.Lock()
+	session.history = updated.Messages
+	historyForAPI := append([]llm.Message(nil), updated.Messages...)
+	session.stateMu.Unlock()
+
+	session.send(ChatWSMessage{
+		Type:            ChatWSTypeMessageAck,
+		SessionID:       session.sessionID,
+		ClientMessageID: clientMessageID,
+		Duplicate:       !appended,
+	})
+
+	if !appended {
+		session.endTurn()
+		session.send(ChatWSMessage{
+			Type:      ChatWSTypeChatHistory,
+			SessionID: session.sessionID,
+			Messages:  updated.Messages,
+		})
+		return
+	}
+
+	if len(historyForAPI) > 0 {
+		historyForAPI = historyForAPI[:len(historyForAPI)-1]
+	}
+	go func() {
+		defer session.endTurn()
+		s.handleCopilotMessage(session, clientMessageID, content, imageData,
+			historyForAPI, sessionRunner, voiceCfg)
+	}()
 }
 
 // handleCopilotNewChat creates a fresh session for the commander and signals
@@ -307,6 +450,30 @@ func (s *Server) handleCopilotSwitchSession(session *copilotChatSession, targetS
 	})
 }
 
+// handleCopilotSyncSession returns the latest durable history for the current
+// session without changing the commander's active-session pointer. The client
+// uses it after reconnecting while an accepted turn may still be finishing on
+// the server.
+func (s *Server) handleCopilotSyncSession(session *copilotChatSession) {
+	current, ok := s.llmStore.Get(session.sessionID)
+	if !ok || current == nil || current.UserID != session.user.FID {
+		session.send(ChatWSMessage{
+			Type:    ChatWSTypeError,
+			Content: "current chat session is not available",
+			Error:   true,
+		})
+		return
+	}
+	session.stateMu.Lock()
+	session.history = current.Messages
+	session.stateMu.Unlock()
+	session.send(ChatWSMessage{
+		Type:      ChatWSTypeChatHistory,
+		SessionID: session.sessionID,
+		Messages:  current.Messages,
+	})
+}
+
 // handleCopilotMessage processes a user message for the copilot and streams the response.
 // splitImageDataURI parses a "data:image/png;base64,XXXX" data URI into the raw
 // base64 payload and the media type (e.g. "image/png"). If s is not a data URI,
@@ -325,38 +492,26 @@ func splitImageDataURI(s string) (b64 string, mediaType string) {
 	return s, mediaType
 }
 
-func (s *Server) handleCopilotMessage(session *copilotChatSession, content string, imageData string, sessionRunner *assistant.Runner, voiceCfg *VoiceConfig) {
+func (s *Server) handleCopilotMessage(
+	session *copilotChatSession,
+	clientMessageID string,
+	content string,
+	imageData string,
+	historyForAPI []llm.Message,
+	sessionRunner *assistant.Runner,
+	voiceCfg *VoiceConfig,
+) {
 	s.logger.Info(fmt.Sprintf("copilot_message fid=%s session=%s message=\"%s\" image=%t", session.user.FID, session.sessionID, truncate(content, 160), imageData != ""))
 
-	// Snapshot the PRIOR conversation for the API call BEFORE adding the current
-	// message. RunWithStreaming appends the current user message itself (see
-	// buildBetaMessageParams in internal/assistant), so historyForAPI must
-	// contain only prior turns — otherwise the user's message is sent to the
-	// model twice and the assistant sees every message duplicated.
+	// RunWithStreaming appends the current user message itself, so the accepted
+	// user turn was removed from this snapshot by acceptCopilotMessage.
 	historyLimit := s.cfg.Copilot.MessageHistoryLimit
 	if historyLimit <= 0 {
 		historyLimit = 20
 	}
-	historyForAPI := session.history
 	if len(historyForAPI) > historyLimit {
 		historyForAPI = historyForAPI[len(historyForAPI)-historyLimit:]
 	}
-
-	// Now add the user message to history and persist it (text only). An attached
-	// image is sent on this turn (below) but not stored — send-per-turn keeps
-	// base64 image data out of the persisted history. For an image-only message,
-	// store a placeholder so history has no empty user turn.
-	storedContent := content
-	if storedContent == "" && imageData != "" {
-		storedContent = "[image attached]"
-	}
-	userMsg := llm.Message{
-		Role:      "user",
-		Content:   storedContent,
-		CreatedAt: time.Now().UTC(),
-	}
-	session.history = append(session.history, userMsg)
-	s.llmStore.AppendMessage(session.sessionID, userMsg)
 
 	// Decode the optional attached image (client sends a "data:image/...;base64,"
 	// data URI). nil when no image was attached.
@@ -368,8 +523,9 @@ func (s *Server) handleCopilotMessage(session *copilotChatSession, content strin
 
 	// Send thinking indicator.
 	session.send(ChatWSMessage{
-		Type:    ChatWSTypeThinking,
-		Content: "Processing your question...",
+		Type:            ChatWSTypeThinking,
+		Content:         "Processing your question...",
+		ClientMessageID: clientMessageID,
 	})
 
 	// Set up context with copilot authorization scopes and commander FID for
@@ -427,8 +583,9 @@ func (s *Server) handleCopilotMessage(session *copilotChatSession, content strin
 			go func() {
 				for chunk := range audioCh {
 					session.send(ChatWSMessage{ //nolint:errcheck
-						Type:      ChatWSTypeAudioChunk,
-						AudioData: base64.StdEncoding.EncodeToString(chunk),
+						Type:            ChatWSTypeAudioChunk,
+						AudioData:       base64.StdEncoding.EncodeToString(chunk),
+						ClientMessageID: clientMessageID,
 					})
 				}
 			}()
@@ -441,26 +598,29 @@ func (s *Server) handleCopilotMessage(session *copilotChatSession, content strin
 		switch event.Type {
 		case assistant.ProgressThinking:
 			session.send(ChatWSMessage{
-				Type:    ChatWSTypeThinking,
-				Content: event.Message,
+				Type:            ChatWSTypeThinking,
+				Content:         event.Message,
+				ClientMessageID: clientMessageID,
 			})
 		case assistant.ProgressToolStart:
 			session.send(ChatWSMessage{
-				Type:     ChatWSTypeToolStart,
-				ToolName: event.ToolName,
-				ToolID:   event.ToolID,
-				Content:  event.Message,
+				Type:            ChatWSTypeToolStart,
+				ToolName:        event.ToolName,
+				ToolID:          event.ToolID,
+				Content:         event.Message,
+				ClientMessageID: clientMessageID,
 			})
 		case assistant.ProgressToolComplete:
 			// Count tool calls on completion so each invocation is counted once.
 			pm.copilotToolCallsTotal.WithLabelValues(event.ToolName).Inc()
 			session.send(ChatWSMessage{
-				Type:     ChatWSTypeToolComplete,
-				ToolName: event.ToolName,
-				ToolID:   event.ToolID,
-				Content:  event.Message,
-				Duration: event.Message,
-				Error:    event.Error,
+				Type:            ChatWSTypeToolComplete,
+				ToolName:        event.ToolName,
+				ToolID:          event.ToolID,
+				Content:         event.Message,
+				Duration:        event.Message,
+				Error:           event.Error,
+				ClientMessageID: clientMessageID,
 			})
 		}
 	}
@@ -473,14 +633,24 @@ func (s *Server) handleCopilotMessage(session *copilotChatSession, content strin
 		OnSpeakChunk: func(chunk string) {
 			// speak_start signals Flutter to open a fresh bubble for this segment.
 			// Ignored by the client when there is no existing content (first bubble).
-			session.send(ChatWSMessage{Type: ChatWSTypeSpeakStart}) //nolint:errcheck
-			session.send(ChatWSMessage{Type: ChatWSTypeTextDelta, Content: chunk, Channel: "speak"}) //nolint:errcheck
+			session.send(ChatWSMessage{Type: ChatWSTypeSpeakStart, ClientMessageID: clientMessageID}) //nolint:errcheck
+			session.send(ChatWSMessage{                                                               //nolint:errcheck
+				Type:            ChatWSTypeTextDelta,
+				Content:         chunk,
+				Channel:         "speak",
+				ClientMessageID: clientMessageID,
+			})
 			if voiceEnabled && vs != nil {
 				vs.SendSpeakContent(chunk) //nolint:errcheck
 			}
 		},
 		OnDataChunk: func(chunk string) {
-			session.send(ChatWSMessage{Type: ChatWSTypeTextDelta, Content: chunk, Channel: "data"}) //nolint:errcheck
+			session.send(ChatWSMessage{ //nolint:errcheck
+				Type:            ChatWSTypeTextDelta,
+				Content:         chunk,
+				Channel:         "data",
+				ClientMessageID: clientMessageID,
+			})
 			// data channel NOT sent to ElevenLabs
 		},
 		OnProgress: onProgress,
@@ -490,9 +660,10 @@ func (s *Server) handleCopilotMessage(session *copilotChatSession, content strin
 	if runErr != nil {
 		s.logger.Error(fmt.Sprintf("copilot_run_error fid=%s session=%s", session.user.FID, session.sessionID), runErr)
 		session.send(ChatWSMessage{
-			Type:    ChatWSTypeError,
-			Content: "I had trouble answering that.",
-			Error:   true,
+			Type:            ChatWSTypeError,
+			Content:         "I had trouble answering that.",
+			ClientMessageID: clientMessageID,
+			Error:           true,
 		})
 		return
 	}
@@ -509,21 +680,36 @@ func (s *Server) handleCopilotMessage(session *copilotChatSession, content strin
 		Role:      "assistant",
 		Content:   speakOnly,
 		CreatedAt: time.Now().UTC(),
+		InReplyTo: clientMessageID,
 	}
-	session.history = append(session.history, assistantMsg)
-	s.llmStore.AppendMessage(session.sessionID, assistantMsg)
+	updated, appendErr := s.llmStore.AppendMessage(session.sessionID, assistantMsg)
+	if appendErr != nil {
+		s.logger.Error(fmt.Sprintf("copilot_reply_persist_error fid=%s session=%s", session.user.FID, session.sessionID), appendErr)
+		session.send(ChatWSMessage{
+			Type:            ChatWSTypeError,
+			Content:         "The answer was generated but could not be stored. Please retry.",
+			ClientMessageID: clientMessageID,
+			Error:           true,
+		})
+		return
+	}
+	session.stateMu.Lock()
+	session.history = updated.Messages
+	session.stateMu.Unlock()
 
 	// Send final assembled text frame (for clients that prefer complete responses).
 	session.send(ChatWSMessage{
-		Type:     ChatWSTypeText,
-		Content:  reply,
-		Duration: duration.Round(time.Millisecond).String(),
+		Type:            ChatWSTypeText,
+		Content:         reply,
+		Duration:        duration.Round(time.Millisecond).String(),
+		ClientMessageID: clientMessageID,
 	})
 
 	// Send done signal.
 	session.send(ChatWSMessage{
-		Type:      ChatWSTypeDone,
-		SessionID: session.sessionID,
+		Type:            ChatWSTypeDone,
+		SessionID:       session.sessionID,
+		ClientMessageID: clientMessageID,
 	})
 
 	s.logger.Info(fmt.Sprintf("copilot_complete fid=%s session=%s duration=%s reply=\"%s\"", session.user.FID, session.sessionID, duration, truncate(reply, 200)))

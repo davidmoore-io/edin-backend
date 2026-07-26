@@ -143,6 +143,23 @@ func (m *linkTestRepo) GetCommanderAsAdmin(_ context.Context, fid string) (*stor
 	return &rowCopy, nil
 }
 
+func (m *linkTestRepo) GetCommanderByAuthentikUserID(_ context.Context, userID uuid.UUID) (*store.CommanderRow, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.getErr != nil {
+		return nil, m.getErr
+	}
+	for _, row := range m.rowByFID {
+		if row.Approved && row.AuthentikUserID != nil && *row.AuthentikUserID == userID {
+			rowCopy := *row
+			idCopy := *row.AuthentikUserID
+			rowCopy.AuthentikUserID = &idCopy
+			return &rowCopy, nil
+		}
+	}
+	return nil, store.ErrCommanderNotFound
+}
+
 func (m *linkTestRepo) SetAuthentikLink(_ context.Context, fid string, userID *uuid.UUID) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()

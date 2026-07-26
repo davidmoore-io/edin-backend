@@ -12,7 +12,8 @@ import "sort"
 //     so chat-tier access implies mining-tool access. kaine-approved
 //     differs from kaine-chat in WRITE access to objectives /
 //     mining-maps (gated by middleware), not in tool calls.
-//     kaine-god is the superset (admin + llm_operator + everything).
+//     kaine-god adds admin and operations access, but does not imply access
+//     to a commander's private journal. That requires an edin-copilot group.
 //
 //   - edin-copilot grants copilot_chat + galaxy read + the commander's
 //     own data. edin-copilot-trusted layers on kaine_mining so trusted
@@ -28,7 +29,6 @@ var groupScopes = map[string][]Scope{
 		ScopeKaineChat,
 		ScopeGalaxyRead,
 		ScopeKaineMining,
-		ScopeCommanderData,
 	},
 	"kaine-approved": {
 		ScopeKaineChat,

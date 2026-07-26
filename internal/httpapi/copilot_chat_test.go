@@ -181,6 +181,62 @@ func TestCopilotWS_ValidToken_Connected(t *testing.T) {
 	}
 }
 
+func TestCopilotWS_AcksDurableMessageAndDeduplicatesReplay(t *testing.T) {
+	s, ns := newCopilotWSTestServer()
+	user := &CommanderChatUser{FID: "F2504", Name: "Cmdr Test"}
+	nonce := ns.Issue(user, 10*time.Second)
+
+	ts := httptest.NewServer(http.HandlerFunc(s.handleCopilotChatWebSocket))
+	defer ts.Close()
+	conn := dialCopilotWSTestServer(t, ts)
+	defer conn.Close()
+
+	require.NoError(t, conn.WriteJSON(map[string]string{
+		"type": "auth", "token": nonce,
+	}))
+	var connected ChatWSMessage
+	require.NoError(t, conn.ReadJSON(&connected))
+	require.Equal(t, ChatWSTypeConnected, connected.Type)
+
+	const messageID = "33333333-3333-4333-8333-333333333333"
+	frame := map[string]string{
+		"type":              "user_message",
+		"client_message_id": messageID,
+		"content":           "persist this",
+	}
+	require.NoError(t, conn.WriteJSON(frame))
+
+	var ack ChatWSMessage
+	require.NoError(t, conn.ReadJSON(&ack))
+	require.Equal(t, ChatWSTypeMessageAck, ack.Type)
+	require.Equal(t, messageID, ack.ClientMessageID)
+	require.False(t, ack.Duplicate)
+
+	stored, ok := s.llmStore.Get(connected.SessionID)
+	require.True(t, ok)
+	require.Len(t, stored.Messages, 1)
+	require.Equal(t, messageID, stored.Messages[0].ClientMessageID)
+
+	// The test runner has no model client, so wait for the expected terminal
+	// error before replaying on the same connection.
+	for {
+		var response ChatWSMessage
+		require.NoError(t, conn.ReadJSON(&response))
+		if response.Type == ChatWSTypeError {
+			break
+		}
+	}
+
+	require.NoError(t, conn.WriteJSON(frame))
+	require.NoError(t, conn.ReadJSON(&ack))
+	require.Equal(t, ChatWSTypeMessageAck, ack.Type)
+	require.True(t, ack.Duplicate)
+
+	stored, ok = s.llmStore.Get(connected.SessionID)
+	require.True(t, ok)
+	require.Len(t, stored.Messages, 1)
+}
+
 // TestCopilotWS_ScopesFromNonceReachToolContext verifies that scopes carried
 // on a CommanderChatUser stashed in the nonce store reach the per-message
 // tool-evaluation context exactly as authored — completing the chain

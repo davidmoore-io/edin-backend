@@ -92,7 +92,7 @@ Their ability to invoke a given tool = `toolScopes[tool] ∈ scopes`.
 
 | Authentik group | Granted scopes |
 |---|---|
-| `kaine-god` | admin, llm_operator, kaine_chat, galaxy_read, kaine_mining, commander_data |
+| `kaine-god` | admin, llm_operator, kaine_chat, galaxy_read, kaine_mining |
 | `kaine-approved` | kaine_chat, galaxy_read, kaine_mining |
 | `kaine-chat` | kaine_chat, galaxy_read, kaine_mining |
 | `kaine-chat-debug` | kaine_chat, galaxy_read, kaine_mining (+ debug tool-result visibility) |
@@ -101,6 +101,11 @@ Their ability to invoke a given tool = `toolScopes[tool] ∈ scopes`.
 
 Unknown groups are ignored silently — future Authentik groups don't break the
 system; they just grant nothing until the map is extended.
+
+Scopes compose across groups. A Kaine user who is also in `edin-copilot`
+receives commander journal/location tools in Kaine chat. `kaine-god` grants
+operations tools but does not independently grant access to private commander
+data.
 
 ### Default commander scope set
 
@@ -1623,7 +1628,7 @@ no such variable. Existing users continue to log in via the Authentik path.
 | Task 4 migration fails on prod DB | Medium | Migration is additive — reversible with `ALTER TABLE DROP COLUMN`. Embedded migrator runs on backend startup; failure blocks startup (visible, not silent). Test against testcontainers first; dry-run on any available non-prod DB. |
 | Authentik API call in the callback path adds latency or fails | Medium | 2s timeout. Deny-closed on error (`reason=authentik_unreachable`). Latency histogram metric lets us SLO this. |
 | Admin accidentally approves the wrong FID | Medium | AdminPage shows FID + commander name + last-seen. Every mutating endpoint logs admin identity + action. Unlink/deny is one click. |
-| Scope claim inflates JWT size beyond sensible | Low | Even `kaine-god` with every scope is ~120 bytes. Cookie + header limits are far higher. |
+| Scope claim inflates JWT size beyond sensible | Low | Even a user in both `kaine-god` and `edin-copilot` has a small scope claim. Cookie + header limits are far higher. |
 | A commander is approved in Authentik but the JWT (24h life) still grants old scopes | Low | Scope ADDITIONS need no revocation (next login picks them up; commander may wait or logout). Scope REMOVALS are forced-revoked via `revokeAllSessions` on Deny / Unlink / group-remove. Documented in runbook. |
 | Authentik user deleted while a commander is linked to them | Medium | Dedicated `authentik_user_missing` reason code + deny-closed. Admin UI surfaces broken link with a "Re-link or unlink" CTA. Distinct from `authentik_unreachable` so alerting doesn't conflate the two states. |
 | Admin accidentally denies or unlinks themselves (single-admin deployment locks out ops) | Medium | Self-targeted Deny / Unlink / Revoke requires a confirmation dialog in the UI (frontend Task 10). The first-cut env-var allowlist stays live through Task 11 as a break-glass recovery path; after Task 12 the recovery path is DB surgery from the server (documented in runbook). |

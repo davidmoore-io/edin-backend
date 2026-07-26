@@ -63,9 +63,9 @@ var toolScopes = map[ToolName]authz.Scope{
 	ToolGalaxyLTDBuyers:      authz.ScopeKaineMining,
 	ToolGalaxySchema:         authz.ScopeKaineMining,
 
-	// Commander-scoped — only copilot callers see these in the legacy
-	// set. commander_data is granted to edin-copilot (and by extension
-	// edin-copilot-trusted) and to kaine-god.
+	// Commander-scoped — only users in an edin-copilot group see these.
+	// A Kaine user who also has Copilot access receives the union in the
+	// Kaine web chat; kaine-god alone does not grant private journal access.
 	ToolCommanderEvents:   authz.ScopeCommanderData,
 	ToolCommanderLocation: authz.ScopeCommanderData,
 

@@ -102,3 +102,47 @@ func TestRedisStoreFallbackWithoutClient(t *testing.T) {
 		t.Fatalf("expected 1 message in fallback store, got %d", len(loaded.Messages))
 	}
 }
+
+func TestRedisStoreAppendMessageOnce_Deduplicates(t *testing.T) {
+	mr, err := miniredis.Run()
+	if err != nil {
+		t.Fatalf("failed to start miniredis: %v", err)
+	}
+	defer mr.Close()
+
+	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	t.Cleanup(func() { _ = client.Close() })
+	store := NewRedisStore(
+		client,
+		time.Minute,
+		2,
+		NewInMemoryStore(time.Minute),
+		WithRedisPrefix("dedupe"),
+	)
+	session := store.CreateSession("user-dedupe")
+	msg := Message{
+		Role:            "user",
+		Content:         "send once",
+		ClientMessageID: "22222222-2222-4222-8222-222222222222",
+	}
+
+	_, appended, err := store.AppendMessageOnce(session.ID, msg)
+	if err != nil || !appended {
+		t.Fatalf("first append = (%v, %v), want appended", appended, err)
+	}
+	loaded, appended, err := store.AppendMessageOnce(session.ID, msg)
+	if err != nil {
+		t.Fatalf("duplicate append failed: %v", err)
+	}
+	if appended {
+		t.Fatal("duplicate client message ID was appended")
+	}
+	if len(loaded.Messages) != 1 {
+		t.Fatalf("got %d messages after duplicate, want 1", len(loaded.Messages))
+	}
+
+	store.Delete(session.ID)
+	if mr.Exists(store.messageIDsKey(session.ID)) {
+		t.Fatal("delete left the message ID dedupe key behind")
+	}
+}

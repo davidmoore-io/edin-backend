@@ -24,7 +24,7 @@ func New(apiKey, model string, maxTokens int) (*Client, error) {
 		return nil, errors.New("anthropic api key is empty")
 	}
 	if model == "" {
-		model = "claude-opus-4-6"
+		model = "claude-sonnet-5"
 	}
 	if maxTokens <= 0 {
 		maxTokens = 1024

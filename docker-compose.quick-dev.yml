@@ -1,0 +1,67 @@
+name: edin-quick-dev
+
+services:
+  authentik-postgresql:
+    image: postgres:16.14-alpine@sha256:57c72fd2a128e416c7fcc499958864df5301e940bca0a56f58fddf30ffc07777
+    container_name: edin-dev-authentik-postgresql
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: authentik
+      POSTGRES_DB: authentik
+      POSTGRES_PASSWORD: ${AUTHENTIK_POSTGRES_PASSWORD}
+    volumes:
+      - authentik-postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U authentik -d authentik"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  authentik-server:
+    image: ghcr.io/goauthentik/server:2026.5.6
+    container_name: edin-dev-authentik-server
+    restart: unless-stopped
+    command: server
+    shm_size: 512mb
+    environment: &authentik-environment
+      AUTHENTIK_SECRET_KEY: ${AUTHENTIK_SECRET_KEY}
+      AUTHENTIK_POSTGRESQL__HOST: authentik-postgresql
+      AUTHENTIK_POSTGRESQL__USER: authentik
+      AUTHENTIK_POSTGRESQL__NAME: authentik
+      AUTHENTIK_POSTGRESQL__PASSWORD: ${AUTHENTIK_POSTGRES_PASSWORD}
+      AUTHENTIK_ERROR_REPORTING__ENABLED: "false"
+      AUTHENTIK_BOOTSTRAP_PASSWORD: ${AUTHENTIK_BOOTSTRAP_PASSWORD}
+      AUTHENTIK_BOOTSTRAP_TOKEN: ${AUTHENTIK_BOOTSTRAP_TOKEN}
+      AUTHENTIK_BOOTSTRAP_EMAIL: admin@edin.space
+      AUTHENTIK_HOST_BROWSER: http://127.0.0.1:9000
+    ports:
+      - "127.0.0.1:9000:9000"
+    volumes:
+      - authentik-data:/data
+      - authentik-templates:/templates
+    depends_on:
+      authentik-postgresql:
+        condition: service_healthy
+
+  authentik-worker:
+    image: ghcr.io/goauthentik/server:2026.5.6
+    container_name: edin-dev-authentik-worker
+    restart: unless-stopped
+    command: worker
+    shm_size: 512mb
+    user: root
+    environment: *authentik-environment
+    volumes:
+      - authentik-data:/data
+      - authentik-templates:/templates
+    depends_on:
+      authentik-postgresql:
+        condition: service_healthy
+
+volumes:
+  authentik-postgres:
+    name: edin-dev-authentik-postgres
+  authentik-data:
+    name: edin-dev-authentik-data
+  authentik-templates:
+    name: edin-dev-authentik-templates

@@ -144,6 +144,35 @@ func TestAppendMessage_RefreshesSessionActivity(t *testing.T) {
 	}
 }
 
+func TestInMemoryAppendMessageOnce_DeduplicatesAfterHistoryTrim(t *testing.T) {
+	store := NewInMemoryStore(5 * time.Minute)
+	store.SetMaxMessages(2)
+	session := store.CreateSession("user-1")
+	original := Message{
+		Role:            "user",
+		Content:         "send once",
+		ClientMessageID: "11111111-1111-4111-8111-111111111111",
+	}
+
+	_, appended, err := store.AppendMessageOnce(session.ID, original)
+	if err != nil || !appended {
+		t.Fatalf("first append = (%v, %v), want appended", appended, err)
+	}
+	_, _ = store.AppendMessage(session.ID, Message{Role: "assistant", Content: "one"})
+	_, _ = store.AppendMessage(session.ID, Message{Role: "assistant", Content: "two"})
+
+	loaded, appended, err := store.AppendMessageOnce(session.ID, original)
+	if err != nil {
+		t.Fatalf("duplicate append failed: %v", err)
+	}
+	if appended {
+		t.Fatal("duplicate message ID was appended after its message left history")
+	}
+	if len(loaded.Messages) != 2 {
+		t.Fatalf("duplicate changed history length: got %d want 2", len(loaded.Messages))
+	}
+}
+
 func TestSessionTTL_ExpiresAfter90Days(t *testing.T) {
 	mr, err := miniredis.Run()
 	if err != nil {

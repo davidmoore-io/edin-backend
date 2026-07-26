@@ -7,8 +7,10 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"strings"
 	"time"
 
+	brandassets "github.com/edin-space/edin-backend/assets"
 	"github.com/edin-space/edin-backend/internal/frontier"
 	"github.com/redis/go-redis/v9"
 )
@@ -404,18 +406,171 @@ func (s *Server) handleClientAuthDesktopCallback(w http.ResponseWriter, r *http.
 		}
 	}
 
-	// Return a simple HTML page so the browser tab shows something useful.
+	// Return a branded, self-contained page so desktop auth does not depend on
+	// the frontend deployment or an external asset host.
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("Referrer-Policy", "no-referrer")
+	w.Header().Set("Content-Security-Policy",
+		"default-src 'none'; img-src data:; style-src 'unsafe-inline'; base-uri 'none'; frame-ancestors 'none'")
 	w.WriteHeader(http.StatusOK)
-	_, _ = fmt.Fprint(w, `<!DOCTYPE html>
-<html>
-<head><title>EDIN Authentication</title></head>
-<body>
-<h2>Authentication successful!</h2>
-<p>You can close this window and return to the EDIN desktop app.</p>
-</body>
-</html>`)
+	_, _ = fmt.Fprint(w, clientAuthSuccessPage())
 }
+
+func clientAuthSuccessPage() string {
+	return strings.Replace(clientAuthSuccessPageHTML, "{{EDIN_LOGO_DATA_URI}}",
+		brandassets.EDINLogoDataURI, 1)
+}
+
+const clientAuthSuccessPageHTML = `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="color-scheme" content="dark">
+  <meta name="theme-color" content="#05090c">
+  <title>Authentication complete | EDIN</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      font-family: "IBM Plex Mono", "Cascadia Mono", "Segoe UI Mono", monospace;
+      background: #05090c;
+      color: #f4f7f5;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html,
+    body {
+      min-height: 100%;
+      margin: 0;
+    }
+
+    body {
+      min-height: 100vh;
+      min-height: 100dvh;
+      display: grid;
+      place-items: center;
+      padding:
+        max(24px, env(safe-area-inset-top))
+        max(20px, env(safe-area-inset-right))
+        max(24px, env(safe-area-inset-bottom))
+        max(20px, env(safe-area-inset-left));
+      background: #05090c;
+    }
+
+    main {
+      width: min(100%, 560px);
+      text-align: center;
+    }
+
+    .logo {
+      display: block;
+      width: clamp(152px, 34vw, 224px);
+      height: auto;
+      margin: 0 auto 28px;
+      filter: drop-shadow(0 0 24px rgba(255, 128, 20, 0.28));
+    }
+
+    .wordmark {
+      margin: 0 0 42px;
+      color: #ffffff;
+      font-size: clamp(24px, 6vw, 34px);
+      font-weight: 700;
+      letter-spacing: 0;
+    }
+
+    .status {
+      display: inline-flex;
+      align-items: center;
+      gap: 10px;
+      margin-bottom: 18px;
+      color: #42e39c;
+      font-size: 13px;
+      font-weight: 700;
+      text-transform: uppercase;
+    }
+
+    .status-mark {
+      width: 26px;
+      height: 26px;
+      display: grid;
+      place-items: center;
+      border: 1px solid #42e39c;
+      border-radius: 50%;
+      font-size: 16px;
+    }
+
+    h1 {
+      margin: 0;
+      color: #ffffff;
+      font-size: clamp(28px, 7vw, 44px);
+      line-height: 1.12;
+      font-weight: 700;
+      letter-spacing: 0;
+    }
+
+    p {
+      max-width: 460px;
+      margin: 20px auto 0;
+      color: #a9b5b0;
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      font-size: clamp(16px, 4vw, 18px);
+      line-height: 1.6;
+      letter-spacing: 0;
+    }
+
+    .divider {
+      width: 72px;
+      height: 2px;
+      margin: 34px auto 0;
+      background: #ff8014;
+    }
+
+    @media (max-width: 420px) {
+      .wordmark {
+        margin-bottom: 34px;
+      }
+
+      .logo {
+        margin-bottom: 22px;
+      }
+    }
+
+    @media (prefers-reduced-motion: no-preference) {
+      main {
+        animation: enter 320ms ease-out both;
+      }
+
+      @keyframes enter {
+        from {
+          opacity: 0;
+          transform: translateY(8px);
+        }
+        to {
+          opacity: 1;
+          transform: translateY(0);
+        }
+      }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <img class="logo" src="{{EDIN_LOGO_DATA_URI}}" alt="EDIN">
+    <div class="wordmark" aria-hidden="true">E D I N</div>
+    <div class="status" role="status">
+      <span class="status-mark" aria-hidden="true">✓</span>
+      <span>Secure link established</span>
+    </div>
+    <h1>Authentication successful</h1>
+    <p>You can close this window and return to the EDIN desktop app.</p>
+    <div class="divider" aria-hidden="true"></div>
+  </main>
+</body>
+</html>`
 
 // RegisterClientAuthRoutes registers the desktop-client poll-based auth routes.
 func (s *Server) RegisterClientAuthRoutes(mux *http.ServeMux) {
