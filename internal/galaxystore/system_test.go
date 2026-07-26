@@ -202,6 +202,71 @@ INSERT INTO galaxy.market_commodity (
 ) VALUES (922337203685400002, 32760, $1, 100, 200, 300, 400)`, eventTime)
 	require.NoError(t, err)
 
+	_, err = tx.Exec(ctx, `
+INSERT INTO galaxy.settlement (
+	market_id, system_id64, last_event_time, name, dist_from_star_ls, services
+) VALUES (922337203685400003, 922337203685400001, $1, 'W5 Settlement', 25, ARRAY['Dock'])`,
+		eventTime)
+	require.NoError(t, err)
+
+	_, err = tx.Exec(ctx, `
+INSERT INTO galaxy.station_stub (system_id64, last_event_time, name, type)
+VALUES (922337203685400001, $1, 'W5 Stub', 'Outpost')`, eventTime)
+	require.NoError(t, err)
+
+	_, err = tx.Exec(ctx, `
+INSERT INTO galaxy.installation (system_id64, first_seen, last_event_time, name)
+VALUES (922337203685400001, $1, $1, 'W5 Installation')`, eventTime)
+	require.NoError(t, err)
+
+	_, err = tx.Exec(ctx, `
+INSERT INTO galaxy.stronghold_carrier (
+	system_id64, last_seen, dist_from_star_ls, controlling_power, services
+) VALUES (922337203685400001, $1, 35, 'W5 Test Power', ARRAY['Dock'])`, eventTime)
+	require.NoError(t, err)
+
+	_, err = tx.Exec(ctx, `
+INSERT INTO galaxy.megaship (current_system_id64, first_seen, last_event_time, name)
+VALUES (922337203685400001, $1, $1, 'W5 Megaship')`, eventTime)
+	require.NoError(t, err)
+
+	_, err = tx.Exec(ctx, `
+INSERT INTO galaxy.body (
+	system_id64, last_event_time, distance_from_arrival, body_id, name, type, sub_type
+) VALUES (922337203685400001, $1, 100, 7, 'W5 Test System 7', 'Planet', 'Rocky body')`,
+		eventTime)
+	require.NoError(t, err)
+
+	_, err = tx.Exec(ctx, `
+INSERT INTO galaxy.ring (
+	system_id64, body_id, name, ring_class, reserve_level, last_event_time, hotspots_updated
+) VALUES (
+	922337203685400001, 7, 'W5 Test System 7 A Ring',
+	'eRingClass_Metallic', 'Pristine', $1, $1
+)`, eventTime)
+	require.NoError(t, err)
+
+	_, err = tx.Exec(ctx, `
+INSERT INTO galaxy.ring_hotspot (
+	system_id64, ring_name, commodity_id, count, hotspots_updated
+) VALUES (922337203685400001, 'W5 Test System 7 A Ring', 32760, 2, $1)`,
+		eventTime)
+	require.NoError(t, err)
+
+	inventory, err := store.GetSystemInventory(ctx, "W5 Test System")
+	require.NoError(t, err)
+	require.NotNil(t, inventory)
+	require.Len(t, inventory.Facilities, 7)
+	require.Len(t, inventory.Bodies, 1)
+	require.Len(t, inventory.Bodies[0].Rings, 1)
+	require.Equal(t, 2, inventory.Bodies[0].Rings[0].HotspotCount)
+
+	marketInventory, err := store.GetMarketInventoryByID(ctx, 922337203685400002)
+	require.NoError(t, err)
+	require.NotNil(t, marketInventory)
+	require.Equal(t, "station", marketInventory.OwnerKind)
+	require.Len(t, marketInventory.Commodities, 1)
+
 	market, err := store.GetStationMarket(ctx, "W5 Test System", "W5 Port")
 	require.NoError(t, err)
 	require.NotNil(t, market)

@@ -41,16 +41,10 @@ func MCPToolDefinitions() []mcp.Tool {
 			mcp.WithDescription("Retrieve completed fleet carrier route details"),
 			mcp.WithString("job_id", mcp.Required(), mcp.Description("Job identifier returned by fleet_carrier_route")),
 		),
-		mcp.NewTool(string(ToolSystemProfile),
-			mcp.WithDescription("Generate a comprehensive system dossier from EDIN"),
-			mcp.WithString("system_name", mcp.Description("Elite Dangerous system name (e.g. 'Sol').")),
-			mcp.WithString("system_id", mcp.Description("Optional numeric system id for disambiguation.")),
-		),
 		// Galaxy database tools (EDIN)
 		mcp.NewTool(string(ToolGalaxySystem),
-			mcp.WithDescription("Query a star system from the galaxy database. Use 'include' to request only what you need — omitting it returns everything which can be very large. For coordinate-only lookups use include=[\"system\"]."),
+			mcp.WithDescription("Return one complete, concise Markdown map inventory for a star system: core facts, every recorded station, settlement, depot, installation, carrier, megaship, body and ring, with identifiers, distances, services, market IDs, hotspot counts and event freshness. Call once per system; use returned market IDs with galaxy_market for commodity detail."),
 			mcp.WithString("system_name", mcp.Required(), mcp.Description("Star system name (e.g. 'Sol', 'Cubeo')")),
-			mcp.WithArray("include", mcp.Description("Sections to return: 'system' (coords, government, powerplay), 'stations', 'bodies', 'factions', 'signals', 'fleet_carriers'. Omit for all.")),
 		),
 		mcp.NewTool(string(ToolGalaxyStation),
 			mcp.WithDescription("Query station data from the galaxy database"),
@@ -107,22 +101,8 @@ func MCPToolDefinitions() []mcp.Tool {
 			mcp.WithObject("parameters", mcp.Description("Optional positional parameters keyed as \"1\", \"2\", ... matching SQL placeholders $1, $2, ...")),
 		),
 		mcp.NewTool(string(ToolGalaxyMarket),
-			mcp.WithDescription("Query commodity market data from the relational galaxy database. Find places to buy/sell commodities, check market prices at stations/systems. Commodity names are normalized automatically (spaces removed, lowercased). Returns station_type and distance_ls for each result."),
-			mcp.WithString("commodity", mcp.Description("Commodity name (e.g. 'power generators', 'tritium', 'platinum') - spaces/case normalized automatically")),
-			mcp.WithString("operation", mcp.Description("Operation type: 'buy' to find where to buy (lowest prices), 'sell' to find where to sell (highest prices)")),
-			mcp.WithString("system_name", mcp.Description("Get all market data for stations in this system")),
-			mcp.WithString("station_name", mcp.Description("Search for market data by station name (partial match)")),
-			mcp.WithString("reference_system", mcp.Description("Calculate distances from this system (default: Sol)")),
-			mcp.WithNumber("max_distance", mcp.Description("Maximum distance in Ly from reference_system (default: 100)")),
-			mcp.WithString("station_type", mcp.Description("Filter by station type: 'orbital' (Coriolis/Orbis/Ocellus), 'outpost', 'planetary', or 'any' (default)")),
-			mcp.WithNumber("max_distance_ls", mcp.Description("Maximum station distance from star in light-seconds (e.g., 500 for reasonable supercruise)")),
-			mcp.WithString("min_pad", mcp.Description("Minimum landing pad size: 'L' (large only), 'M' (medium+), 'S' (any)")),
-			mcp.WithNumber("min_price", mcp.Description("Minimum price filter (for sell operations)")),
-			mcp.WithNumber("max_price", mcp.Description("Maximum price filter (for buy operations)")),
-			mcp.WithNumber("min_demand", mcp.Description("Minimum demand filter (for sell operations)")),
-			mcp.WithNumber("min_stock", mcp.Description("Minimum stock filter (for buy operations)")),
-			mcp.WithNumber("limit", mcp.Description("Max results to return (default: 20, max: 100)")),
-			mcp.WithBoolean("exclude_carriers", mcp.Description("Exclude fleet carriers from results (default: true). Set false only when user explicitly asks for fleet carrier prices")),
+			mcp.WithDescription("Return complete, untruncated Markdown commodity data for one market ID. Obtain the market ID from galaxy_system and call only when commodity detail is needed."),
+			mcp.WithNumber("market_id", mcp.Required(), mcp.Description("Exact market ID returned by galaxy_system")),
 		),
 		mcp.NewTool(string(ToolGalaxyExpansionCheck),
 			mcp.WithDescription("Check if a system is a valid expansion target for a power. Validates distances to nearest Fortified (20 Ly range) and Stronghold (30 Ly range) systems."),
@@ -240,7 +220,6 @@ func AnthropicsToolDefinitionsForScopes(callerScopes []authz.Scope) []sdk.ToolUn
 // complexTools are tools that have detailed usage guidance in ToolGuidance.
 // When generating slim definitions, these tools get 1-line descriptions and no parameter schemas.
 var complexTools = map[ToolName]bool{
-	ToolGalaxyMarket:            true,
 	ToolGalaxyQuery:             true,
 	ToolGalaxyFaction:           true,
 	ToolGalaxyHistory:           true,
@@ -255,7 +234,6 @@ var complexTools = map[ToolName]bool{
 
 // slimDescriptions provides 1-line descriptions for complex tools used in slim definitions.
 var slimDescriptions = map[ToolName]string{
-	ToolGalaxyMarket:            "Query commodity market data. Use describe_tool for parameters.",
 	ToolGalaxyQuery:             "Execute ad-hoc read-only SQL against galaxy database. Use describe_tool for schema and sandbox rules.",
 	ToolGalaxyFaction:           "Query minor faction data. Use describe_tool for parameters.",
 	ToolGalaxyHistory:           "Query historical powerplay data. Use describe_tool for parameters.",

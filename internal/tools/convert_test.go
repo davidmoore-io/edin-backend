@@ -9,7 +9,7 @@ import (
 
 func TestMCPToAnthropic_SimpleToolConvertsCorrectly(t *testing.T) {
 	mcpTools := MCPToolDefinitions()
-	// Find galaxy_market which has both required and optional params
+	// galaxy_market has one required stable identifier.
 	var found bool
 	for _, tool := range mcpTools {
 		if tool.Name == string(ToolGalaxyMarket) {
@@ -27,11 +27,12 @@ func TestMCPToAnthropic_SimpleToolConvertsCorrectly(t *testing.T) {
 			if !ok {
 				t.Fatalf("expected properties to be map[string]any, got %T", result.OfTool.InputSchema.Properties)
 			}
-			if _, exists := props["commodity"]; !exists {
-				t.Fatal("expected 'commodity' property to exist")
+			if _, exists := props["market_id"]; !exists {
+				t.Fatal("expected 'market_id' property to exist")
 			}
-			if _, exists := props["operation"]; !exists {
-				t.Fatal("expected 'operation' property to exist")
+			if len(result.OfTool.InputSchema.Required) != 1 ||
+				result.OfTool.InputSchema.Required[0] != "market_id" {
+				t.Fatalf("expected market_id to be required, got %v", result.OfTool.InputSchema.Required)
 			}
 			found = true
 			break
@@ -256,7 +257,6 @@ var legacyKaineTools = []string{
 	"powerplay_guide_search",
 	"retrieve_carrier_route",
 	"spansh_query",
-	"system_profile",
 }
 
 // legacyCopilotTools pins the exact set of tool names that the deleted
@@ -288,7 +288,6 @@ var legacyCopilotTools = []string{
 	"powerplay_guide_search",
 	"retrieve_carrier_route",
 	"spansh_query",
-	"system_profile",
 }
 
 // TestConvert_FilterByKaineScopes_MatchesLegacyKaineTools pins the derived

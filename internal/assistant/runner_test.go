@@ -54,7 +54,18 @@ func TestRunnerContextManagementConstants(t *testing.T) {
 	}
 }
 
-func TestRunnerToolDefsForScope_UsesSlimForKaine(t *testing.T) {
+func TestEncodeToolResultPreservesMarkdown(t *testing.T) {
+	markdown := "# Sol\n\n- **System ID64:** `10477373803`"
+	payload, err := encodeToolResult(markdown)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(payload) != markdown {
+		t.Fatalf("Markdown was JSON-encoded: %q", payload)
+	}
+}
+
+func TestRunnerToolDefsForScope_MarketIsSimpleForKaine(t *testing.T) {
 	runner := NewRunner(nil, nil, "", 5)
 	// Kaine-approved default scope set: the endpoint gate plus per-tool
 	// scopes. Passing only ScopeKaineChat would fail-closed against the
@@ -71,7 +82,6 @@ func TestRunnerToolDefsForScope_UsesSlimForKaine(t *testing.T) {
 		t.Fatal("expected non-empty tool defs for Kaine scope")
 	}
 
-	// Slim definitions for complex tools should have empty properties
 	for _, def := range betaDefs {
 		if def.OfTool == nil {
 			continue
@@ -82,8 +92,15 @@ func TestRunnerToolDefsForScope_UsesSlimForKaine(t *testing.T) {
 			if !ok {
 				t.Fatalf("expected Properties to be map[string]any for %s", name)
 			}
-			if len(props) != 0 {
-				t.Fatalf("expected galaxy_market to have empty properties in Kaine scope (slim), got %d", len(props))
+			if len(props) != 1 {
+				t.Fatalf("expected galaxy_market market_id schema in Kaine scope, got %d properties", len(props))
+			}
+			if _, ok := props["market_id"]; !ok {
+				t.Fatal("expected galaxy_market market_id property")
+			}
+			required := def.OfTool.InputSchema.Required
+			if len(required) != 1 || required[0] != "market_id" {
+				t.Fatalf("expected market_id to be required, got %v", required)
 			}
 			return
 		}

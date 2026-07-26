@@ -27,7 +27,7 @@ func (e *Executor) spanshQuery(ctx context.Context, args map[string]any) (any, e
 	}
 	if !allowedOps[op] {
 		alternatives := map[spansh.Operation]string{
-			spansh.OpSystemLookup:        "Use galaxy_system or system_profile instead",
+			spansh.OpSystemLookup:        "Use galaxy_system instead",
 			spansh.OpPowerplaySystems:    "Use galaxy_power with include_systems=true instead",
 			spansh.OpStationsSelling:     "Use inara_commodity_buy for commodity prices instead",
 			spansh.OpFactionStateSystems: "Use galaxy_faction with faction_state parameter instead",

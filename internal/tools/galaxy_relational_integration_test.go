@@ -61,8 +61,7 @@ func TestGalaxyRelationalToolsSmoke(t *testing.T) {
 		name ToolName
 		args map[string]any
 	}{
-		{ToolSystemProfile, map[string]any{"system_name": samples.system}},
-		{ToolGalaxySystem, map[string]any{"system_name": samples.system, "include": []any{"system"}}},
+		{ToolGalaxySystem, map[string]any{"system_name": samples.system}},
 		{ToolGalaxyStation, map[string]any{"station_name": samples.station, "limit": 1}},
 		{ToolGalaxyFleetCarrier, map[string]any{"carrier_id": samples.carrier}},
 		{ToolGalaxyBodies, map[string]any{"system_name": samples.bodySystem}},
@@ -71,7 +70,7 @@ func TestGalaxyRelationalToolsSmoke(t *testing.T) {
 		{ToolGalaxyPower, map[string]any{"power_name": samples.power, "include_systems": true, "limit": 1}},
 		{ToolGalaxyFaction, map[string]any{"faction_name": samples.faction, "include_systems": true, "limit": 1}},
 		{ToolGalaxyStats, nil},
-		{ToolGalaxyMarket, map[string]any{"system_name": samples.marketSystem, "limit": 1}},
+		{ToolGalaxyMarket, map[string]any{"market_id": samples.marketID}},
 		{ToolGalaxyExpansionCheck, map[string]any{"system_name": samples.powerSystem, "power_name": samples.power}},
 		{ToolGalaxyNearbyPowerplay, map[string]any{"system_name": samples.powerSystem, "power_name": samples.power, "max_distance": 10}},
 		{ToolGalaxyExpansionFrontier, map[string]any{"control_system": samples.controlSystem, "power_name": samples.controlPower}},
@@ -147,7 +146,7 @@ type galaxySmokeSamples struct {
 	surfaceSystem string
 	power         string
 	faction       string
-	marketSystem  string
+	marketID      int64
 	powerSystem   string
 	controlSystem string
 	controlPower  string
@@ -164,12 +163,10 @@ func loadGalaxySmokeSamples(t *testing.T, ctx context.Context, galaxy *galaxysto
 		surfaceSystem: requireSampleString(t, ctx, galaxy, `SELECT c.name FROM galaxy.system_catalog c JOIN galaxy.surface_site s ON s.system_id64=c.id64 LIMIT 1`),
 		power:         requireSampleString(t, ctx, galaxy, `SELECT name FROM galaxy.power ORDER BY name LIMIT 1`),
 		faction:       requireSampleString(t, ctx, galaxy, `SELECT name FROM galaxy.faction ORDER BY name LIMIT 1`),
-		marketSystem: requireSampleString(t, ctx, galaxy, `
-SELECT c.name
-FROM galaxy.market_commodity mc
-JOIN galaxy.market m ON m.market_id=mc.market_id
-JOIN galaxy.station st ON st.market_id=m.market_id
-JOIN galaxy.system_catalog c ON c.id64=st.system_id64
+		marketID: requireSampleInt64(t, ctx, galaxy, `
+SELECT market_id
+FROM galaxy.market_commodity
+ORDER BY market_id
 LIMIT 1`),
 		powerSystem: requireSampleString(t, ctx, galaxy, `
 SELECT c.name
@@ -202,6 +199,16 @@ func requireSampleString(t *testing.T, ctx context.Context, source interface {
 	var out string
 	require.NoError(t, source.QueryRow(ctx, sql).Scan(&out))
 	require.NotEmpty(t, out)
+	return out
+}
+
+func requireSampleInt64(t *testing.T, ctx context.Context, source interface {
+	QueryRow(context.Context, string, ...any) pgx.Row
+}, sql string) int64 {
+	t.Helper()
+	var out int64
+	require.NoError(t, source.QueryRow(ctx, sql).Scan(&out))
+	require.Positive(t, out)
 	return out
 }
 

@@ -25,8 +25,8 @@ func TestDescribeTool_KnownToolReturnsGuidance(t *testing.T) {
 	if !strings.Contains(guidance, "commodity") {
 		t.Fatal("expected guidance to mention 'commodity'")
 	}
-	if !strings.Contains(guidance, "Trading best practices") {
-		t.Fatal("expected guidance to contain trading best practices")
+	if !strings.Contains(guidance, "market_id") {
+		t.Fatal("expected guidance to contain market_id")
 	}
 }
 
@@ -95,7 +95,7 @@ func TestSlimDefinitions_SimpleToolsKeepParams(t *testing.T) {
 			continue // WebSearch
 		}
 		name := ToolName(def.OfTool.Name)
-		if name != ToolSystemProfile {
+		if name != ToolGalaxyMarket {
 			continue
 		}
 
@@ -104,14 +104,14 @@ func TestSlimDefinitions_SimpleToolsKeepParams(t *testing.T) {
 			t.Fatalf("expected Properties to be map[string]any, got %T", def.OfTool.InputSchema.Properties)
 		}
 		if len(props) == 0 {
-			t.Fatal("expected system_profile to retain its parameters in slim definitions")
+			t.Fatal("expected galaxy_market to retain its parameters in slim definitions")
 		}
-		if _, exists := props["system_name"]; !exists {
-			t.Fatal("expected system_profile to have 'system_name' parameter")
+		if _, exists := props["market_id"]; !exists {
+			t.Fatal("expected galaxy_market to have 'market_id' parameter")
 		}
 		return
 	}
-	t.Fatal("system_profile not found in slim definitions")
+	t.Fatal("galaxy_market not found in slim definitions")
 }
 
 func TestSlimDefinitions_SameToolCount(t *testing.T) {

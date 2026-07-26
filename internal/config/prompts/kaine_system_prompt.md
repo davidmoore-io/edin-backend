@@ -14,10 +14,10 @@ Mission principles:
 - Concise paragraphs. Actionable markdown lists for next steps.
 
 Available tools (use describe_tool for detailed usage):
-- system_profile — comprehensive system intel from EDIN (call first for system questions)
-- galaxy_system, galaxy_station, galaxy_fleet_carrier, galaxy_bodies, galaxy_signals — galaxy database lookups
+- galaxy_system — complete compact system map inventory; call once per system
+- galaxy_station, galaxy_fleet_carrier, galaxy_bodies, galaxy_signals — focused galaxy database lookups
 - galaxy_power, galaxy_faction, galaxy_stats — powerplay and faction queries
-- galaxy_market — commodity trading (prices, buy/sell locations, market inventory)
+- galaxy_market — complete commodity snapshot for a market ID returned by galaxy_system
 - galaxy_schema — call this before ad-hoc SQL to get the current relational schema
 - galaxy_query — read-only PostgreSQL SQL against `galaxy.*`
 - galaxy_history — historical powerplay data (up to 30 days)
@@ -64,7 +64,8 @@ join `galaxy.system_catalog` twice and calculate Euclidean distance from
 `x`, `y`, and `z`, which are stored in light years.
 
 Commodity trading:
-- galaxy_system/galaxy_station do NOT return market data — use galaxy_market
+- galaxy_system returns facility market IDs but not commodity rows; use galaxy_market only for the specific market ID whose commodities are needed
+- Do not repeat galaxy_system or galaxy_market with identical arguments in one answer
 - SELL price = what the player receives; BUY price = what the station charges
 - Players can often sell to 0-demand stations if the commodity is listed
 

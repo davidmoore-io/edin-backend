@@ -59,6 +59,39 @@ func getInt(m map[string]any, key string, fallback int) int {
 	return fallback
 }
 
+func getInt64(m map[string]any, key string, fallback int64) int64 {
+	if m == nil {
+		return fallback
+	}
+	if v, ok := m[key]; ok {
+		switch typed := v.(type) {
+		case float64:
+			return int64(typed)
+		case float32:
+			return int64(typed)
+		case int:
+			return int64(typed)
+		case int64:
+			return typed
+		case uint:
+			return int64(typed)
+		case uint64:
+			if typed <= uint64(^uint64(0)>>1) {
+				return int64(typed)
+			}
+		case json.Number:
+			if n, err := typed.Int64(); err == nil {
+				return n
+			}
+		case string:
+			if n, err := strconv.ParseInt(strings.TrimSpace(typed), 10, 64); err == nil {
+				return n
+			}
+		}
+	}
+	return fallback
+}
+
 func getBool(m map[string]any, key string, fallback bool) bool {
 	if m == nil {
 		return fallback

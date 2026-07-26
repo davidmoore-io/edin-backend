@@ -21,7 +21,6 @@ var allToolNames = []ToolName{
 	ToolListServices,
 	ToolSpanshQuery,
 	ToolRetrieveRoute,
-	ToolSystemProfile,
 	ToolGalaxySystem,
 	ToolGalaxyStation,
 	ToolGalaxyFleetCarrier,
@@ -105,7 +104,6 @@ func TestToolScopes_GalaxyReadTools_RequireGalaxyRead(t *testing.T) {
 		ToolPowerplayGuideSearch,
 		ToolSpanshQuery,
 		ToolRetrieveRoute,
-		ToolSystemProfile,
 	}
 	for _, name := range galaxyReadTools {
 		if got := toolScopes[name]; got != authz.ScopeGalaxyRead {

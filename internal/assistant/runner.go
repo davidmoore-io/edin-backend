@@ -385,7 +385,7 @@ func (r *Runner) invokeBetaToolsWithProgress(ctx context.Context, blocks []betaT
 				"error": errMsg,
 			})
 		} else {
-			payload, err = json.MarshalIndent(result, "", "  ")
+			payload, err = encodeToolResult(result)
 			if err != nil {
 				payload = []byte(fmt.Sprintf(`{"error":"failed to encode result: %v"}`, err))
 			}
@@ -414,6 +414,13 @@ func (r *Runner) invokeBetaToolsWithProgress(ctx context.Context, blocks []betaT
 		results = append(results, toolResult)
 	}
 	return results, nil
+}
+
+func encodeToolResult(result any) ([]byte, error) {
+	if text, ok := result.(string); ok {
+		return []byte(text), nil
+	}
+	return json.MarshalIndent(result, "", "  ")
 }
 
 func renderBetaWebSearchResult(block sdk.BetaContentBlockUnion) string {

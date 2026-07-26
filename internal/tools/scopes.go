@@ -54,7 +54,6 @@ var toolScopes = map[ToolName]authz.Scope{
 	ToolPowerplayGuideSearch:   authz.ScopeGalaxyRead,
 	ToolSpanshQuery:            authz.ScopeGalaxyRead,
 	ToolRetrieveRoute:          authz.ScopeGalaxyRead,
-	ToolSystemProfile:          authz.ScopeGalaxyRead,
 
 	// Kaine-mining specific — tools in legacy kaineAllowedTools but
 	// NOT in copilotAllowedTools. Require kaine_mining (granted to

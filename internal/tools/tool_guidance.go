@@ -4,44 +4,18 @@ package tools
 // This guidance was formerly embedded in the system prompt and is now served
 // on demand via the describe_tool meta-tool, saving ~4K tokens per turn.
 var ToolGuidance = map[ToolName]string{
-	ToolGalaxyMarket: `galaxy_market — Commodity market queries from the relational galaxy database.
+	ToolGalaxyMarket: `galaxy_market — Complete market snapshot by stable market ID.
 
-Usage modes:
-1. Station inventory: system_name + station_name → all commodities at that station
-2. System markets: system_name only → commodities from all stations in the system
-3. Find buy locations: commodity + operation="buy" + optional filters
-4. Find sell locations: commodity + operation="sell" + optional filters
+Parameter:
+- market_id (number, required): exact market ID returned by galaxy_system.
 
-Commodity names are auto-normalized (spaces removed, lowercased).
+The result is concise Markdown containing the owner, system, last event time,
+reported commodity count, prohibited commodities, and every current commodity
+row. It is never truncated.
 
-Parameters:
-- commodity (string): e.g. "tritium", "platinum", "lowtemperaturediamond"
-- operation (string): "buy" or "sell"
-- system_name (string): get all market data for stations in this system
-- station_name (string): search by station name (partial match)
-- reference_system (string): calculate distances from this system (default: Sol)
-- max_distance (number): max Ly from reference_system (default: 100)
-- station_type (string): "orbital", "outpost", "planetary", or "any" (default)
-- max_distance_ls (number): max station distance from star in ls
-- min_pad (string): "L" (large only), "M" (medium+), "S" (any)
-- min_price / max_price (number): price filters
-- min_demand / min_stock (number): quantity filters
-- limit (number): max results (default: 20, max: 100)
-- exclude_carriers (bool): exclude fleet carriers (default: true)
-
-IMPORTANT: galaxy_system and galaxy_station do NOT return market data — only whether a station HAS a market. Always use galaxy_market for actual prices.
-
-Trading best practices:
-- Large ships need L pads; ask if not specified
-- Prefer orbital stations (Coriolis/Orbis/Ocellus) for regular trading
-- Warn about stations >1000 ls from star (long supercruise)
-- Present balanced options: price, distance, supercruise time, stock/demand
-- Default: large pad, orbital preferred, <1000 ls, exclude carriers
-
-Response format example:
-"Best places to sell Platinum near Cubeo:
-- **Chelomey Orbital** ([Cubeo](system://Cubeo)) — Coriolis, 35 ls from star
-  Sell: 280,000 cr · Demand: 45,000 · 12 ly away"`,
+Call galaxy_system once to obtain the map inventory and market IDs. Call
+galaxy_market only for a market whose commodity detail is needed. Do not repeat
+galaxy_system or galaxy_market with the same arguments in one answer.`,
 
 	ToolGalaxyQuery: `galaxy_query — Ad-hoc read-only SQL queries against the relational galaxy database.
 
@@ -171,32 +145,21 @@ No parameters needed. Returns stations near Kaine mining maps scored by LTD dema
 
 No parameters needed. Returns systems within the control bubble (20 Ly of Fortified, 30 Ly of Stronghold) that are valid acquisition targets, scored by strategic value.`,
 
-	ToolGalaxySystem: `galaxy_system — Query a star system from the EDIN galaxy database.
+	ToolGalaxySystem: `galaxy_system — Complete compact star-system map inventory.
 
-IMPORTANT: Always use the 'include' parameter to request only the sections you need.
-Returning everything (bodies, stations, factions, signals, fleet carriers) produces very
-large responses that consume context. For most queries you only need one or two sections.
+Parameter:
+- system_name (string, required): exact star-system name.
 
-Available sections for 'include':
-- "system"          — Core system data: name, coordinates (x,y,z), population, government,
-                      allegiance, controlling_power, powerplay_state, reinforcement, undermining
-- "stations"        — All stations with type, services, distance from star, landing pads
-- "bodies"          — Stars and planets with surface temp, gravity, rings, etc.
-- "factions"        — Minor factions present with influence and state
-- "signals"         — Biological/geological signal counts
-- "fleet_carriers"  — Fleet carriers currently docked in the system
+The result is Markdown containing core system facts and every recorded
+map-visible facility and body: stations, depots, settlements, installations,
+station stubs, fleet carriers, stronghold carriers, megaships, stars, planets,
+barycentres, rings, ring classes and hotspot counts. Entries include stable
+IDs or natural keys, distances where the schema records them, services,
+market IDs and last event times. It intentionally omits commodity rows.
 
-Parameters:
-- system_name (string, required): Star system name (e.g. "Sol", "Cubeo")
-- include (array of strings): Sections to return. Omit for all (use sparingly).
-
-Common patterns:
-- Coordinates / distance calc: include=["system"] — returns just coords + powerplay info
-- Trading / docking info:      include=["system", "stations"]
-- Mining / exploration:        include=["system", "bodies", "signals"]
-- Full intel:                  omit include (or use system_profile tool instead)
-
-For multi-system distance calculations, prefer a dedicated galaxy tool (for example galaxy_surface_sites, galaxy_market, or galaxy_nearby_powerplay) when one fits. Use galaxy_query only for ad-hoc cases not covered by a dedicated tool.`,
+Call once per system. Use a returned market ID with galaxy_market only if
+commodity detail is needed. Do not repeat the call to collect another section;
+the first result is complete.`,
 
 	ToolBgsGuideSearch: `bgs_guide_search — Keyword search over the Elite Dangerous Background Simulation (BGS) reference guide. Returns ~2000-token text chunks around match clusters.
 

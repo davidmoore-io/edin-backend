@@ -10,8 +10,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/mark3labs/mcp-go/mcp"
-	mcpserver "github.com/mark3labs/mcp-go/server"
 	"github.com/edin-space/edin-backend/internal/anthropic"
 	"github.com/edin-space/edin-backend/internal/assistant"
 	"github.com/edin-space/edin-backend/internal/authz"
@@ -20,6 +18,8 @@ import (
 	"github.com/edin-space/edin-backend/internal/observability"
 	"github.com/edin-space/edin-backend/internal/ops"
 	"github.com/edin-space/edin-backend/internal/tools"
+	"github.com/mark3labs/mcp-go/mcp"
+	mcpserver "github.com/mark3labs/mcp-go/server"
 )
 
 // Run starts the MCP server that exposes control tools.
@@ -175,6 +175,9 @@ func (s *server) wrapTool(name string) mcpserver.ToolHandlerFunc {
 		result, err := s.toolExec.Invoke(ctx, toolName, args)
 		if err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
+		}
+		if text, ok := result.(string); ok {
+			return mcp.NewToolResultText(text), nil
 		}
 		payload, err := mcp.NewToolResultJSON(result)
 		if err != nil {

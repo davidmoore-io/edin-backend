@@ -31,7 +31,6 @@ const (
 	ToolListServices  ToolName = "list_services"
 	ToolSpanshQuery   ToolName = "spansh_query"
 	ToolRetrieveRoute ToolName = "retrieve_carrier_route"
-	ToolSystemProfile ToolName = "system_profile"
 
 	// Galaxy database tools.
 	ToolGalaxySystem            ToolName = "galaxy_system"
@@ -200,10 +199,6 @@ func (e *Executor) Invoke(ctx context.Context, name string, args map[string]any)
 		return e.spanshQuery(ctx, args)
 	case ToolRetrieveRoute:
 		return e.retrieveCarrierRoute(ctx, args)
-
-	// System profile
-	case ToolSystemProfile:
-		return e.systemProfile(ctx, args)
 
 	// Galaxy core tools
 	case ToolGalaxySystem:
