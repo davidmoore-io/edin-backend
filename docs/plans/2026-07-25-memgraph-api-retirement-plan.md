@@ -54,6 +54,13 @@ BLOCKED. Two changes follow:
    implemented and covered by automated tests. Kaine and Copilot/EDIN Client
    now share the same persisted Anthropic context contract. The authenticated
    local smoke steps in 9.3 remain the final gate before MR8.
+5. **2026-07-27 galaxy tool contract amendment (David's decision):**
+   `system_profile` is retired. `galaxy_system(system_name)` is the one
+   complete, compact Markdown system inventory and exposes facility market
+   IDs; `galaxy_market(market_id)` is the complete, untruncated Markdown
+   commodity drill-down. Both chat prompts prohibit duplicate calls. This is
+   a deliberate post-MR7 schema change and supersedes MR7's original
+   no-tool-schema-change assertion for these two tools only.
 
 ## 0. Verified Baseline
 
@@ -160,7 +167,7 @@ already removed Memgraph from `internal/tools`.
 
 | MCP family | Authoritative source after this plan |
 |---|---|
-| current galaxy: system, station, carrier, body, signal, market, faction, power, expansion, surface-site, stats, schema, `system_profile` | `galaxy.*` through `galaxystore` |
+| current galaxy: system, station, carrier, body, signal, market, faction, power, expansion, surface-site, stats, schema | `galaxy.*` through `galaxystore` |
 | mining tools (`galaxy_plasmium_buyers`, `galaxy_ltd_buyers`, `galaxy_expansion_targets`) | dual source: mining maps from the EDIN application database (kaine store) + galaxy state through `galaxystore` |
 | `galaxy_query` | parser-restricted SQL under `galaxy_reader` |
 | `galaxy_history`, `galaxy_powerplay_cycle` | raw EDDN history connection |
@@ -707,7 +714,7 @@ named explicitly because no single DSN can construct every tool:
 
 The evidence manifest must classify every `ToolName` from
 `internal/tools/executor.go` by its authoritative source per the 2.3 table
-(including `describe_tool`, `system_profile`, and the dual-source mining
+(including `describe_tool` and the dual-source mining
 tools) and record one successful invocation for **each individual
 current-galaxy tool** — all of them, not representative families — plus one
 invocation of each raw-history tool proving the separate history client

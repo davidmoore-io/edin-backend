@@ -1124,11 +1124,15 @@ Also add `ScopeCopilotChat` case to `executor.go`'s allowed-tool map.
 - `galaxy_query`, `galaxy_stats`, `galaxy_bodies`, `galaxy_signals`, `galaxy_fleet_carrier`
 - `galaxy_powerplay_cycle`, `galaxy_history`, `galaxy_nearby_powerplay`
 - `galaxy_expansion_check`, `galaxy_expansion_frontier`, `galaxy_expansion_targets`
-- `spansh_query`, `retrieve_route`, `system_profile`
+- `spansh_query`, `retrieve_route`
 - `describe_tool`
 - `commander_events`, `commander_location`
 - **Excluded:** `galaxy_plasmium_buyers`, `galaxy_ltd_buyers`
 - **Excluded:** All ops/admin tools
+
+> **Current tool contract (2026-07-27):** `system_profile` has been retired.
+> `galaxy_system(system_name)` is the single complete Markdown system inventory,
+> and `galaxy_market(market_id)` is the complete Markdown commodity drill-down.
 
 WebSocket auth: first-message frame (same pattern as Story 1.1). The auth frame contains the
 single-use nonce obtained from `GET /api/commander/auth/token`, not the full JWT.

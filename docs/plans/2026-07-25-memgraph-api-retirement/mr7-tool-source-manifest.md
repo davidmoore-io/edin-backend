@@ -1,6 +1,6 @@
 # MR7 Tool Source Manifest
 
-Status: **LOCAL SMOKE PASSED 2026-07-25**
+Status: **LOCAL SMOKE PASSED 2026-07-25; TOOL CONTRACT AMENDED 2026-07-27**
 
 Every `ToolName` exposed by `internal/tools/executor.go` and
 `internal/tools/tools_describe.go` is classified below. Current-galaxy and
@@ -15,7 +15,6 @@ raw-history rows are the MR7 smoke scope.
 | `list_services` | operations manager | out of scope |
 | `spansh_query` | external Spansh client | out of scope |
 | `retrieve_carrier_route` | external Spansh client | out of scope |
-| `system_profile` | `galaxy.*` through `galaxystore` | pass |
 | `galaxy_system` | `galaxy.*` through `galaxystore` | pass |
 | `galaxy_station` | `galaxy.*` through `galaxystore` | pass |
 | `galaxy_fleet_carrier` | `galaxy.*` through `galaxystore` | pass |
@@ -59,3 +58,9 @@ Local evidence:
 - application corpus: 153 `kaine.mining_maps` rows;
 - `TestGalaxyRelationalToolsSmoke`: 23 subchecks passed in 22.46 seconds;
 - no production or remote connection was used.
+
+Post-MR7 amendment (2026-07-27): `system_profile` was removed as a duplicate,
+incomplete broad lookup. `galaxy_system` now owns the complete compact
+Markdown system inventory, while `galaxy_market` accepts one returned
+`market_id` and emits the complete untruncated Markdown commodity snapshot.
+The focused store/tool integration gate and the complete Go suite passed.

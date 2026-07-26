@@ -101,6 +101,21 @@ and `edin-copilot` supplies the authenticated commander's journal/location
 tools. A user in both Kaine and Copilot groups receives both surfaces;
 `kaine-god` alone never grants private commander data.
 
+### Galaxy AI Tool Contracts
+
+`galaxy_system(system_name)` is the single broad system lookup for Kaine and
+Copilot. It returns concise Markdown containing core system facts and every
+recorded map-visible facility and body, including stable IDs or natural keys,
+distances where recorded, services, market IDs, rings, ring classes, hotspot
+counts, and each entity's latest relational event time. It does not return
+commodity rows and is not truncated.
+
+`galaxy_market(market_id)` drills into one market ID returned by
+`galaxy_system`. It returns the complete current commodity snapshot as
+Markdown, without a result limit. The retired `system_profile` tool must not
+be reintroduced: it duplicated `galaxy_system`, returned less information,
+and encouraged repeated broad calls.
+
 `make dev-stop` stops processes and containers only. It never runs
 `docker compose down`, `down -v`, or removes a volume. Existing EDIN/EDDN
 database volumes and the namespaced `edin-dev-authentik-*` volumes are
