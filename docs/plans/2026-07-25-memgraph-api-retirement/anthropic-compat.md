@@ -30,7 +30,9 @@ confirmed that quick-dev had inherited
 `ANTHROPIC_BASE_URL=http://127.0.0.1:8787` from its parent environment. The
 successful probes did not use that override and reached Anthropic directly.
 Development configuration now explicitly pins
-`ANTHROPIC_BASE_URL=https://api.anthropic.com`.
+`ANTHROPIC_BASE_URL=https://api.anthropic.com`. The application constructor
+also pins `https://api.anthropic.com`, so an inherited SDK environment override
+cannot silently redirect Kaine or Copilot/EDIN Client chat.
 
 ## Documentation Comparison
 
@@ -89,17 +91,31 @@ After the quick-dev restart, host-side process inspection recorded:
 This proves model-level acceptance only. The rebuilt application smoke gate
 and typed compaction persistence work below remain required.
 
-## Confirmed Code Gaps
+## Code Gap Disposition (2026-07-26)
 
-1. The non-streaming runner converts a typed compaction block to ordinary text.
-2. The streaming runner does not process compaction block events or stop
-   reason.
-3. Persisted `llm.Message` history stores only role and text, so it cannot
-   round-trip a typed compaction block across user turns.
-4. Usage accounting does not consume `usage.iterations`.
-5. The current custom compaction instruction does not explicitly prohibit tool
-   calls during summarization.
+1. **Closed:** non-streaming appends the SDK response as typed provider context.
+2. **Closed:** streaming uses the SDK accumulator for every event and persists
+   its typed final response.
+3. **Closed:** provider-facing messages are stored separately from the bounded
+   role/text display transcript. Redis atomically commits assistant display
+   text and replacement provider context.
+4. **Closed:** usage sums `usage.iterations` when present and does not add the
+   top-level counts again.
+5. **Closed:** compaction instructions explicitly forbid tool calls during
+   summarization.
+6. **Closed:** SDK `BetaCompactionBlock` conversion edge cases are normalized:
+   streamed summaries retain their string content and failed `content: null`
+   summaries round-trip as null no-ops.
+7. **Closed:** Kaine and Copilot/EDIN Client use the same persistence contract.
+8. **Closed:** HTTP 400 invalid requests are attempted once and shown to users
+   through sanitized application messages.
 
-These are contract defects regardless of whether the original 400 was
-transient. MR7A remains blocked until the rebuilt application passes the
-request-recorder, typed persistence, streaming, and authenticated live gates.
+Automated gate:
+
+```text
+GOWORK=off GOCACHE=/tmp/edin-backend-go-cache go test -count=1 ./...
+PASS (2026-07-26)
+```
+
+The authenticated local Kaine and Copilot/EDIN Client smoke sequence remains
+required before MR7A is marked fully complete and MR8 starts.

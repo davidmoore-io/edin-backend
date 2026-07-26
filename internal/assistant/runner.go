@@ -28,7 +28,7 @@ const (
 )
 
 // CompactionInstructions tells the compaction model what to preserve.
-const CompactionInstructions = "Preserve Elite Dangerous system names, powerplay states, and any mining intel discussed. Summarize tool results but keep specific station/system recommendations."
+const CompactionInstructions = "Do not call tools while producing this summary. Preserve Elite Dangerous system names, powerplay states, commander context, and any mining intel discussed. Summarize tool results but keep specific station and system recommendations."
 
 // ProgressEventType identifies the kind of progress event.
 type ProgressEventType string
@@ -129,8 +129,21 @@ func (r *Runner) WithSystemPrompt(systemPrompt string) *Runner {
 // RunWithProgress executes a conversational turn with optional progress callbacks.
 // Uses the Beta Messages API with context management (compaction + clear_tool_uses).
 func (r *Runner) RunWithProgress(ctx context.Context, history []llm.Message, userMessage string, onProgress ProgressCallback) (string, error) {
+	result, err := r.RunWithProgressContext(ctx, history, llm.ProviderContext{}, userMessage, onProgress)
+	return result.Text, err
+}
+
+// RunWithProgressContext executes a conversational turn and returns the exact
+// Anthropic context required for the next turn.
+func (r *Runner) RunWithProgressContext(
+	ctx context.Context,
+	history []llm.Message,
+	providerContext llm.ProviderContext,
+	userMessage string,
+	onProgress ProgressCallback,
+) (TurnResult, error) {
 	if r.client == nil {
-		return "", fmt.Errorf("anthropic client unavailable")
+		return TurnResult{}, fmt.Errorf("anthropic client unavailable")
 	}
 
 	sessionID := SessionIDFromContext(ctx)
@@ -138,9 +151,13 @@ func (r *Runner) RunWithProgress(ctx context.Context, history []llm.Message, use
 	start := time.Now()
 	r.logger.Info(fmt.Sprintf("run_start session=%s user=%s history=%d message=\"%s\"", sessionID, userID, len(history), observability.Sanitize(userMessage, 160)))
 
-	messageParams := r.buildBetaMessageParams(history, userMessage, nil)
+	messageParams, err := r.buildTurnMessages(history, providerContext, userMessage, nil)
+	if err != nil {
+		return TurnResult{}, err
+	}
 
 	var lastAssistant string
+	var usage TurnUsage
 	exhausted := true
 	for iter := 0; iter < r.maxIter; iter++ {
 		r.logger.Info(fmt.Sprintf("iteration_start session=%s user=%s iter=%d messages=%d", sessionID, userID, iter+1, len(messageParams)))
@@ -151,78 +168,25 @@ func (r *Runner) RunWithProgress(ctx context.Context, history []llm.Message, use
 
 		contextTools := r.betaToolDefsForContext(ctx)
 
-		req := sdk.BetaMessageNewParams{
-			Model:     r.client.Model(),
-			MaxTokens: r.client.MaxTokens(),
-			Messages:  messageParams,
-			Tools:     contextTools,
-			Betas:     []sdk.AnthropicBeta{betaCompact, betaContextManage},
-			ContextManagement: sdk.BetaContextManagementConfigParam{
-				Edits: []sdk.BetaContextManagementConfigEditUnionParam{
-					{
-						OfCompact20260112: &sdk.BetaCompact20260112EditParam{
-							Instructions: param.NewOpt(CompactionInstructions),
-							Trigger: sdk.BetaInputTokensTriggerParam{
-								Value: compactionTrigger,
-							},
-						},
-					},
-					{
-						OfClearToolUses20250919: &sdk.BetaClearToolUses20250919EditParam{
-							ClearToolInputs: sdk.BetaClearToolUses20250919EditClearToolInputsUnionParam{
-								OfBool: sdk.Bool(true),
-							},
-							Keep: sdk.BetaToolUsesKeepParam{
-								Value: clearToolsKeep,
-							},
-							Trigger: sdk.BetaClearToolUses20250919EditTriggerUnionParam{
-								OfInputTokens: &sdk.BetaInputTokensTriggerParam{
-									Value: clearToolsTrigger,
-								},
-							},
-						},
-					},
-				},
-			},
-			ToolChoice: sdk.BetaToolChoiceUnionParam{
-				OfAuto: &sdk.BetaToolChoiceAutoParam{},
-			},
-		}
-
-		// Snapshot the prompt under a read lock so hot-reloads don't cause data races.
-		r.mu.RLock()
-		systemPrompt := r.systemPrompt
-		r.mu.RUnlock()
-
-		// System prompt with cache control breakpoint for compaction preservation
-		if systemPrompt != "" {
-			req.System = []sdk.BetaTextBlockParam{
-				{
-					Text: systemPrompt,
-					CacheControl: sdk.BetaCacheControlEphemeralParam{
-						TTL: sdk.BetaCacheControlEphemeralTTLTTL5m,
-					},
-				},
-			}
-		}
+		req := r.buildBetaRequest(contextTools, messageParams)
 
 		resp, err := r.client.CreateBetaMessage(ctx, req)
 		if err != nil {
 			r.logger.Error(fmt.Sprintf("anthropic_call_failed session=%s user=%s iter=%d", sessionID, userID, iter+1), err)
-			return "", err
+			return TurnResult{}, err
 		}
+		usage.add(resp.Usage)
 
-		// Handle compaction: append the compaction block and continue
-		if resp.StopReason == sdk.BetaStopReasonCompaction {
-			r.logger.Info(fmt.Sprintf("compaction_triggered session=%s user=%s iter=%d", sessionID, userID, iter+1))
-			compactionBlocks := r.extractBetaCompactionBlocks(resp)
-			if len(compactionBlocks) > 0 {
-				messageParams = append(messageParams, sdk.BetaMessageParam{
-					Role:    sdk.BetaMessageParamRoleAssistant,
-					Content: compactionBlocks,
-				})
-			}
-			continue
+		var compaction compactionState
+		messageParams, compaction, err = appendBetaResponse(messageParams, resp)
+		if err != nil {
+			return TurnResult{}, err
+		}
+		switch compaction {
+		case compactionValid:
+			r.logger.Info(fmt.Sprintf("compaction_checkpoint session=%s user=%s iter=%d", sessionID, userID, iter+1))
+		case compactionNull:
+			r.logger.Warn(fmt.Sprintf("compaction_failed_noop session=%s user=%s iter=%d", sessionID, userID, iter+1))
 		}
 
 		assistantText, toolBlocks := r.extractBetaContent(resp)
@@ -235,13 +199,10 @@ func (r *Runner) RunWithProgress(ctx context.Context, history []llm.Message, use
 			break
 		}
 
-		assistantParam := r.sanitizeBetaAssistantMessage(resp, sessionID, userID)
-		messageParams = append(messageParams, assistantParam)
-
 		toolResults, err := r.invokeBetaToolsWithProgress(ctx, toolBlocks, onProgress)
 		if err != nil {
 			r.logger.Error(fmt.Sprintf("tool_invocation_failed session=%s user=%s iter=%d", sessionID, userID, iter+1), err)
-			return "", err
+			return TurnResult{}, err
 		}
 		messageParams = append(messageParams, sdk.NewBetaUserMessage(toolResults...))
 		lastAssistant = assistantText
@@ -262,7 +223,15 @@ func (r *Runner) RunWithProgress(ctx context.Context, history []llm.Message, use
 		r.logger.Info(fmt.Sprintf("run_completed session=%s user=%s reply=\"%s\" duration=%s", sessionID, userID, observability.Sanitize(lastAssistant, 200), elapsed))
 	}
 
-	return lastAssistant, nil
+	encodedContext, err := encodeProviderContext(messageParams)
+	if err != nil {
+		return TurnResult{}, err
+	}
+	return TurnResult{
+		Text:            lastAssistant,
+		ProviderContext: encodedContext,
+		Usage:           usage,
+	}, nil
 }
 
 // ImageInput is an image attached to the current user turn. Base64 is the raw
@@ -366,65 +335,11 @@ func (r *Runner) extractBetaContent(resp *sdk.BetaMessage) (string, []betaToolUs
 	return builder.String(), toolBlocks
 }
 
-func (r *Runner) extractBetaCompactionBlocks(resp *sdk.BetaMessage) []sdk.BetaContentBlockParamUnion {
-	var blocks []sdk.BetaContentBlockParamUnion
-	for _, block := range resp.Content {
-		if block.Type == "compaction" {
-			// Re-emit as text for the conversation to continue
-			blocks = append(blocks, sdk.NewBetaTextBlock(block.Text))
-		}
-	}
-	return blocks
-}
-
 // betaToolUse is an intermediate struct for tool use blocks from the beta response.
 type betaToolUse struct {
 	ID    string
 	Name  string
 	Input json.RawMessage
-}
-
-func (r *Runner) sanitizeBetaAssistantMessage(resp *sdk.BetaMessage, sessionID, userID string) sdk.BetaMessageParam {
-	if resp == nil {
-		return sdk.BetaMessageParam{
-			Role:    sdk.BetaMessageParamRoleAssistant,
-			Content: []sdk.BetaContentBlockParamUnion{sdk.NewBetaTextBlock("")},
-		}
-	}
-
-	blocks := make([]sdk.BetaContentBlockParamUnion, 0, len(resp.Content))
-	for _, block := range resp.Content {
-		switch block.Type {
-		case "text":
-			blocks = append(blocks, sdk.NewBetaTextBlock(block.Text))
-		case "tool_use":
-			var input any
-			if len(block.Input) > 0 {
-				if err := json.Unmarshal(block.Input, &input); err != nil {
-					input = json.RawMessage(block.Input)
-				}
-			}
-			blocks = append(blocks, sdk.NewBetaToolUseBlock(block.ID, input, block.Name))
-		case "compaction":
-			r.logger.Info(fmt.Sprintf("compaction_block_preserved session=%s user=%s", sessionID, userID))
-			blocks = append(blocks, sdk.NewBetaTextBlock(block.Text))
-		case "server_tool_use":
-			r.logger.Warn(fmt.Sprintf("server_tool_use_ignored session=%s user=%s id=%s name=%s", sessionID, userID, block.ID, block.Name))
-		case "web_search_tool_result":
-			r.logger.Warn(fmt.Sprintf("web_search_tool_result_ignored session=%s user=%s", sessionID, userID))
-		default:
-			r.logger.Warn(fmt.Sprintf("content_block_ignored session=%s user=%s type=%s", sessionID, userID, block.Type))
-		}
-	}
-
-	if len(blocks) == 0 {
-		blocks = append(blocks, sdk.NewBetaTextBlock(""))
-	}
-
-	return sdk.BetaMessageParam{
-		Role:    sdk.BetaMessageParamRoleAssistant,
-		Content: blocks,
-	}
 }
 
 func (r *Runner) invokeBetaToolsWithProgress(ctx context.Context, blocks []betaToolUse, onProgress ProgressCallback) ([]sdk.BetaContentBlockParamUnion, error) {

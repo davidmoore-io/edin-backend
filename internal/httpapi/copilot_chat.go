@@ -512,6 +512,17 @@ func (s *Server) handleCopilotMessage(
 	if len(historyForAPI) > historyLimit {
 		historyForAPI = historyForAPI[len(historyForAPI)-historyLimit:]
 	}
+	providerContext, contextErr := loadProviderContext(s.llmStore, session.sessionID, "anthropic")
+	if contextErr != nil {
+		s.logger.Error(fmt.Sprintf("copilot_context_load_error fid=%s session=%s", session.user.FID, session.sessionID), contextErr)
+		session.send(ChatWSMessage{
+			Type:            ChatWSTypeError,
+			Content:         "Conversation context could not be loaded. Please retry.",
+			ClientMessageID: clientMessageID,
+			Error:           true,
+		})
+		return
+	}
 
 	// Decode the optional attached image (client sends a "data:image/...;base64,"
 	// data URI). nil when no image was attached.
@@ -628,7 +639,7 @@ func (s *Server) handleCopilotMessage(
 	// Run the copilot with streaming. The voice session is already connected so
 	// the ElevenLabs WS is ready the instant the first <speak> segment closes.
 	start := time.Now()
-	reply, runErr := turnRunner.RunWithStreaming(ctx, historyForAPI, content, image, assistant.StreamingRunnerCallbacks{
+	result, runErr := turnRunner.RunWithStreamingContext(ctx, historyForAPI, providerContext, content, image, assistant.StreamingRunnerCallbacks{
 		OnTextDelta: func(string) {}, // raw tokens not forwarded; speak/data callbacks handle it
 		OnSpeakChunk: func(chunk string) {
 			// speak_start signals Flutter to open a fresh bubble for this segment.
@@ -667,6 +678,7 @@ func (s *Server) handleCopilotMessage(
 		})
 		return
 	}
+	reply := result.Text
 
 	// Store speak-only content in history — strip channel tags so that history
 	// replay never shows raw <speak>/<data> markup. Data tables are transient;
@@ -682,7 +694,7 @@ func (s *Server) handleCopilotMessage(
 		CreatedAt: time.Now().UTC(),
 		InReplyTo: clientMessageID,
 	}
-	updated, appendErr := s.llmStore.AppendMessage(session.sessionID, assistantMsg)
+	updated, appendErr := commitAssistantTurn(s.llmStore, session.sessionID, assistantMsg, result.ProviderContext)
 	if appendErr != nil {
 		s.logger.Error(fmt.Sprintf("copilot_reply_persist_error fid=%s session=%s", session.user.FID, session.sessionID), appendErr)
 		session.send(ChatWSMessage{
@@ -712,7 +724,16 @@ func (s *Server) handleCopilotMessage(
 		ClientMessageID: clientMessageID,
 	})
 
-	s.logger.Info(fmt.Sprintf("copilot_complete fid=%s session=%s duration=%s reply=\"%s\"", session.user.FID, session.sessionID, duration, truncate(reply, 200)))
+	s.logger.Info(fmt.Sprintf(
+		"copilot_complete fid=%s session=%s duration=%s input_tokens=%d output_tokens=%d compactions=%d reply=\"%s\"",
+		session.user.FID,
+		session.sessionID,
+		duration,
+		result.Usage.InputTokens,
+		result.Usage.OutputTokens,
+		result.Usage.CompactionIterations,
+		truncate(reply, 200),
+	))
 }
 
 // assemblePrompt is a nil-safe wrapper around s.promptAssembler.Assemble.

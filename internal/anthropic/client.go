@@ -10,6 +10,8 @@ import (
 	"github.com/anthropics/anthropic-sdk-go/option"
 )
 
+const defaultBaseURL = "https://api.anthropic.com"
+
 // Client wraps outbound Anthropic API interactions.
 type Client struct {
 	client    *sdk.Client
@@ -30,7 +32,13 @@ func New(apiKey, model string, maxTokens int) (*Client, error) {
 		maxTokens = 1024
 	}
 
-	sdkClient := sdk.NewClient(option.WithAPIKey(apiKey))
+	// Pin the documented Anthropic endpoint. The SDK otherwise reads
+	// ANTHROPIC_BASE_URL implicitly, which can route production chat through a
+	// stale local compatibility proxy.
+	sdkClient := sdk.NewClient(
+		option.WithAPIKey(apiKey),
+		option.WithBaseURL(defaultBaseURL),
+	)
 	return &Client{
 		client:    &sdkClient,
 		model:     sdk.Model(model),

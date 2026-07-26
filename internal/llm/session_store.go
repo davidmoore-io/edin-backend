@@ -1,6 +1,7 @@
 package llm
 
 import (
+	"encoding/json"
 	"errors"
 	"sync"
 	"time"
@@ -35,6 +36,16 @@ type SessionSummary struct {
 	Preview      string    `json:"preview"` // First user message content (truncated)
 }
 
+// ProviderContext is opaque model-facing conversation state. Messages contain
+// complete provider message objects, including typed tool and compaction blocks.
+// It is persisted separately from the display transcript and is never serialized
+// to chat clients.
+type ProviderContext struct {
+	Provider string            `json:"provider"`
+	Version  int               `json:"version"`
+	Messages []json.RawMessage `json:"messages"`
+}
+
 // SessionBackend defines the behaviour expected from a conversation store backend.
 type SessionBackend interface {
 	CreateSession(userID string, initialMessages ...Message) *Session
@@ -50,6 +61,13 @@ type IdempotentSessionBackend interface {
 	AppendMessageOnce(sessionID string, msg Message) (*Session, bool, error)
 }
 
+// ProviderContextBackend persists model-facing context separately from the
+// bounded display transcript.
+type ProviderContextBackend interface {
+	GetProviderContext(sessionID, provider string) (ProviderContext, bool, error)
+	CommitAssistantTurn(sessionID string, msg Message, context ProviderContext) (*Session, error)
+}
+
 // MultiSessionBackend extends SessionBackend with multi-session per user support.
 type MultiSessionBackend interface {
 	SessionBackend
@@ -63,6 +81,7 @@ type InMemoryStore struct {
 	mu         sync.RWMutex
 	sessions   map[string]*Session
 	messageIDs map[string]map[string]struct{}
+	contexts   map[string]map[string]ProviderContext
 	ttl        time.Duration
 	maxMsgs    int
 }
@@ -83,6 +102,7 @@ func NewInMemoryStore(ttl time.Duration) *InMemoryStore {
 	return &InMemoryStore{
 		sessions:   make(map[string]*Session),
 		messageIDs: make(map[string]map[string]struct{}),
+		contexts:   make(map[string]map[string]ProviderContext),
 		ttl:        ttl,
 	}
 }
@@ -110,6 +130,7 @@ func (s *InMemoryStore) AppendMessage(sessionID string, msg Message) (*Session, 
 	if !ok || s.expired(session) {
 		delete(s.sessions, sessionID)
 		delete(s.messageIDs, sessionID)
+		delete(s.contexts, sessionID)
 		return nil, errors.New("session not found or expired")
 	}
 
@@ -135,6 +156,7 @@ func (s *InMemoryStore) AppendMessageOnce(sessionID string, msg Message) (*Sessi
 	if !ok || s.expired(session) {
 		delete(s.sessions, sessionID)
 		delete(s.messageIDs, sessionID)
+		delete(s.contexts, sessionID)
 		return nil, false, errors.New("session not found or expired")
 	}
 
@@ -162,6 +184,62 @@ func (s *InMemoryStore) AppendMessageOnce(sessionID string, msg Message) (*Sessi
 	return cloneSession(session), true, nil
 }
 
+// GetProviderContext returns a deep copy of provider-specific model context.
+func (s *InMemoryStore) GetProviderContext(sessionID, provider string) (ProviderContext, bool, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	session, ok := s.sessions[sessionID]
+	if !ok || s.expired(session) {
+		return ProviderContext{}, false, nil
+	}
+	context, ok := s.contexts[sessionID][provider]
+	if !ok {
+		return ProviderContext{}, false, nil
+	}
+	return cloneProviderContext(context), true, nil
+}
+
+// CommitAssistantTurn atomically appends the display message and replaces the
+// corresponding provider context.
+func (s *InMemoryStore) CommitAssistantTurn(sessionID string, msg Message, context ProviderContext) (*Session, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	session, ok := s.sessions[sessionID]
+	if !ok || s.expired(session) {
+		delete(s.sessions, sessionID)
+		delete(s.messageIDs, sessionID)
+		delete(s.contexts, sessionID)
+		return nil, errors.New("session not found or expired")
+	}
+	if context.Provider == "" || context.Version <= 0 {
+		return nil, errors.New("invalid provider context")
+	}
+	if msg.CreatedAt.IsZero() {
+		msg.CreatedAt = time.Now().UTC()
+	}
+	session.Messages = append(session.Messages, msg)
+	session.UpdatedAt = msg.CreatedAt
+	if s.maxMsgs > 0 && len(session.Messages) > s.maxMsgs {
+		session.Messages = trimToLimit(session.Messages, s.maxMsgs)
+	}
+	if s.contexts[sessionID] == nil {
+		s.contexts[sessionID] = make(map[string]ProviderContext)
+	}
+	s.contexts[sessionID][context.Provider] = cloneProviderContext(context)
+	return cloneSession(session), nil
+}
+
+func (s *InMemoryStore) upsertProviderContext(sessionID string, context ProviderContext) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.contexts[sessionID] == nil {
+		s.contexts[sessionID] = make(map[string]ProviderContext)
+	}
+	s.contexts[sessionID][context.Provider] = cloneProviderContext(context)
+}
+
 // Get retrieves a session by ID if it exists and is not expired.
 func (s *InMemoryStore) Get(id string) (*Session, bool) {
 	s.mu.RLock()
@@ -182,6 +260,7 @@ func (s *InMemoryStore) Delete(id string) {
 	defer s.mu.Unlock()
 	delete(s.sessions, id)
 	delete(s.messageIDs, id)
+	delete(s.contexts, id)
 }
 
 // Cleanup removes expired sessions.
@@ -192,6 +271,7 @@ func (s *InMemoryStore) Cleanup() {
 		if s.expired(session) {
 			delete(s.sessions, id)
 			delete(s.messageIDs, id)
+			delete(s.contexts, id)
 		}
 	}
 }
@@ -265,6 +345,15 @@ func cloneSession(session *Session) *Session {
 	copySession := *session
 	copySession.Messages = append([]Message(nil), session.Messages...)
 	return &copySession
+}
+
+func cloneProviderContext(context ProviderContext) ProviderContext {
+	copyContext := context
+	copyContext.Messages = make([]json.RawMessage, len(context.Messages))
+	for i, message := range context.Messages {
+		copyContext.Messages[i] = append(json.RawMessage(nil), message...)
+	}
+	return copyContext
 }
 
 func trimToLimit(messages []Message, limit int) []Message {

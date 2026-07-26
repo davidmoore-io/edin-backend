@@ -2,7 +2,7 @@
 
 Date: 2026-07-25
 
-Status: **MR0-MR7 COMPLETE LOCALLY 2026-07-25 - MR7A REQUIRED BEFORE MR8**
+Status: **MR0-MR7 COMPLETE LOCALLY - MR7A IMPLEMENTED/AUTOMATED GATES GREEN 2026-07-26 - AUTHENTICATED LOCAL SMOKE REQUIRED BEFORE MR8**
 
 Owners:
 
@@ -48,6 +48,12 @@ BLOCKED. Two changes follow:
 3. **2026-07-25 local-chat finding:** Anthropic now rejects the request's
    `compact_20260112` context edit. MR7A (section 9) is a required compatibility
    gate before MR8 and covers both streaming and non-streaming assistant paths.
+4. **2026-07-26 MR7A implementation:** the shared request contract, exact
+   typed response persistence, streaming accumulation, null-compaction
+   handling, iteration usage accounting, and one-attempt HTTP 400 behavior are
+   implemented and covered by automated tests. Kaine and Copilot/EDIN Client
+   now share the same persisted Anthropic context contract. The authenticated
+   local smoke steps in 9.3 remain the final gate before MR8.
 
 ## 0. Verified Baseline
 
@@ -926,9 +932,11 @@ The runtime-path cause was subsequently identified: quick-dev inherited
 `ANTHROPIC_BASE_URL=http://127.0.0.1:8787` from its parent process and sent the
 failing request to that local compatibility proxy, while the successful probes
 went directly to Anthropic. Development configuration now pins
-`ANTHROPIC_BASE_URL=https://api.anthropic.com`. The application smoke gate must
-record the effective host so this class of inherited-environment drift cannot
-recur silently.
+`ANTHROPIC_BASE_URL=https://api.anthropic.com`, and
+`internal/anthropic.New` pins the documented `https://api.anthropic.com`
+endpoint explicitly instead of inheriting an SDK environment override. The
+application smoke gate must record the effective host so this class of
+inherited-environment drift cannot recur silently.
 
 The ordinary non-beta `internal/anthropic.Client.Complete` path does not send
 context management and is outside this specific failure.
@@ -1028,3 +1036,37 @@ Then exercise locally with the real configured model and local Authentik:
    full conversation body.
 
 Store redacted results in `anthropic-compat.md`. Any failure stops MR8.
+
+### 9.4 Implementation record (2026-07-26)
+
+Implemented:
+
+- `internal/assistant/anthropic_context.go` is the single request/context
+  contract used by streaming and non-streaming runners;
+- the SDK response is accumulated and persisted as typed
+  `BetaMessageParam` content, including `compaction` and tool blocks;
+- provider context is stored separately from the bounded display transcript;
+- Redis commits the assistant display message and replacement provider context
+  atomically; the in-memory implementation has the same contract;
+- valid compaction checkpoints discard only provider context that Anthropic
+  already ignores; failed `content: null` compactions remain null no-ops;
+- usage totals sum `usage.iterations` when present;
+- Kaine and Copilot/EDIN Client both load and commit the same Anthropic provider
+  context;
+- the Anthropic client constructor pins `https://api.anthropic.com`;
+- user-visible upstream errors are sanitized.
+
+Automated evidence:
+
+```text
+GOWORK=off GOCACHE=/tmp/edin-backend-go-cache go test -count=1 ./...
+PASS
+```
+
+Focused fixtures cover request tags, non-streaming typed compaction,
+streaming start/delta/stop accumulation, null compaction, multi-turn restore,
+display-history trimming independence, Redis atomic persistence/deletion,
+iteration usage accounting, and exactly one request for HTTP 400.
+
+Remaining gate: execute the five authenticated local smoke steps in 9.3
+against the rebuilt service before changing this plan to MR7A complete.

@@ -42,6 +42,24 @@ redis.call("EXPIRE", KEYS[3], ttl)
 return 1
 `)
 
+var commitAssistantTurnScript = redis.NewScript(`
+if redis.call("EXISTS", KEYS[1]) == 0 then
+  return 0
+end
+redis.call("RPUSH", KEYS[2], ARGV[1])
+local max_messages = tonumber(ARGV[2])
+if max_messages > 0 then
+  redis.call("LTRIM", KEYS[2], -max_messages, -1)
+end
+redis.call("SET", KEYS[3], ARGV[3])
+redis.call("HSET", KEYS[1], "updated_at", ARGV[4])
+local ttl = tonumber(ARGV[5])
+redis.call("EXPIRE", KEYS[1], ttl)
+redis.call("EXPIRE", KEYS[2], ttl)
+redis.call("EXPIRE", KEYS[3], ttl)
+return 1
+`)
+
 // RedisStore persists sessions in Redis, falling back to an in-memory store when Redis is unavailable.
 type RedisStore struct {
 	client      *redis.Client
@@ -244,6 +262,76 @@ func (s *RedisStore) AppendMessageOnce(sessionID string, msg Message) (*Session,
 	return session, result == 1, nil
 }
 
+// GetProviderContext loads provider-specific model context without exposing it
+// through the display session.
+func (s *RedisStore) GetProviderContext(sessionID, provider string) (ProviderContext, bool, error) {
+	if s.client == nil {
+		return s.fallback.GetProviderContext(sessionID, provider)
+	}
+
+	raw, err := s.client.Get(context.Background(), s.providerContextKey(sessionID, provider)).Bytes()
+	if err == redis.Nil {
+		return ProviderContext{}, false, nil
+	}
+	if err != nil {
+		s.warn("get_provider_context", sessionID, err)
+		return s.fallback.GetProviderContext(sessionID, provider)
+	}
+	var providerContext ProviderContext
+	if err := json.Unmarshal(raw, &providerContext); err != nil {
+		return ProviderContext{}, false, fmt.Errorf("decode provider context: %w", err)
+	}
+	return cloneProviderContext(providerContext), true, nil
+}
+
+// CommitAssistantTurn atomically appends the display response and replaces the
+// provider context needed for the next model turn.
+func (s *RedisStore) CommitAssistantTurn(sessionID string, msg Message, providerContext ProviderContext) (*Session, error) {
+	if s.client == nil {
+		return s.fallback.CommitAssistantTurn(sessionID, msg, providerContext)
+	}
+	if providerContext.Provider == "" || providerContext.Version <= 0 {
+		return nil, errors.New("invalid provider context")
+	}
+	if msg.CreatedAt.IsZero() {
+		msg.CreatedAt = time.Now().UTC()
+	}
+	messagePayload, err := json.Marshal(msg)
+	if err != nil {
+		return nil, fmt.Errorf("marshal assistant message: %w", err)
+	}
+	contextPayload, err := json.Marshal(providerContext)
+	if err != nil {
+		return nil, fmt.Errorf("marshal provider context: %w", err)
+	}
+
+	ctx := context.Background()
+	result, err := commitAssistantTurnScript.Run(ctx, s.client, []string{
+		s.sessionKey(sessionID),
+		s.messagesKey(sessionID),
+		s.providerContextKey(sessionID, providerContext.Provider),
+	}, messagePayload, s.maxMessages, contextPayload,
+		msg.CreatedAt.Format(time.RFC3339Nano), int64(s.ttl.Seconds())).Int()
+	if err != nil {
+		s.warn("commit_assistant_turn", sessionID, err)
+		return s.fallback.CommitAssistantTurn(sessionID, msg, providerContext)
+	}
+	if result != 1 {
+		return nil, errors.New("session not found")
+	}
+
+	session, ok := s.loadSession(ctx, sessionID)
+	if !ok {
+		return nil, errors.New("session not found")
+	}
+	if session.UserID != "" {
+		s.refreshUserIndex(ctx, session.UserID, sessionID, msg.CreatedAt)
+	}
+	s.fallback.UpsertSession(session)
+	s.fallback.upsertProviderContext(sessionID, providerContext)
+	return session, nil
+}
+
 // Get retrieves a session from Redis or the fallback store.
 func (s *RedisStore) Get(id string) (*Session, bool) {
 	if s.client == nil {
@@ -277,7 +365,13 @@ func (s *RedisStore) Delete(id string) {
 		metaKey := s.sessionKey(id)
 		messagesKey := s.messagesKey(id)
 		messageIDsKey := s.messageIDsKey(id)
-		if err := s.client.Del(ctx, metaKey, messagesKey, messageIDsKey).Err(); err != nil {
+		keys := []string{
+			metaKey,
+			messagesKey,
+			messageIDsKey,
+			s.providerContextKey(id, "anthropic"),
+		}
+		if err := s.client.Del(ctx, keys...).Err(); err != nil {
 			s.warn("delete_session", id, err)
 		}
 	}
@@ -532,6 +626,10 @@ func (s *RedisStore) messagesKey(id string) string {
 
 func (s *RedisStore) messageIDsKey(id string) string {
 	return fmt.Sprintf("%s:%s:message_ids", s.prefix, id)
+}
+
+func (s *RedisStore) providerContextKey(id, provider string) string {
+	return fmt.Sprintf("%s:%s:context:%s", s.prefix, id, provider)
 }
 
 func (s *RedisStore) warn(op, id string, err error) {

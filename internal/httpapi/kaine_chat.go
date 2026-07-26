@@ -361,6 +361,8 @@ func (s *Server) handleSwitchSession(session *chatSession, targetSessionID strin
 func (s *Server) handleChatMessage(session *chatSession, content string) {
 	s.logger.Info(fmt.Sprintf("chat_message user=%s session=%s message=\"%s\"", session.user.Sub, session.sessionID, truncate(content, 160)))
 
+	historyForAPI := append([]llm.Message(nil), session.history...)
+
 	// Add user message to history
 	userMsg := llm.Message{
 		Role:      "user",
@@ -370,12 +372,31 @@ func (s *Server) handleChatMessage(session *chatSession, content string) {
 	session.history = append(session.history, userMsg)
 
 	// Persist user message to store
-	s.llmStore.AppendMessage(session.sessionID, userMsg)
+	updated, err := s.llmStore.AppendMessage(session.sessionID, userMsg)
+	if err != nil {
+		s.logger.Error(fmt.Sprintf("chat_message_persist_error user=%s session=%s", session.user.Sub, session.sessionID), err)
+		session.send(ChatWSMessage{
+			Type:    ChatWSTypeError,
+			Content: "Your message could not be stored. Please retry.",
+			Error:   true,
+		})
+		return
+	}
+	session.history = updated.Messages
 
-	// Trim in-memory history to last 20 messages for the API call
-	historyForAPI := session.history
+	// Legacy display history seeds sessions that predate provider context.
 	if len(historyForAPI) > 20 {
 		historyForAPI = historyForAPI[len(historyForAPI)-20:]
+	}
+	providerContext, err := loadProviderContext(s.llmStore, session.sessionID, "anthropic")
+	if err != nil {
+		s.logger.Error(fmt.Sprintf("chat_context_load_error user=%s session=%s", session.user.Sub, session.sessionID), err)
+		session.send(ChatWSMessage{
+			Type:    ChatWSTypeError,
+			Content: "Conversation context could not be loaded. Please retry.",
+			Error:   true,
+		})
+		return
 	}
 
 	// Send thinking indicator
@@ -422,17 +443,18 @@ func (s *Server) handleChatMessage(session *chatSession, content string) {
 
 	// Run the assistant with Kaine-specific runner (Elite Dangerous tools only)
 	start := time.Now()
-	reply, err := s.kaineRunner.RunWithProgress(ctx, historyForAPI, content, onProgress)
+	result, err := s.kaineRunner.RunWithProgressContext(ctx, historyForAPI, providerContext, content, onProgress)
 
 	if err != nil {
 		s.logger.Error(fmt.Sprintf("chat_run_error user=%s session=%s", session.user.Sub, session.sessionID), err)
 		session.send(ChatWSMessage{
 			Type:    ChatWSTypeError,
-			Content: fmt.Sprintf("Error processing message: %v", err),
+			Content: "I had trouble answering that. Please retry.",
 			Error:   true,
 		})
 		return
 	}
+	reply := result.Text
 
 	// Add assistant reply to history and persist
 	assistantMsg := llm.Message{
@@ -440,8 +462,17 @@ func (s *Server) handleChatMessage(session *chatSession, content string) {
 		Content:   reply,
 		CreatedAt: time.Now().UTC(),
 	}
-	session.history = append(session.history, assistantMsg)
-	s.llmStore.AppendMessage(session.sessionID, assistantMsg)
+	updated, err = commitAssistantTurn(s.llmStore, session.sessionID, assistantMsg, result.ProviderContext)
+	if err != nil {
+		s.logger.Error(fmt.Sprintf("chat_reply_persist_error user=%s session=%s", session.user.Sub, session.sessionID), err)
+		session.send(ChatWSMessage{
+			Type:    ChatWSTypeError,
+			Content: "The answer was generated but could not be stored. Please retry.",
+			Error:   true,
+		})
+		return
+	}
+	session.history = updated.Messages
 
 	// Send final response
 	session.send(ChatWSMessage{
@@ -456,7 +487,16 @@ func (s *Server) handleChatMessage(session *chatSession, content string) {
 		SessionID: session.sessionID,
 	})
 
-	s.logger.Info(fmt.Sprintf("chat_complete user=%s session=%s duration=%s reply=\"%s\"", session.user.Sub, session.sessionID, time.Since(start), truncate(reply, 200)))
+	s.logger.Info(fmt.Sprintf(
+		"chat_complete user=%s session=%s duration=%s input_tokens=%d output_tokens=%d compactions=%d reply=\"%s\"",
+		session.user.Sub,
+		session.sessionID,
+		time.Since(start),
+		result.Usage.InputTokens,
+		result.Usage.OutputTokens,
+		result.Usage.CompactionIterations,
+		truncate(reply, 200),
+	))
 }
 
 func kaineChatScopesForGroups(groups []string) []authz.Scope {
