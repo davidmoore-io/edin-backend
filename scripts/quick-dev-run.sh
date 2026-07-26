@@ -94,7 +94,7 @@ for _ in {1..60}; do
 done
 curl -fsS http://127.0.0.1:8080/health >/dev/null
 
-make -C "${data_dir}" listener-local-start >/dev/null
+make -C "${data_dir}" local-live-start >/dev/null
 
 (
   cd "${frontend_dir}"
@@ -134,8 +134,8 @@ Logs:
   ${backend_log}
   ${frontend_log}
 
-Press Ctrl-C to stop the frontend and backend. Data, Authentik, Redis, and
-listener containers remain stopped only by 'make dev-stop'.
+Press Ctrl-C to stop the frontend and backend. Data, Authentik, Redis, the
+listener, and relational writer remain stopped only by 'make dev-stop'.
 EOF
 
 wait "${backend_pid}" "${frontend_pid}"

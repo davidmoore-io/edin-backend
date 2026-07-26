@@ -77,8 +77,9 @@ BACKEND_DB_ROLES_CONFIRMED=1 make -C .. deploy-backend-db-roles
 
 ### Full Local Stack
 
-`make quick-dev` starts the local EDIN and EDDN PostgreSQL databases, the EDIN
-application Redis, Authentik, the EDDN listener, control API, MCP endpoint,
+`make quick-dev` starts the local EDIN and EDDN PostgreSQL databases, the EDDN
+listener and relational galaxy writer, the EDIN application Redis, Authentik,
+control API, MCP endpoint,
 frontend, and the ngrok tunnel used by the EDIN Client Frontier callback.
 Authentik 2026 is PostgreSQL-only and does not use this Redis instance. The
 launcher loads development secrets from the existing Ansible vaults into the

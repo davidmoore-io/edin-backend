@@ -63,7 +63,7 @@ lint:
 #   - Bootstraps Discord login and the local Kaine OAuth application
 #   - Loads the Anthropic/identity secrets from Ansible vault without printing them
 #   - Starts ngrok for the EDIN Client Frontier callback
-#   - Builds and runs control-api, the EDDN listener, and the frontend
+#   - Builds and runs control-api, EDDN listener, relational writer, and frontend
 #
 # First run: copy .env.dev → .env.local and fill in secrets (Frontier creds etc.)
 # Stop everything: make dev-stop
@@ -153,11 +153,12 @@ dev-run:
 dev-status:
 	@echo "Quick-dev containers:"
 	@docker ps --format '{{.Names}}\t{{.Status}}\t{{.Ports}}' | \
-		grep -E '^(edin-dev-|edin-timescaledb|eddn-timescaledb|eddn-listener)' || true
+		grep -E '^(edin-dev-|edin-timescaledb|eddn-timescaledb|eddn-listener|galaxy-writer-local)' || true
 	@echo ""
 	@for url in \
 		http://127.0.0.1:9000/-/health/ready/ \
 		http://127.0.0.1:8080/health \
+		http://127.0.0.1:9101/health \
 		http://127.0.0.1:3090/; do \
 		code=$$(curl -sS -o /dev/null -w '%{http_code}' "$$url" 2>/dev/null || true); \
 		printf '%-55s %s\n' "$$url" "$${code:-down}"; \
@@ -174,7 +175,7 @@ dev-stop:
 	fi
 	@pkill -f '^.*/bin/control-api$$' 2>/dev/null || true
 	@pkill -f '^.*node.*/vite.*--host 127\.0\.0\.1$$' 2>/dev/null || true
-	@$(MAKE) -C ../edin-data listener-local-stop >/dev/null 2>&1 || true
+	@$(MAKE) -C ../edin-data local-live-stop >/dev/null 2>&1 || true
 	@docker compose -f docker-compose.quick-dev.yml \
 		--env-file .dev-state/secrets.env stop 2>/dev/null || true
 	@docker stop edin-dev-redis 2>/dev/null || true
