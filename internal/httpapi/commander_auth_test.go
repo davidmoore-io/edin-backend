@@ -724,6 +724,8 @@ func TestCommanderAuthToken_NoncePayloadMirrorsJWTScopes(t *testing.T) {
 	require.NotNil(t, user, "nonce consume should return a user")
 
 	assert.Equal(t, "F9999", user.FID)
+	assert.Equal(t, "Scope Test Cmdr", user.Name,
+		"nonce payload name must mirror JWT claims.Name exactly")
 	assert.Equal(t, jwtScopes, user.Scopes,
 		"nonce payload scopes must mirror JWT claims.Scopes exactly")
 }
